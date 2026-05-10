@@ -37,8 +37,8 @@ Un endpoint HTTPS único que hable simultáneamente OpenAI y Anthropic, despache
 **Plans:** 4 plans
 Plans:
 **Wave 1**
-- [ ] 01-01-PLAN.md — Host bootstrap + volume tree + .env contract (D-01, D-02, D-03, D-14)
-- [ ] 01-02-PLAN.md — GPU preflight script + state file schema (D-05, D-07, INFRA-01)
+- [x] 01-01-PLAN.md — Host bootstrap + volume tree + .env contract (D-01, D-02, D-03, D-14)
+- [x] 01-02-PLAN.md — GPU preflight script + state file schema (D-05, D-07, INFRA-01)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 - [ ] 01-03-PLAN.md — compose.yml: x-gpu anchor, four networks, gpu-preflight + Ollama (D-04, D-06, D-11, D-12, D-13, INFRA-02..05, BCKND-01)
