@@ -90,17 +90,24 @@ services:
     container_name: ${COMPOSE_PROJECT_NAME:-local-llms}-ollama
     <<: *gpu
     restart: unless-stopped
-    # Phase 1 ships Ollama on the backend network only. The router (Phase 2)
-    # will attach to backend AND app to talk to Ollama. Phase 1 publishes a
-    # localhost-only host port so the smoke test (Plan 04) can hit the API
-    # without going through a router that doesn't exist yet. After Phase 2
-    # lands the router, this `ports:` block can be REMOVED — Ollama should
-    # then only be reachable via the backend network from the router. The
-    # localhost-only bind keeps the surface off the LAN even before the router.
+    # Ollama sits on TWO networks:
+    #   - backend: the data plane the router (Phase 2) will use. Stays
+    #     `internal: true` so router→ollama is the only inbound path.
+    #   - app:     non-internal — gives Ollama egress to registry.ollama.ai
+    #              for `ollama pull`. Without this, model pulls fail with
+    #              DNS errors (the v1.0 architecture had ollama on backend
+    #              only and assumed pulls would work — they don't because
+    #              `internal: true` blocks egress). See 01-04 verification.
+    # Phase 1 also publishes a localhost-only host port so the smoke test
+    # (Plan 04) can hit the API without going through a router that doesn't
+    # exist yet. After Phase 2 lands the router, the `ports:` block can be
+    # REMOVED. The localhost-only bind keeps the surface off the LAN even
+    # before the router.
     ports:
       - "127.0.0.1:11434:11434"
     networks:
       - backend
+      - app
     volumes:
       # Bind-mount Ollama's blob store to the host two-volume layout.
       # /root/.ollama is Ollama's $OLLAMA_MODELS / writable home inside the
