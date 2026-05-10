@@ -9,9 +9,11 @@ Self-hosted Docker stack that serves local LLMs over an NVIDIA GPU and unifies t
 - NVIDIA GPU with at least 16 GB VRAM.
 - Linux host or Windows host with WSL2 (Ubuntu 22.04 / 24.04). On WSL2, install the **Windows-side** NVIDIA driver only — **NEVER install a Linux NVIDIA driver inside the WSL distro** (it stubs over `libcuda.so` and breaks GPU passthrough).
 - Docker Engine >= 24 + Compose v2 >= 2.20.
-- NVIDIA Container Toolkit installed and registered as a Docker runtime.
+- One of the following GPU passthrough variants:
+  - **Native Linux + NVIDIA Container Toolkit** (recommended for production servers): install the toolkit and register the nvidia runtime with Docker. Install commands below.
+  - **Docker Desktop on Windows + WSL2** (recommended for developer workstations): no toolkit needed in the WSL distro — Docker Desktop bundles its own GPU integration. The repo ships a small `bin/gpu-init-libcuda.sh` init wrapper that creates the missing `libcuda.so.1` symlink at container start (Docker Desktop projects `libcuda.so.1.1` under `/usr/lib/wsl/drivers/` but doesn't symlink it to a standard linker path; CUDA runtimes like the ollama llama_server fail without it). The wrapper is a no-op on systems where libcuda is already discoverable.
 
-Install the toolkit on Ubuntu / WSL2 Ubuntu:
+NVIDIA Container Toolkit install (native Linux, or to skip the wrapper on WSL2):
 
 ```bash
 # 1) Add NVIDIA's apt repo (signed)
@@ -48,7 +50,12 @@ Do NOT add `default-runtime: nvidia` to `/etc/docker/daemon.json` — `compose.y
    bash bin/preflight-gpu.sh
    ```
 
-   Exits 0 only if `/dev/dxg`, host `nvidia-smi`, container `nvidia-smi`, `nvidia-ctk --version`, and `daemon.json`'s `nvidia` runtime entry all check out. State is recorded to `/srv/local-llms/.preflight-state.json`. If any check fails, the script prints a remediation hint — fix and re-run before continuing.
+   Runs 5 checks split into two kinds:
+
+   - **Functional (gating):** `gpu_device`, `host_nvidia_smi`, `container_nvidia_smi` — these must all pass for exit 0. The container check actually runs `nvidia-smi` inside a pinned `nvidia/cuda:12.6.0-base-ubuntu24.04` container, so a PASS proves GPU passthrough is operationally working.
+   - **Diagnostic (informational):** `nvidia_ctk`, `daemon_json` — these check whether NVIDIA Container Toolkit is installed in the host the standard way. They fail on Docker Desktop on Windows / WSL2 (toolkit isn't installed; Docker Desktop has its own GPU integration). The script prints "GPU passthrough is FUNCTIONAL" on that variant and exits 0.
+
+   State is recorded to `/srv/local-llms/.preflight-state.json` (schema includes `checks`, `check_kinds`, and `host_driver_version` — Phase 7 reads `host_driver_version` to pick the vLLM image tag).
 
 3. **Bring the stack up.**
 
@@ -81,11 +88,12 @@ Do NOT add `default-runtime: nvidia` to `/etc/docker/daemon.json` — `compose.y
    What the script does:
    - Posts a small generation request to `POST http://127.0.0.1:11434/api/generate` with `keep_alive=5m` to pin the model in VRAM through the inspection window.
    - Runs `docker compose exec ollama nvidia-smi` inside the Ollama container.
-   - Asserts: at least one GPU listed, an `ollama` process bound to the GPU, and VRAM in use >= 1 GB.
+   - Calls `GET /api/ps` and asserts the model's `size_vram > 0` (authoritative GPU-residency signal — same on every host).
+   - Asserts at least one GPU is listed and VRAM in use >= 1 GB.
 
-   Exits 0 on full pass. On success, the output includes: "PASS: model returned N chars", "PASS: GPU listed in container nvidia-smi", "PASS: ollama process is bound to the GPU", "PASS: VRAM in use is N MiB (threshold: 1024 MiB)". Expected VRAM for the 3B q4 model is ~2000-3000 MiB.
+   Exits 0 on full pass. On success, the output includes "PASS: model returned N chars", "PASS: GPU listed in container nvidia-smi", "PASS: model resident in VRAM: N MiB / N MiB total (100.0% on GPU)", and "PASS: VRAM in use is N MiB (threshold: 1024 MiB)". Expected VRAM for the 3B q4 model is ~3000-4000 MiB (model weights + KV cache).
 
-   > **If the smoke test fails with "no ollama process visible in container nvidia-smi":** that is the WSL2 silent CPU fallback signature — the costliest debug session in this project's research. The model appears to load, but inference runs on CPU and is 50-100x slower than GPU. Re-run `bash bin/preflight-gpu.sh` and read its remediation hints. Do not proceed to Phase 2 until the smoke test passes — the foundation is the whole point of Phase 1.
+   > **If Step 4 fails with `size_vram=0`:** that is real silent CPU fallback — the costliest debug session in this project's research. The model loaded but inference runs on CPU and is 50-100x slower than GPU. Re-run `bash bin/preflight-gpu.sh`, look for a failed functional check, follow the remediation hint. Do not proceed to Phase 2 until the smoke test passes — the foundation is the whole point of Phase 1.
 
 ## What Phase 1 establishes
 
@@ -93,7 +101,7 @@ These decisions are set in stone by Phase 1. Later phases inherit them and do no
 
 1. **Host data root:** `/srv/local-llms/` (NOT in-repo, NOT Docker named volumes). All bind mounts reference `${HOST_DATA_ROOT}` from `.env`.
 2. **Two model stores:** `models-gguf/` (Ollama + future llama.cpp via bind mount) and `models-hf/` (future vLLM HuggingFace cache). Never one shared `/models` tree.
-3. **Four Docker networks:** `edge`, `app`, `backend (internal: true)`, `data (internal: true)`. Names invented once in Phase 1; later services attach to existing networks, never invent new ones.
+3. **Four Docker networks:** `edge`, `app`, `backend (internal: true)`, `data (internal: true)`. Names invented once in Phase 1; later services attach to existing networks, never invent new ones. Backend services that need outbound egress (e.g. ollama for `ollama pull`) attach to `app` in addition to `backend` — `backend: internal: true` is preserved as the data plane the router talks to.
 4. **GPU reservation form:** `deploy.resources.reservations.devices` via the shared `x-gpu` YAML anchor. NEVER `runtime: nvidia` (legacy form). NEVER `gpus: all`.
 5. **Image pinning:** every image has an explicit tag. NEVER `:latest`.
 6. **Preflight gating:** every GPU service uses `depends_on: gpu-preflight: condition: service_completed_successfully`. The preflight one-shot service is the gate; no GPU consumer starts if preflight fails.
@@ -104,7 +112,7 @@ These decisions are set in stone by Phase 1. Later phases inherit them and do no
 
 ## Layout
 
-- `bin/` — operational scripts (`bootstrap-host.sh`, `preflight-gpu.sh`, `smoke-test-gpu.sh`).
+- `bin/` — operational scripts (`bootstrap-host.sh`, `preflight-gpu.sh`, `smoke-test-gpu.sh`, `gpu-init-libcuda.sh`).
 - `compose.yml` — single Compose file. Future phases append services. Compose `profiles:` (per-backend) lands in Phase 3.
 - `.env` / `.env.example` — environment contract (gitignored / committed). 8 v1 keys; future phases append, never rename.
 - `/srv/local-llms/` — host data root. NOT in-repo, NOT Docker named volumes. Created by bootstrap.
