@@ -44,7 +44,7 @@ Plans:
 - [x] 01-03-PLAN.md — compose.yml: x-gpu anchor, four networks, gpu-preflight + Ollama (D-04, D-06, D-11, D-12, D-13, INFRA-02..05, BCKND-01)
 
 **Wave 3** *(blocked on Wave 2 completion)*
-- [ ] 01-04-PLAN.md — Smoke test + README runbook + curated model pull (D-08, D-09, D-10)
+- [x] 01-04-PLAN.md — Smoke test + README runbook + curated model pull (D-08, D-09, D-10)
 
 ### Phase 2: MVP Vertical Slice — Router + Ollama + SSE
 **Goal:** Smallest end-to-end thing that proves the architecture: one agent curl-streams tokens from a real local model through the router, with auth and abort-propagation correct from day one. No platform services; no Anthropic; no other backends.
