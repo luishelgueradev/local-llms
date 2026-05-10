@@ -93,6 +93,12 @@ Overall: █░░░░░░░░░ 8% (6/76 v1 requirements)
 
 (none)
 
+### Quick Tasks Completed
+
+| # | Description | Date | Commit | Directory |
+|---|-------------|------|--------|-----------|
+| 260510-v8z | Phase 01 script cleanup — non-blocking warnings + info items from 01-REVIEW.md | 2026-05-10 | 20d57d2 | [260510-v8z-phase-01-script-cleanup-non-blocking-war](./quick/260510-v8z-phase-01-script-cleanup-non-blocking-war/) |
+
 ## Session Continuity
 
 **Next action:** Run `/gsd-discuss-phase 2` to gather Phase 2 context (router stack decisions inherited from CLAUDE.md but route shape, error envelope, and test boundary still need a quick discussion), or skip to `/gsd-plan-phase 2` if you want to plan directly.
@@ -105,3 +111,4 @@ Overall: █░░░░░░░░░ 8% (6/76 v1 requirements)
 
 ---
 *State initialized: 2026-05-10 after roadmap creation*
+*Last activity: 2026-05-10 — Completed quick task 260510-v8z: Phase 01 script cleanup*
