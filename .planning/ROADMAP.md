@@ -41,7 +41,7 @@ Plans:
 - [x] 01-02-PLAN.md — GPU preflight script + state file schema (D-05, D-07, INFRA-01)
 
 **Wave 2** *(blocked on Wave 1 completion)*
-- [ ] 01-03-PLAN.md — compose.yml: x-gpu anchor, four networks, gpu-preflight + Ollama (D-04, D-06, D-11, D-12, D-13, INFRA-02..05, BCKND-01)
+- [x] 01-03-PLAN.md — compose.yml: x-gpu anchor, four networks, gpu-preflight + Ollama (D-04, D-06, D-11, D-12, D-13, INFRA-02..05, BCKND-01)
 
 **Wave 3** *(blocked on Wave 2 completion)*
 - [ ] 01-04-PLAN.md — Smoke test + README runbook + curated model pull (D-08, D-09, D-10)
