@@ -1,0 +1,25 @@
+# local-llms project gitignore
+
+# Environment — populated values must never reach git.
+.env
+.env.local
+.env.*.local
+
+# Phase 1 preflight state — generated, not committed.
+.preflight-state.json
+
+# Node (Phase 2 router workspace; pre-emptive entries to avoid amending later).
+node_modules/
+dist/
+.tsbuildinfo
+*.log
+npm-debug.log*
+
+# OS clutter
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
