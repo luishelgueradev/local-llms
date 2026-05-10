@@ -1,14 +1,32 @@
 #!/usr/bin/env bash
 # bin/preflight-gpu.sh — GPU passthrough preflight for local-llms
 #
-# Asserts that NVIDIA Container Toolkit is correctly configured on this host (WSL2 or native Linux)
-# before any GPU service starts. Runs 5 checks, records driver state to:
+# Asserts that GPU passthrough is FUNCTIONAL (a container can run nvidia-smi)
+# before any GPU service starts. Runs 5 checks split into two kinds, and
+# records driver state to:
 #   ${HOST_DATA_ROOT}/.preflight-state.json
 #
+# Check kinds:
+#   functional  — gates the exit code. The operational requirement is that
+#                 a container can access the GPU. Failures here cause exit 1.
+#   diagnostic  — recorded + displayed, but does NOT gate exit. Diagnostic
+#                 failures help explain a failed functional check; on Docker
+#                 Desktop on Windows / WSL2 the host-side toolkit artifacts
+#                 (nvidia-ctk, /etc/docker/daemon.json) are intentionally
+#                 absent yet GPU passthrough still works.
+#
+# Host-mode check matrix:
+#   gpu_device           functional   /dev/dxg or /dev/nvidia* present
+#   host_nvidia_smi      functional   nvidia-smi works on host
+#   container_nvidia_smi functional   nvidia-smi works inside a container — authoritative
+#   nvidia_ctk           diagnostic   nvidia-ctk binary present (advisory)
+#   daemon_json          diagnostic   /etc/docker/daemon.json has nvidia runtime (advisory)
+#
 # Implements decisions:
-#   D-05: 5 checks + record driver state
+#   D-05: 5 checks + record driver state (refined: functional vs diagnostic split)
 #   D-06: pinned nvidia/cuda:12.6.0-base-ubuntu24.04 for the container nvidia-smi check
-#   D-07: state file at ${HOST_DATA_ROOT}/.preflight-state.json (Phase 7 contract)
+#   D-07: state file at ${HOST_DATA_ROOT}/.preflight-state.json (Phase 7 contract).
+#         Schema gains `check_kinds` field alongside existing `checks`.
 #
 # Usage:
 #   ./bin/preflight-gpu.sh          # default: print pass/fail per check + summary
@@ -16,8 +34,8 @@
 #   ./bin/preflight-gpu.sh -v       # verbose: print check command + its output
 #
 # Exit codes:
-#   0 — all non-skipped checks passed
-#   1 — one or more checks failed
+#   0 — all functional checks passed (diagnostic failures are non-gating)
+#   1 — one or more functional checks failed
 #
 # Forbidden: this script NEVER installs anything, modifies daemon.json, or changes .env.
 # It is READ-ONLY verification. No --fix flag, no remediation.
@@ -253,21 +271,33 @@ fi
 
 log ""
 
-# Arrays to track check names and results
+# Arrays to track check names, results, and kinds.
+# kind=functional → counted toward exit gate (operational requirement).
+# kind=diagnostic → recorded + displayed, NOT counted toward exit gate.
+#                   Diagnostic failures help explain a failed functional
+#                   check; on Docker Desktop on Windows / WSL2 the host-side
+#                   nvidia-ctk and /etc/docker/daemon.json are intentionally
+#                   absent (Docker Desktop handles GPU passthrough), yet the
+#                   functional checks (container_nvidia_smi) still pass.
 declare -a CHECK_NAMES=()
 declare -a CHECK_RESULTS=()
+declare -a CHECK_KINDS=()
 
-FAILED_COUNT=0
-FAILED_CHECKS=()
+FAILED_COUNT=0          # functional failures only — gates exit
+DIAG_FAILED_COUNT=0     # diagnostic failures — informational
+FAILED_CHECKS=()        # functional fails (gets remediation hints)
+DIAG_FAILED_CHECKS=()   # diagnostic fails (informational note only)
 
 run_check() {
   local name="$1"
   local fn="$2"
-  local skipped="${3:-false}"
+  local kind="${3:-functional}"   # functional|diagnostic
+  local skipped="${4:-false}"
 
   if [ "$skipped" = "true" ]; then
     CHECK_NAMES+=("$name")
     CHECK_RESULTS+=("skipped")
+    CHECK_KINDS+=("$kind")
     log "  $(printf '%-30s' "$name") SKIP"
     return
   fi
@@ -275,13 +305,22 @@ run_check() {
   if "$fn"; then
     CHECK_NAMES+=("$name")
     CHECK_RESULTS+=("pass")
+    CHECK_KINDS+=("$kind")
     log "  $(printf '%-30s' "$name") PASS"
   else
     CHECK_NAMES+=("$name")
     CHECK_RESULTS+=("fail")
-    log "  $(printf '%-30s' "$name") FAIL"
-    FAILED_COUNT=$((FAILED_COUNT + 1))
-    FAILED_CHECKS+=("$name")
+    CHECK_KINDS+=("$kind")
+    if [ "$kind" = "functional" ]; then
+      log "  $(printf '%-30s' "$name") FAIL"
+      FAILED_COUNT=$((FAILED_COUNT + 1))
+      FAILED_CHECKS+=("$name")
+    else
+      # diagnostic — print as INFO so output is not alarming when GPU is OK
+      log "  $(printf '%-30s' "$name") INFO (diagnostic, not gating)"
+      DIAG_FAILED_COUNT=$((DIAG_FAILED_COUNT + 1))
+      DIAG_FAILED_CHECKS+=("$name")
+    fi
   fi
 }
 
@@ -289,29 +328,46 @@ log "Check                          Result"
 log "--------------------------------------"
 
 if [ "$IN_CONTAINER" = "true" ]; then
-  # In-container: only check GPU device node + container nvidia-smi (which is just regular nvidia-smi here)
-  run_check "gpu_device"            check_gpu_device
-  run_check "host_nvidia_smi"       check_host_nvidia_smi  "true"   # skipped in-container
-  run_check "container_nvidia_smi"  check_host_nvidia_smi          # in-container, use nvidia-smi directly
-  run_check "nvidia_ctk"            check_nvidia_ctk       "true"   # skipped in-container
-  run_check "daemon_json"           check_daemon_json      "true"   # skipped in-container
+  # In-container: only the GPU device node + container nvidia-smi are meaningful.
+  run_check "gpu_device"            check_gpu_device           functional
+  run_check "host_nvidia_smi"       check_host_nvidia_smi      functional   true   # skipped
+  run_check "container_nvidia_smi"  check_host_nvidia_smi      functional          # in-container, use nvidia-smi directly
+  run_check "nvidia_ctk"            check_nvidia_ctk           diagnostic   true   # skipped
+  run_check "daemon_json"           check_daemon_json          diagnostic   true   # skipped
 else
-  # Host: run all 5 checks
-  run_check "gpu_device"            check_gpu_device
-  run_check "host_nvidia_smi"       check_host_nvidia_smi
-  run_check "container_nvidia_smi"  check_container_nvidia_smi
-  run_check "nvidia_ctk"            check_nvidia_ctk
-  run_check "daemon_json"           check_daemon_json
+  # Host: 3 functional checks (gate exit) + 2 diagnostic checks (advisory).
+  # The diagnostic pair is intentionally non-gating: Docker Desktop on
+  # Windows + WSL2 has neither nvidia-ctk nor /etc/docker/daemon.json yet
+  # exposes the GPU into containers correctly. The functional check
+  # `container_nvidia_smi` is the authoritative test — if it passes, GPU
+  # passthrough works regardless of how the toolkit got configured.
+  run_check "gpu_device"            check_gpu_device           functional
+  run_check "host_nvidia_smi"       check_host_nvidia_smi      functional
+  run_check "container_nvidia_smi"  check_container_nvidia_smi functional
+  run_check "nvidia_ctk"            check_nvidia_ctk           diagnostic
+  run_check "daemon_json"           check_daemon_json          diagnostic
 fi
 
 log ""
 
-# ─── Print remediation hints for failed checks ───────────────────────────────
+# ─── Remediation hints (only for functional failures) ────────────────────────
 
 if [ "${#FAILED_CHECKS[@]}" -gt 0 ]; then
   log "Failed checks — remediation hints:"
   for fc in "${FAILED_CHECKS[@]}"; do
     remediation_hint "$fc"
+  done
+  log ""
+fi
+
+# ─── Diagnostic-only failures: brief informational note ──────────────────────
+# Only fires when functional checks all passed but the host-side toolkit
+# artifacts are missing (typical Docker Desktop on WSL2 layout).
+
+if [ "${#FAILED_CHECKS[@]}" -eq 0 ] && [ "${#DIAG_FAILED_CHECKS[@]}" -gt 0 ]; then
+  log "Diagnostic-only failures (GPU passthrough is FUNCTIONAL):"
+  for fc in "${DIAG_FAILED_CHECKS[@]}"; do
+    log "  INFO [$fc]: not present, but container GPU access works — this is normal on Docker Desktop / WSL2."
   done
   log ""
 fi
@@ -364,6 +420,24 @@ build_checks_json() {
   echo "$json"
 }
 
+build_check_kinds_json() {
+  # Output check kinds as a JSON object: { "name": "functional|diagnostic" }
+  local json="{"
+  local first=true
+  for i in "${!CHECK_NAMES[@]}"; do
+    if [ "$first" = "true" ]; then
+      first=false
+    else
+      json="${json},"
+    fi
+    local name="${CHECK_NAMES[$i]}"
+    local kind="${CHECK_KINDS[$i]}"
+    json="${json}\"${name}\": \"${kind}\""
+  done
+  json="${json}}"
+  echo "$json"
+}
+
 # ─── Write state file atomically (temp + mv) (D-07) ─────────────────────────
 
 # Ensure the directory exists (bootstrap-host.sh creates it, but be defensive)
@@ -372,6 +446,7 @@ if ! mkdir -p "${HOST_DATA_ROOT}" 2>/dev/null; then
   log_always "         Run bin/bootstrap-host.sh first, or create the directory manually."
 else
   CHECKS_JSON=$(build_checks_json)
+  CHECK_KINDS_JSON=$(build_check_kinds_json)
 
   TMPFILE="${STATE_FILE}.tmp.$$"
 
@@ -385,6 +460,7 @@ else
     _PREFLIGHT_HOST_KERNEL="${HOST_KERNEL}" \
     _PREFLIGHT_WSL2="${WSL2}" \
     _PREFLIGHT_CHECKS_JSON="${CHECKS_JSON}" \
+    _PREFLIGHT_CHECK_KINDS_JSON="${CHECK_KINDS_JSON}" \
     _PREFLIGHT_PASSED="${PASSED}" \
     _PREFLIGHT_TMPFILE="${TMPFILE}" \
     python3 - <<'PYEOF'
@@ -406,6 +482,7 @@ state = {
     "host_kernel": os.environ.get("_PREFLIGHT_HOST_KERNEL", "unknown"),
     "wsl2": os.environ.get("_PREFLIGHT_WSL2", "false") == "true",
     "checks": json.loads(os.environ.get("_PREFLIGHT_CHECKS_JSON", "{}")),
+    "check_kinds": json.loads(os.environ.get("_PREFLIGHT_CHECK_KINDS_JSON", "{}")),
     "passed": os.environ.get("_PREFLIGHT_PASSED", "false") == "true",
 }
 
@@ -444,6 +521,11 @@ PYEOF
       [ -n "$CHECKS_LINES" ] && CHECKS_LINES="${CHECKS_LINES},"$'\n'
       CHECKS_LINES="${CHECKS_LINES}    \"${CHECK_NAMES[$i]}\": \"${CHECK_RESULTS[$i]}\""
     done
+    KINDS_LINES=""
+    for i in "${!CHECK_NAMES[@]}"; do
+      [ -n "$KINDS_LINES" ] && KINDS_LINES="${KINDS_LINES},"$'\n'
+      KINDS_LINES="${KINDS_LINES}    \"${CHECK_NAMES[$i]}\": \"${CHECK_KINDS[$i]}\""
+    done
 
     printf '{
   "schema_version": 1,
@@ -456,6 +538,9 @@ PYEOF
   "checks": {
 %s
   },
+  "check_kinds": {
+%s
+  },
   "passed": %s
 }
 ' \
@@ -466,6 +551,7 @@ PYEOF
       "${HOST_KERNEL}" \
       "${WSL2}" \
       "${CHECKS_LINES}" \
+      "${KINDS_LINES}" \
       "${PASSED}" > "${TMPFILE}"
 
     mv "${TMPFILE}" "${STATE_FILE}"
@@ -477,10 +563,15 @@ fi
 
 log ""
 if [ "$FAILED_COUNT" -eq 0 ]; then
-  log_always "All checks passed. State written to ${STATE_FILE}"
+  if [ "${DIAG_FAILED_COUNT:-0}" -eq 0 ]; then
+    log_always "All checks passed. State written to ${STATE_FILE}"
+  else
+    log_always "All functional checks passed (${DIAG_FAILED_COUNT} diagnostic check(s) absent — typical for Docker Desktop / WSL2)."
+    log_always "State written to ${STATE_FILE}"
+  fi
   exit 0
 else
-  log_always "${FAILED_COUNT} check(s) FAILED. Fix the issues above and re-run this script."
+  log_always "${FAILED_COUNT} functional check(s) FAILED. Fix the issues above and re-run this script."
   log_always "State (with failure details) written to ${STATE_FILE}"
   exit 1
 fi
