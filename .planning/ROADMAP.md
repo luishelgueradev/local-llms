@@ -29,11 +29,11 @@ Un endpoint HTTPS único que hable simultáneamente OpenAI y Anthropic, despache
 **Depends on:** Nothing (first phase)
 **Requirements:** INFRA-01, INFRA-02, INFRA-03, INFRA-04, INFRA-05, BCKND-01
 **Success Criteria** (what must be TRUE):
-  1. Running `bin/preflight-gpu.sh` on the host exits 0, asserting `/dev/dxg`, host `nvidia-smi`, container `nvidia-smi`, `nvidia-ctk --version`, and the daemon.json runtime entry — and exits non-zero (blocking Compose startup via `gpu-preflight` one-shot service) when any check fails.
+  1. Running `bin/preflight-gpu.sh` on the host exits 0 when GPU passthrough is functional, asserting three **functional** checks (`/dev/dxg` or `/dev/nvidia*`, host `nvidia-smi`, container `nvidia-smi`) and recording two **diagnostic** checks (`nvidia-ctk --version`, daemon.json runtime entry — informational, do not gate exit). Exits non-zero (blocking Compose startup via `gpu-preflight` one-shot service) when any *functional* check fails. The diagnostic split lets Phase 1 work on Docker Desktop on Windows + WSL2 (no host-side toolkit installed; Docker Desktop's WSL2 GPU integration provides functional passthrough) as well as native Linux + NVIDIA Container Toolkit.
   2. `docker compose config` shows every GPU service references the same `x-gpu` YAML anchor (driver: nvidia, count: all, capabilities: [gpu]); no service uses the legacy `runtime: nvidia` form and no service uses a `:latest` image tag.
   3. The volume layout exists on disk: `models-gguf/` (with `gguf/` and `ollama/` subdirs) and `models-hf/` as separate top-level volumes — never a single shared `/models` tree.
   4. A single Ollama service comes up cleanly with one curated small model pulled, and `nvidia-smi` inside the Ollama container shows the GPU plus an Ollama process consuming VRAM during inference (no silent CPU fallback).
-  5. Compose service ordering uses `depends_on: condition: service_healthy` so dependents wait on real readiness, not just process start.
+  5. Compose service ordering uses `depends_on` with the **right condition for the dependency type**: `condition: service_completed_successfully` for one-shot gates (e.g., `gpu-preflight` exits 0 then is gone), `condition: service_healthy` for long-running services with healthchecks (e.g., `ollama`'s `/api/tags` healthcheck via `ollama list`). The `service_healthy` condition does not apply to one-shot services that exit; using it on `gpu-preflight` would never resolve.
 **Plans:** 4 plans
 Plans:
 **Wave 1**
