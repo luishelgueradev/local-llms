@@ -179,17 +179,104 @@ Explicitly excluded. Documented to prevent scope creep.
 
 ## Traceability
 
-Empty until `/gsd-roadmapper` runs. Each requirement maps to exactly one phase.
+Each requirement maps to exactly one phase. Mapping derived from research-recommended ordering (see research/SUMMARY.md) and validated for 100% coverage.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| (filled by roadmapper) | — | Pending |
+| INFRA-01 | Phase 1 — GPU + Compose Foundation | Pending |
+| INFRA-02 | Phase 1 — GPU + Compose Foundation | Pending |
+| INFRA-03 | Phase 1 — GPU + Compose Foundation | Pending |
+| INFRA-04 | Phase 1 — GPU + Compose Foundation | Pending |
+| INFRA-05 | Phase 1 — GPU + Compose Foundation | Pending |
+| BCKND-01 | Phase 1 — GPU + Compose Foundation | Pending |
+| ROUTE-01 | Phase 2 — MVP Vertical Slice (Router + Ollama + SSE) | Pending |
+| ROUTE-02 | Phase 2 — MVP Vertical Slice (Router + Ollama + SSE) | Pending |
+| ROUTE-03 | Phase 2 — MVP Vertical Slice (Router + Ollama + SSE) | Pending |
+| ROUTE-04 | Phase 2 — MVP Vertical Slice (Router + Ollama + SSE) | Pending |
+| ROUTE-05 | Phase 2 — MVP Vertical Slice (Router + Ollama + SSE) | Pending |
+| ROUTE-08 | Phase 2 — MVP Vertical Slice (Router + Ollama + SSE) | Pending |
+| OAI-01 | Phase 2 — MVP Vertical Slice (Router + Ollama + SSE) | Pending |
+| OAI-04 | Phase 2 — MVP Vertical Slice (Router + Ollama + SSE) | Pending |
+| OAI-05 | Phase 2 — MVP Vertical Slice (Router + Ollama + SSE) | Pending |
+| BCKND-02 | Phase 3 — Multi-Backend Dispatch (llama.cpp + Registry Hardening) | Pending |
+| BCKND-04 | Phase 3 — Multi-Backend Dispatch (llama.cpp + Registry Hardening) | Pending |
+| BCKND-05 | Phase 3 — Multi-Backend Dispatch (llama.cpp + Registry Hardening) | Pending |
+| ROUTE-06 | Phase 3 — Multi-Backend Dispatch (llama.cpp + Registry Hardening) | Pending |
+| ROUTE-07 | Phase 3 — Multi-Backend Dispatch (llama.cpp + Registry Hardening) | Pending |
+| OAI-03 | Phase 3 — Multi-Backend Dispatch (llama.cpp + Registry Hardening) | Pending |
+| ANTHR-01 | Phase 4 — Anthropic Surface, Tool Calling, Vision | Pending |
+| ANTHR-02 | Phase 4 — Anthropic Surface, Tool Calling, Vision | Pending |
+| ANTHR-03 | Phase 4 — Anthropic Surface, Tool Calling, Vision | Pending |
+| ANTHR-04 | Phase 4 — Anthropic Surface, Tool Calling, Vision | Pending |
+| ANTHR-05 | Phase 4 — Anthropic Surface, Tool Calling, Vision | Pending |
+| ANTHR-06 | Phase 4 — Anthropic Surface, Tool Calling, Vision | Pending |
+| ANTHR-07 | Phase 4 — Anthropic Surface, Tool Calling, Vision | Pending |
+| ANTHR-08 | Phase 4 — Anthropic Surface, Tool Calling, Vision | Pending |
+| TOOL-01 | Phase 4 — Anthropic Surface, Tool Calling, Vision | Pending |
+| TOOL-02 | Phase 4 — Anthropic Surface, Tool Calling, Vision | Pending |
+| TOOL-03 | Phase 4 — Anthropic Surface, Tool Calling, Vision | Pending |
+| TOOL-04 | Phase 4 — Anthropic Surface, Tool Calling, Vision | Pending |
+| TOOL-05 | Phase 4 — Anthropic Surface, Tool Calling, Vision | Pending |
+| VISION-01 | Phase 4 — Anthropic Surface, Tool Calling, Vision | Pending |
+| VISION-02 | Phase 4 — Anthropic Surface, Tool Calling, Vision | Pending |
+| VISION-03 | Phase 4 — Anthropic Surface, Tool Calling, Vision | Pending |
+| DATA-01 | Phase 5 — Postgres + Observability Seam | Pending |
+| DATA-02 | Phase 5 — Postgres + Observability Seam | Pending |
+| DATA-03 | Phase 5 — Postgres + Observability Seam | Pending |
+| DATA-04 | Phase 5 — Postgres + Observability Seam | Pending |
+| DATA-05 | Phase 5 — Postgres + Observability Seam | Pending |
+| OBS-01 | Phase 5 — Postgres + Observability Seam | Pending |
+| OBS-05 | Phase 5 — Postgres + Observability Seam | Pending |
+| ROUTE-09 | Phase 5 — Postgres + Observability Seam | Pending |
+| EDGE-01 | Phase 6 — Traefik + TLS + Open WebUI | Pending |
+| EDGE-02 | Phase 6 — Traefik + TLS + Open WebUI | Pending |
+| EDGE-03 | Phase 6 — Traefik + TLS + Open WebUI | Pending |
+| EDGE-04 | Phase 6 — Traefik + TLS + Open WebUI | Pending |
+| EDGE-05 | Phase 6 — Traefik + TLS + Open WebUI | Pending |
+| EDGE-06 | Phase 6 — Traefik + TLS + Open WebUI | Pending |
+| WEBUI-01 | Phase 6 — Traefik + TLS + Open WebUI | Pending |
+| WEBUI-02 | Phase 6 — Traefik + TLS + Open WebUI | Pending |
+| WEBUI-03 | Phase 6 — Traefik + TLS + Open WebUI | Pending |
+| WEBUI-04 | Phase 6 — Traefik + TLS + Open WebUI | Pending |
+| WEBUI-05 | Phase 6 — Traefik + TLS + Open WebUI | Pending |
+| BCKND-03 | Phase 7 — Embeddings + vLLM + GPU Telemetry | Pending |
+| OAI-02 | Phase 7 — Embeddings + vLLM + GPU Telemetry | Pending |
+| EMBED-01 | Phase 7 — Embeddings + vLLM + GPU Telemetry | Pending |
+| EMBED-02 | Phase 7 — Embeddings + vLLM + GPU Telemetry | Pending |
+| OBS-02 | Phase 7 — Embeddings + vLLM + GPU Telemetry | Pending |
+| OBS-03 | Phase 7 — Embeddings + vLLM + GPU Telemetry | Pending |
+| OBS-04 | Phase 7 — Embeddings + vLLM + GPU Telemetry | Pending |
+| CLOUD-01 | Phase 8 — Ollama Cloud Fallback + Resilience Hardening | Pending |
+| CLOUD-02 | Phase 8 — Ollama Cloud Fallback + Resilience Hardening | Pending |
+| CLOUD-03 | Phase 8 — Ollama Cloud Fallback + Resilience Hardening | Pending |
+| CLOUD-04 | Phase 8 — Ollama Cloud Fallback + Resilience Hardening | Pending |
+| CLOUD-05 | Phase 8 — Ollama Cloud Fallback + Resilience Hardening | Pending |
+| DATA-06 | Phase 8 — Ollama Cloud Fallback + Resilience Hardening | Pending |
+| ROUTE-10 | Phase 8 — Ollama Cloud Fallback + Resilience Hardening | Pending |
+| ROUTE-11 | Phase 8 — Ollama Cloud Fallback + Resilience Hardening | Pending |
+| ROUTE-12 | Phase 8 — Ollama Cloud Fallback + Resilience Hardening | Pending |
+| OPS-01 | Phase 9 — Operations Hardening | Pending |
+| OPS-02 | Phase 9 — Operations Hardening | Pending |
+| OPS-03 | Phase 9 — Operations Hardening | Pending |
+| OPS-04 | Phase 9 — Operations Hardening | Pending |
 
 **Coverage:**
 - v1 requirements: 76 total
-- Mapped to phases: 0
-- Unmapped: 76 ⚠️ (will be 0 after roadmapping)
+- Mapped to phases: 76
+- Unmapped: 0
+- Coverage: 100%
+
+**Phase requirement counts:**
+- Phase 1 (GPU + Compose Foundation): 6 requirements
+- Phase 2 (MVP Vertical Slice): 9 requirements
+- Phase 3 (Multi-Backend Dispatch): 6 requirements
+- Phase 4 (Anthropic Surface): 16 requirements
+- Phase 5 (Postgres + Observability): 8 requirements
+- Phase 6 (Traefik + Open WebUI): 11 requirements
+- Phase 7 (Embeddings + vLLM): 7 requirements
+- Phase 8 (Ollama Cloud + Resilience): 9 requirements
+- Phase 9 (Operations Hardening): 4 requirements
 
 ---
 *Requirements defined: 2026-05-09*
-*Last updated: 2026-05-09 after initial definition*
+*Traceability mapping added: 2026-05-10 by /gsd-roadmapper*
