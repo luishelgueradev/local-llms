@@ -1,0 +1,134 @@
+# compose.yml — local-llms platform
+# Phase 1: GPU + Compose Foundation
+#
+# Adds: gpu-preflight (one-shot), ollama (single GPU consumer).
+# Future phases append services to this same file (D-12 — no split files).
+# Compose `profiles:` per-backend lands in Phase 3 (D-11).
+#
+# All services use:
+#   - pinned image tags (no :latest — INFRA-04)
+#   - the x-gpu YAML anchor for GPU reservation (INFRA-02)
+#   - the four declared networks (D-13)
+#   - depends_on: { gpu-preflight: { condition: service_completed_successfully } }
+#     for any GPU consumer (D-04, INFRA-05)
+
+name: ${COMPOSE_PROJECT_NAME:-local-llms}
+
+# ── GPU reservation anchor — referenced by every GPU service ──────────────────
+# DO NOT use `runtime: nvidia` (legacy form, on the standing rejection list).
+# DO NOT use `gpus: all` shorthand (Compose-version-fragile).
+# This block is the canonical form per Docker Compose v2 docs and PITFALLS Pitfall 2.
+x-gpu: &gpu
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: all
+            capabilities: [gpu, utility]
+  # `utility` capability is required for nvidia-smi to work INSIDE the container
+  # (PITFALLS Pitfall 2). Without it the GPU works but you cannot introspect.
+
+# ── Four networks (D-13) ──────────────────────────────────────────────────────
+# Names invented in Phase 1; later phases attach to existing networks, never
+# invent new ones. Phase 1 actually wires only `backend` (Ollama is the only
+# member); `edge`, `app`, `data` are declared empty so future phases inherit
+# the topology without touching this section.
+networks:
+  edge:
+    # Public-facing — Traefik publishes ports here (Phase 6).
+  app:
+    # Router ↔ webui (Phase 2 attaches router; Phase 6 attaches webui).
+  backend:
+    internal: true
+    # Router ↔ runtimes. internal: true blocks outbound internet from members,
+    # which is correct for Ollama, llama.cpp, vLLM (no telemetry, no exfil).
+  data:
+    internal: true
+    # Router/webui ↔ postgres/valkey (Phase 5 attaches Postgres; Phase 8 Valkey).
+
+services:
+
+  # ── GPU preflight (D-04, D-06, INFRA-01) ──────────────────────────────────
+  # One-shot service that runs bin/preflight-gpu.sh from inside a pinned NVIDIA
+  # CUDA base image. Exits 0 only if all preflight checks pass. Every GPU
+  # service `depends_on` it with `condition: service_completed_successfully`,
+  # so a failed preflight blocks the entire stack.
+  gpu-preflight:
+    image: nvidia/cuda:12.6.0-base-ubuntu24.04
+    container_name: ${COMPOSE_PROJECT_NAME:-local-llms}-gpu-preflight
+    <<: *gpu
+    # Install bash + python3 (the Ubuntu 24.04 base has them, but be defensive).
+    # The `bash` is needed because preflight-gpu.sh uses bash-only features.
+    # The `python3` is used by preflight-gpu.sh to write the state file as JSON.
+    # Both are present in nvidia/cuda:12.6.0-base-ubuntu24.04 — the entrypoint
+    # below assumes that. If a future CUDA base drops them, the entrypoint can
+    # `apt-get update && apt-get install -y --no-install-recommends bash python3`
+    # at the cost of network and time. For Phase 1 we rely on the base image.
+    entrypoint: ["/usr/bin/bash"]
+    command: ["/preflight/preflight-gpu.sh"]
+    volumes:
+      # Mount the host-side preflight script read-only.
+      - ./bin/preflight-gpu.sh:/preflight/preflight-gpu.sh:ro
+      # Mount the host data root so the state file lands at the canonical path
+      # (HOST_DATA_ROOT/.preflight-state.json — Phase 7 reads from here).
+      - ${HOST_DATA_ROOT:-/srv/local-llms}:${HOST_DATA_ROOT:-/srv/local-llms}
+    environment:
+      # Tell preflight-gpu.sh where the host data root is from inside the container.
+      # The script's `.env`-resolution logic also has a default fallback.
+      - HOST_DATA_ROOT=${HOST_DATA_ROOT:-/srv/local-llms}
+    # No restart policy — this is a one-shot. Compose's default is `no` which
+    # is what we want.
+    restart: "no"
+    networks:
+      - backend
+    # No host port published — preflight only needs GPU + filesystem.
+
+  # ── Ollama (D-11, BCKND-01) ───────────────────────────────────────────────
+  ollama:
+    image: ollama/ollama:0.5.7
+    container_name: ${COMPOSE_PROJECT_NAME:-local-llms}-ollama
+    <<: *gpu
+    restart: unless-stopped
+    # Phase 1 ships Ollama on the backend network only. The router (Phase 2)
+    # will attach to backend AND app to talk to Ollama. Phase 1 publishes a
+    # localhost-only host port so the smoke test (Plan 04) can hit the API
+    # without going through a router that doesn't exist yet. After Phase 2
+    # lands the router, this `ports:` block can be REMOVED — Ollama should
+    # then only be reachable via the backend network from the router. The
+    # localhost-only bind keeps the surface off the LAN even before the router.
+    ports:
+      - "127.0.0.1:11434:11434"
+    networks:
+      - backend
+    volumes:
+      # Bind-mount Ollama's blob store to the host two-volume layout.
+      # /root/.ollama is Ollama's $OLLAMA_MODELS / writable home inside the
+      # container. The host side lives under models-gguf/ollama (D-02 layout).
+      # This is the half of the two-store split that backs Ollama; future
+      # llama.cpp goes to models-gguf/gguf, vLLM to models-hf/.
+      - ${HOST_DATA_ROOT:-/srv/local-llms}/models-gguf/ollama:/root/.ollama
+    environment:
+      # Bind to all interfaces inside the container so the backend network can
+      # reach it. Default in the official image, but explicit > implicit.
+      - OLLAMA_HOST=0.0.0.0:11434
+      # Cap concurrent loaded models at 1 (16 GB VRAM constraint per
+      # CLAUDE.md). PITFALLS Pitfall 3 — VRAM thrashing prevention.
+      - OLLAMA_MAX_LOADED_MODELS=1
+      # Cap parallel requests per loaded model. KV cache scales with this;
+      # PITFALLS Pitfall 3 + Performance Traps row "OLLAMA_NUM_PARALLEL".
+      - OLLAMA_NUM_PARALLEL=2
+    healthcheck:
+      # /api/tags is Ollama's "I'm alive" endpoint — returns the loaded model
+      # list. Lightweight, doesn't touch GPU. Phase 1's Ollama image is
+      # ollama/ollama:0.5.7 which ships with curl, so this works.
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:11434/api/tags || exit 1"]
+      interval: 10s
+      timeout: 3s
+      start_period: 30s
+      retries: 5
+    depends_on:
+      # D-04: Compose-native preflight gating. If gpu-preflight exits non-zero,
+      # ollama does not start.
+      gpu-preflight:
+        condition: service_completed_successfully
