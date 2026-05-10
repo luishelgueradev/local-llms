@@ -11,7 +11,7 @@ Un endpoint HTTPS único que hable simultáneamente OpenAI y Anthropic, despache
 
 ## Phases
 
-- [ ] **Phase 1: GPU + Compose Foundation** — Reproducible GPU passthrough verified by preflight, with the volume layout, `x-gpu` anchor, and a single Ollama instance proving end-to-end GPU inference.
+- [x] **Phase 1: GPU + Compose Foundation** ✅ Complete 2026-05-10 — Reproducible GPU passthrough verified by preflight, with the volume layout, `x-gpu` anchor, and a single Ollama instance proving end-to-end GPU inference.
 - [ ] **Phase 2: MVP Vertical Slice — Router + Ollama + SSE** — One-backend Fastify router exposing only `POST /v1/chat/completions` (OpenAI passthrough) with bearer auth, `models.yaml`, SSE streaming, pino redaction, and client-disconnect→upstream-abort.
 - [ ] **Phase 3: Multi-Backend Dispatch — llama.cpp + Registry Hardening** — Second backend slotted in via `models.yaml`, with per-backend liveness/readiness probes, concurrency caps, `GET /v1/models`, VRAM budgets, and Compose profiles per backend.
 - [ ] **Phase 4: Anthropic Surface — `/v1/messages`, Tool Calling, Vision** — Native Anthropic protocol with typed streaming events, count_tokens, `system`/role-alternation/`anthropic-version` semantics, bidirectional tool translation, and vision in both protocols.
@@ -158,7 +158,7 @@ Plans:
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. GPU + Compose Foundation | 0/0 | Not started | - |
+| 1. GPU + Compose Foundation | 4/4 | Complete | 2026-05-10 |
 | 2. MVP Vertical Slice — Router + Ollama + SSE | 0/0 | Not started | - |
 | 3. Multi-Backend Dispatch — llama.cpp + Registry Hardening | 0/0 | Not started | - |
 | 4. Anthropic Surface — `/v1/messages`, Tool Calling, Vision | 0/0 | Not started | - |
