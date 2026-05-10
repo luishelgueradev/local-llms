@@ -282,6 +282,8 @@ fi
 echo ""
 echo "[smoke-test] Step 4: asserting model is resident in VRAM (via ollama /api/ps)..."
 
+GPU_RESIDENCY_DETAIL="not yet checked"
+
 PS_RESPONSE=$(curl -s --max-time 5 "${OLLAMA_URL}/api/ps" 2>/dev/null || true)
 
 if [[ -z "$PS_RESPONSE" ]]; then
@@ -319,6 +321,7 @@ print('NOT_LOADED')
           VRAM_MIB=$((VRAM_BYTES / 1024 / 1024))
           TOTAL_MIB_PS=$((TOTAL_BYTES / 1024 / 1024))
           pass "model '${MODEL}' resident in VRAM: ${VRAM_MIB} MiB / ${TOTAL_MIB_PS} MiB total (${RATIO}% on GPU)"
+          GPU_RESIDENCY_DETAIL="confirmed via /api/ps python parser (size_vram=${VRAM_MIB} MiB, ${RATIO}% on GPU)"
         fi
         ;;
       NOT_LOADED)
@@ -335,6 +338,7 @@ print('NOT_LOADED')
     # Fallback without python3: crude grep — proves the model name is in the response.
     if echo "$PS_RESPONSE" | grep -q "\"size_vram\":[[:space:]]*[1-9]"; then
       pass "model resident in VRAM (grep fallback — install python3 for accurate %)"
+      GPU_RESIDENCY_DETAIL="confirmed via /api/ps grep fallback (size_vram > 0; install python3 for accurate %)"
     else
       fail "size_vram appears to be zero in /api/ps response — running on CPU. Diagnose with: bash bin/preflight-gpu.sh"
     fi
@@ -381,7 +385,7 @@ echo "[smoke-test] =============================================================
 if [[ "$FAILURES" -eq 0 ]]; then
   echo "[smoke-test]  Model used          : ${MODEL}"
   echo "[smoke-test]  GPU listed          : yes (nvidia-smi in container)"
-  echo "[smoke-test]  GPU residency       : confirmed via /api/ps (size_vram > 0)"
+  echo "[smoke-test]  GPU residency       : ${GPU_RESIDENCY_DETAIL}"
   echo "[smoke-test]  VRAM in use         : ${USED_MIB:-?} MiB (threshold: ${VRAM_THRESHOLD_MB} MiB)"
   echo "[smoke-test] ================================================================"
   echo ""

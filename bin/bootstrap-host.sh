@@ -28,32 +28,27 @@ fi
 echo "[bootstrap] Using host data root: ${HOST_DATA_ROOT}"
 
 # ── Create the full v1 host tree idempotently (D-02) ─────────────────────────
-# Try without sudo first; fall back to sudo if the directory is not writable.
-_create_dirs() {
-  mkdir -p \
-    "${HOST_DATA_ROOT}/models-gguf/gguf" \
-    "${HOST_DATA_ROOT}/models-gguf/ollama" \
-    "${HOST_DATA_ROOT}/models-hf" \
-    "${HOST_DATA_ROOT}/postgres" \
-    "${HOST_DATA_ROOT}/valkey" \
-    "${HOST_DATA_ROOT}/traefik/acme" \
-    "${HOST_DATA_ROOT}/traefik/logs"
-}
+# Single source of truth for the v1 host directory list. If you add a new
+# service in a later phase, add its directory here ONLY — both the
+# unprivileged and the sudo branches consume this array.
+DIRS=(
+  "${HOST_DATA_ROOT}/models-gguf/gguf"
+  "${HOST_DATA_ROOT}/models-gguf/ollama"
+  "${HOST_DATA_ROOT}/models-hf"
+  "${HOST_DATA_ROOT}/postgres"
+  "${HOST_DATA_ROOT}/valkey"
+  "${HOST_DATA_ROOT}/traefik/acme"
+  "${HOST_DATA_ROOT}/traefik/logs"
+)
 
+# Try without sudo first; fall back to sudo if the directory is not writable.
 if mkdir -p "${HOST_DATA_ROOT}/.test_$$" 2>/dev/null; then
   rmdir "${HOST_DATA_ROOT}/.test_$$" 2>/dev/null || true
   echo "[bootstrap] Creating directory tree (no sudo needed)..."
-  _create_dirs
+  mkdir -p "${DIRS[@]}"
 else
   echo "[bootstrap] Creating directory tree (sudo required for ${HOST_DATA_ROOT})..."
-  sudo mkdir -p \
-    "${HOST_DATA_ROOT}/models-gguf/gguf" \
-    "${HOST_DATA_ROOT}/models-gguf/ollama" \
-    "${HOST_DATA_ROOT}/models-hf" \
-    "${HOST_DATA_ROOT}/postgres" \
-    "${HOST_DATA_ROOT}/valkey" \
-    "${HOST_DATA_ROOT}/traefik/acme" \
-    "${HOST_DATA_ROOT}/traefik/logs"
+  sudo mkdir -p "${DIRS[@]}"
 fi
 
 echo "[bootstrap] Host tree created:"
