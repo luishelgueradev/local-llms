@@ -374,21 +374,30 @@ fi
 
 # ─── Capture driver state for state file ─────────────────────────────────────
 
+# Capture driver state. nvidia-smi works in-container too (it's the whole
+# point of the container_nvidia_smi check), so capture host_driver_version
+# and cuda_version unconditionally — they describe the underlying GPU and
+# match what the host run reports. Only nvidia-ctk is host-only; mark its
+# in-container value as null so the field is honest.
+#
+# Why this matters (CR-01): every `docker compose up` runs gpu-preflight
+# in-container and overwrites this state file. If we wrote "in-container"
+# placeholders here, Phase 7's reader (which picks the vLLM image tag from
+# host_driver_version) would see "in-container" instead of "595.97" after
+# the first compose run, picking the wrong CUDA tag.
+HOST_DRIVER_VERSION=$(capture_host_driver_version)
+HOST_DRIVER_VERSION="${HOST_DRIVER_VERSION:-null}"
+CUDA_VERSION=$(capture_cuda_version)
+CUDA_VERSION="${CUDA_VERSION:-null}"
+HOST_KERNEL=$(uname -r 2>/dev/null || echo "unknown")
+WSL2=$(capture_wsl2)
 if [ "$IN_CONTAINER" = "true" ]; then
-  HOST_DRIVER_VERSION="in-container"
-  CUDA_VERSION="in-container"
-  NVIDIA_CTK_VERSION="in-container"
-  HOST_KERNEL=$(uname -r 2>/dev/null || echo "unknown")
-  WSL2=$(capture_wsl2)
+  # nvidia-ctk is a host-side toolkit binary, not present in the base CUDA
+  # image. In-container, this field is genuinely unknown.
+  NVIDIA_CTK_VERSION="null"
 else
-  HOST_DRIVER_VERSION=$(capture_host_driver_version)
-  HOST_DRIVER_VERSION="${HOST_DRIVER_VERSION:-null}"
-  CUDA_VERSION=$(capture_cuda_version)
-  CUDA_VERSION="${CUDA_VERSION:-null}"
   NVIDIA_CTK_VERSION=$(capture_nvidia_ctk_version)
   NVIDIA_CTK_VERSION="${NVIDIA_CTK_VERSION:-null}"
-  HOST_KERNEL=$(uname -r 2>/dev/null || echo "unknown")
-  WSL2=$(capture_wsl2)
 fi
 
 LAST_RUN_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
