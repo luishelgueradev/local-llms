@@ -183,16 +183,22 @@ echo ""
 echo "[smoke-test] Step 1: issuing POST ${OLLAMA_URL}/api/generate ..."
 echo "[smoke-test]          model=${MODEL}  stream=false  keep_alive=${KEEP_ALIVE}"
 
-# Build JSON safely via python3 — never hand-build JSON in shell
-REQUEST_BODY=$(python3 -c "
-import json
+# Build JSON safely — pass shell vars to python via env, never via string
+# interpolation into source. Single-quoted '-' tells bash NOT to expand
+# inside the script body, so a $ or quote in $MODEL/$PROMPT can't break
+# Python parsing or inject syntax. Same pattern as Step 4's /api/ps probe.
+# Use _SMOKE_-prefixed env names to avoid clashing with the script's
+# `readonly` PROMPT/KEEP_ALIVE/MODEL globals (bash treats `FOO=bar cmd`
+# as a per-process assignment, which fails on `readonly` names).
+REQUEST_BODY=$(_SMOKE_MODEL="$MODEL" _SMOKE_PROMPT="$PROMPT" _SMOKE_KEEP_ALIVE="$KEEP_ALIVE" python3 -c '
+import json, os
 print(json.dumps({
-    'model': '${MODEL}',
-    'prompt': '${PROMPT}',
-    'stream': False,
-    'keep_alive': '${KEEP_ALIVE}'
+    "model": os.environ.get("_SMOKE_MODEL", ""),
+    "prompt": os.environ.get("_SMOKE_PROMPT", ""),
+    "stream": False,
+    "keep_alive": os.environ.get("_SMOKE_KEEP_ALIVE", "5m"),
 }))
-")
+')
 
 GENERATE_RESPONSE=$(curl -fsS \
   -H 'Content-Type: application/json' \
@@ -202,17 +208,22 @@ GENERATE_RESPONSE=$(curl -fsS \
 if [[ -z "$GENERATE_RESPONSE" ]]; then
   fail "POST /api/generate returned no response. Check \`docker compose logs ollama\`."
 else
-  # Extract and validate the response field
-  RESPONSE_TEXT=$(python3 - <<PYEOF
-import json, sys
+  # Parse the response field. Pass GENERATE_RESPONSE via env var so a model
+  # output containing triple-quotes, backslashes, or shell metacharacters
+  # cannot escape the python source — addresses CR-02. The previous heredoc
+  # form `<<PYEOF ... """${GENERATE_RESPONSE}""" ... PYEOF` was a real
+  # injection surface even for benign content (any `"""` in the response
+  # body would terminate the python triple-string early).
+  RESPONSE_TEXT=$(GENERATE_RESPONSE="$GENERATE_RESPONSE" python3 -c '
+import json, os, sys
+raw = os.environ.get("GENERATE_RESPONSE", "")
 try:
-    data = json.loads("""${GENERATE_RESPONSE}""")
+    data = json.loads(raw)
     text = data.get("response", "")
     print(text.strip())
-except Exception as e:
+except Exception:
     print("")
-PYEOF
-  )
+')
 
   if [[ -z "$RESPONSE_TEXT" ]]; then
     fail "POST /api/generate returned JSON but 'response' field is empty or missing. Raw: ${GENERATE_RESPONSE}"
