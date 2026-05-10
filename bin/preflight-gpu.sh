@@ -95,18 +95,18 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 
 # ─── Read HOST_DATA_ROOT from .env, default to /srv/local-llms ───────────────
-# Priority: .env file > environment variable > compiled-in default.
-# In a real deployment, .env is always present (set by bin/bootstrap-host.sh).
+# Priority: caller environment > .env file > compiled-in default.
+# In a real deployment, .env is always present (set by bin/bootstrap-host.sh),
+# but an explicit env var (e.g. from docker-compose env_file or a one-off
+# `HOST_DATA_ROOT=... bash bin/preflight-gpu.sh` override) always wins.
 
-HOST_DATA_ROOT="/srv/local-llms"
+# Caller environment wins if set; otherwise use the compiled-in default.
+HOST_DATA_ROOT="${HOST_DATA_ROOT:-/srv/local-llms}"
 
-# Honor HOST_DATA_ROOT from the calling environment as a base (Compose override)
-if [ -n "${HOST_DATA_ROOT:-}" ]; then
-  : # keep the caller's value
-fi
-
-# .env file overrides the environment (it is the canonical deployment config)
-if [ -f "${REPO_ROOT}/.env" ]; then
+# .env file is consulted ONLY when the caller did not override.
+# Heuristic: if HOST_DATA_ROOT still equals the compiled-in default, the caller
+# did not export an override, so .env may supply the deployment value.
+if [ "${HOST_DATA_ROOT}" = "/srv/local-llms" ] && [ -f "${REPO_ROOT}/.env" ]; then
   # Extract HOST_DATA_ROOT ignoring comments and blank lines
   _val=$(grep -E '^HOST_DATA_ROOT=' "${REPO_ROOT}/.env" | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'")
   if [ -n "$_val" ]; then
@@ -235,10 +235,7 @@ capture_host_driver_version() {
 
 capture_cuda_version() {
   if command -v nvidia-smi >/dev/null 2>&1; then
-    # Try structured query first
-    local v
-    v=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1)
-    # Extract CUDA Version from the table header section
+    # Extract CUDA Version from the nvidia-smi table header section
     nvidia-smi 2>/dev/null | grep -oE 'CUDA Version: [0-9]+\.[0-9]+' | head -1 | awk '{print $3}'
   fi
 }
@@ -331,6 +328,10 @@ if [ "$IN_CONTAINER" = "true" ]; then
   # In-container: only the GPU device node + container nvidia-smi are meaningful.
   run_check "gpu_device"            check_gpu_device           functional
   run_check "host_nvidia_smi"       check_host_nvidia_smi      functional   true   # skipped
+  # NOTE: in-container, `container_nvidia_smi` reuses check_host_nvidia_smi
+  # because nvidia-smi runs directly inside the container (no nested docker
+  # run is needed or possible). The check NAME documents the contract; the
+  # FUNCTION just runs `nvidia-smi` against whatever environment hosts it.
   run_check "container_nvidia_smi"  check_host_nvidia_smi      functional          # in-container, use nvidia-smi directly
   run_check "nvidia_ctk"            check_nvidia_ctk           diagnostic   true   # skipped
   run_check "daemon_json"           check_daemon_json          diagnostic   true   # skipped
@@ -563,8 +564,12 @@ PYEOF
       "${KINDS_LINES}" \
       "${PASSED}" > "${TMPFILE}"
 
-    mv "${TMPFILE}" "${STATE_FILE}"
-    log "State written to ${STATE_FILE}"
+    if mv "${TMPFILE}" "${STATE_FILE}" 2>/dev/null; then
+      log "State written to ${STATE_FILE}"
+    else
+      log_always "WARNING: failed to move ${TMPFILE} to ${STATE_FILE}"
+      rm -f "${TMPFILE}"
+    fi
   fi
 fi
 

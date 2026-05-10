@@ -5,7 +5,10 @@
 .env.local
 .env.*.local
 
-# Phase 1 preflight state — generated, not committed.
+# Phase 1 preflight state — the canonical write target lives OUTSIDE the repo
+# at ${HOST_DATA_ROOT}/.preflight-state.json (default /srv/local-llms/...),
+# so this entry is defensive only — it protects against an accidental commit
+# if a future contributor ever points HOST_DATA_ROOT at the repo root.
 .preflight-state.json
 
 # Node (Phase 2 router workspace; pre-emptive entries to avoid amending later).

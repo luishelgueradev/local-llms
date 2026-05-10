@@ -1,4 +1,9 @@
 #!/bin/sh
+# NOTE: `/bin/sh` is `dash` on the ollama/ollama Ubuntu base image (and on
+# every other glibc Debian/Ubuntu image we target). This script intentionally
+# avoids bash-isms. If a future phase reuses this wrapper inside an Alpine
+# image, `/bin/sh` becomes busybox `ash` — most constructs still work but
+# `ldconfig` may not exist (the script already tolerates that on line 63).
 # bin/gpu-init-libcuda.sh — libcuda.so.1 projection workaround for
 # Docker Desktop on Windows + WSL2.
 #
@@ -51,7 +56,12 @@ if [ -z "$WSL_LIBCUDA" ]; then
 fi
 
 # 3) Project libcuda into a standard linker path.
-TARGET_DIR=/usr/lib/x86_64-linux-gnu
+# Derive the multiarch lib dir from `uname -m` so this wrapper works on both
+# x86_64 (current WSL2 hosts) and aarch64 (future arm64 hosts). If the
+# derived path is missing, fall back to /usr/lib/x86_64-linux-gnu — the
+# historical default for the current image set.
+TARGET_DIR="/usr/lib/$(uname -m)-linux-gnu"
+[ -d "$TARGET_DIR" ] || TARGET_DIR="/usr/lib/x86_64-linux-gnu"
 ln -sf "$WSL_LIBCUDA" "$TARGET_DIR/libcuda.so.1"
 ln -sf "$WSL_LIBCUDA" "$TARGET_DIR/libcuda.so"
 
