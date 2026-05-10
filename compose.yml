@@ -90,6 +90,13 @@ services:
     container_name: ${COMPOSE_PROJECT_NAME:-local-llms}-ollama
     <<: *gpu
     restart: unless-stopped
+    # GPU init wrapper (libcuda symlink for Docker Desktop / WSL2 — see
+    # bin/gpu-init-libcuda.sh for the why). On native Linux with NCT
+    # installed, the wrapper detects libcuda is already discoverable and
+    # immediately execs the original entrypoint. On WSL2 without NCT, it
+    # creates the libcuda.so.1 symlink before exec'ing.
+    entrypoint: ["/usr/local/bin/gpu-init-libcuda.sh"]
+    command: ["/bin/ollama", "serve"]
     # Ollama sits on TWO networks:
     #   - backend: the data plane the router (Phase 2) will use. Stays
     #     `internal: true` so router→ollama is the only inbound path.
@@ -115,6 +122,16 @@ services:
       # This is the half of the two-store split that backs Ollama; future
       # llama.cpp goes to models-gguf/gguf, vLLM to models-hf/.
       - ${HOST_DATA_ROOT:-/srv/local-llms}/models-gguf/ollama:/root/.ollama
+      # Mount the GPU init wrapper read-only at the entrypoint path.
+      # Reused by future GPU services (vLLM, llama.cpp) in later phases.
+      - ./bin/gpu-init-libcuda.sh:/usr/local/bin/gpu-init-libcuda.sh:ro
+      # Mount the host's WSL2 driver directory (where libcuda.so.1.1 lives
+      # on Docker Desktop). Read-only. On native Linux this path doesn't
+      # exist on the host — Compose silently skips missing bind sources
+      # only if the source is a tmpfs/volume; for an absolute host path,
+      # it would fail. So we leave this UNMOUNTED in the YAML and rely on
+      # Docker Desktop's automatic WSL2 driver projection (the wrapper
+      # finds it via /usr/lib/wsl which Docker Desktop already projects).
     environment:
       # Bind to all interfaces inside the container so the backend network can
       # reach it. Default in the official image, but explicit > implicit.
