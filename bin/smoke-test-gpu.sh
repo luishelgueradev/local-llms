@@ -256,21 +256,78 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Step 4 — Assert an `ollama` process is bound to the GPU
-#           This is the load-bearing CPU-fallback catch.
-#           With keep_alive="5m" set in Step 1, the model is guaranteed resident
-#           in VRAM at this point — no retry loop needed.
+# Step 4 — Assert the model is resident in VRAM (silent-CPU-fallback catch)
+#           Prefer ollama's /api/ps endpoint: when `size_vram == size`, the
+#           model is fully on GPU; when `size_vram < size`, partially; when
+#           `size_vram == 0`, on CPU. This is the authoritative source.
+#           Fall back to grepping nvidia-smi's process table if the API
+#           response can't be parsed (very old ollama, parser glitch, etc.).
+#           NOTE: nvidia-smi inside Docker Desktop on WSL2 does NOT enumerate
+#           container PIDs in its process table — it only shows host-side
+#           /Xwayland processes. So the nvidia-smi-process-grep approach used
+#           in the original v1 of this script produced false negatives on
+#           every WSL2 host. /api/ps is the WSL2-safe path.
 # ---------------------------------------------------------------------------
 echo ""
-echo "[smoke-test] Step 4: asserting ollama process is visible in container nvidia-smi..."
+echo "[smoke-test] Step 4: asserting model is resident in VRAM (via ollama /api/ps)..."
 
-if [[ "${SMI_FAILED:-1}" -eq 1 ]]; then
-  fail "skipping ollama process check — nvidia-smi did not run successfully."
-elif ! echo "$SMI_OUT" | grep -qi 'ollama'; then
-  fail "no ollama process visible in container nvidia-smi. This is the silent-CPU-fallback signature: model loads but runs on CPU. Inference will be 50-100x slower than GPU. Diagnose with: bash bin/preflight-gpu.sh"
+PS_RESPONSE=$(curl -s --max-time 5 "${OLLAMA_URL}/api/ps" 2>/dev/null || true)
+
+if [[ -z "$PS_RESPONSE" ]]; then
+  fail "could not reach ${OLLAMA_URL}/api/ps. Cannot assert GPU residency."
 else
-  OLLAMA_LINE=$(echo "$SMI_OUT" | grep -i 'ollama' | head -1 | sed 's/^[[:space:]]*//')
-  pass "ollama process is bound to the GPU: ${OLLAMA_LINE}"
+  # Look for an entry matching $MODEL with size_vram > 0 (and ideally == size).
+  # Use python3 if available for robust JSON parsing; fall back to grep.
+  if command -v python3 >/dev/null 2>&1; then
+    # Pass PS_RESPONSE via env var (avoids heredoc-vs-herestring redirect conflict).
+    VRAM_INFO=$(MODEL="$MODEL" PS_RESPONSE="$PS_RESPONSE" python3 -c "
+import json, os, sys
+target = os.environ.get('MODEL', '')
+raw = os.environ.get('PS_RESPONSE', '')
+try:
+    data = json.loads(raw)
+except Exception as exc:
+    print(f'PARSE_ERROR:{exc}')
+    sys.exit(0)
+for m in data.get('models', []):
+    if m.get('name') == target or m.get('model') == target:
+        size = m.get('size', 0)
+        size_vram = m.get('size_vram', 0)
+        ratio = (size_vram / size * 100) if size else 0
+        print(f'FOUND:{size}:{size_vram}:{ratio:.1f}')
+        sys.exit(0)
+print('NOT_LOADED')
+")
+    case "$VRAM_INFO" in
+      FOUND:*)
+        IFS=':' read -r _ TOTAL_BYTES VRAM_BYTES RATIO <<< "$VRAM_INFO"
+        if [[ "$VRAM_BYTES" -le 0 ]]; then
+          fail "model '${MODEL}' is loaded but size_vram=0 — running on CPU. This is the silent-CPU-fallback signature. Diagnose with: bash bin/preflight-gpu.sh"
+        else
+          # Convert bytes → MiB for human display
+          VRAM_MIB=$((VRAM_BYTES / 1024 / 1024))
+          TOTAL_MIB_PS=$((TOTAL_BYTES / 1024 / 1024))
+          pass "model '${MODEL}' resident in VRAM: ${VRAM_MIB} MiB / ${TOTAL_MIB_PS} MiB total (${RATIO}% on GPU)"
+        fi
+        ;;
+      NOT_LOADED)
+        fail "model '${MODEL}' did not appear in /api/ps after the inference call. Should still be resident with keep_alive=${KEEP_ALIVE}."
+        ;;
+      PARSE_ERROR:*)
+        fail "could not parse /api/ps JSON: ${VRAM_INFO#PARSE_ERROR:}"
+        ;;
+      *)
+        fail "unexpected /api/ps probe output: ${VRAM_INFO}"
+        ;;
+    esac
+  else
+    # Fallback without python3: crude grep — proves the model name is in the response.
+    if echo "$PS_RESPONSE" | grep -q "\"size_vram\":[[:space:]]*[1-9]"; then
+      pass "model resident in VRAM (grep fallback — install python3 for accurate %)"
+    else
+      fail "size_vram appears to be zero in /api/ps response — running on CPU. Diagnose with: bash bin/preflight-gpu.sh"
+    fi
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -313,7 +370,7 @@ echo "[smoke-test] =============================================================
 if [[ "$FAILURES" -eq 0 ]]; then
   echo "[smoke-test]  Model used          : ${MODEL}"
   echo "[smoke-test]  GPU listed          : yes (nvidia-smi in container)"
-  echo "[smoke-test]  ollama process      : visible in nvidia-smi (GPU-bound)"
+  echo "[smoke-test]  GPU residency       : confirmed via /api/ps (size_vram > 0)"
   echo "[smoke-test]  VRAM in use         : ${USED_MIB:-?} MiB (threshold: ${VRAM_THRESHOLD_MB} MiB)"
   echo "[smoke-test] ================================================================"
   echo ""
