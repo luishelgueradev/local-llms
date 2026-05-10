@@ -34,7 +34,12 @@ Un endpoint HTTPS único que hable simultáneamente OpenAI y Anthropic, despache
   3. The volume layout exists on disk: `models-gguf/` (with `gguf/` and `ollama/` subdirs) and `models-hf/` as separate top-level volumes — never a single shared `/models` tree.
   4. A single Ollama service comes up cleanly with one curated small model pulled, and `nvidia-smi` inside the Ollama container shows the GPU plus an Ollama process consuming VRAM during inference (no silent CPU fallback).
   5. Compose service ordering uses `depends_on: condition: service_healthy` so dependents wait on real readiness, not just process start.
-**Plans:** TBD
+**Plans:** 4 plans
+Plans:
+- [ ] 01-01-PLAN.md — Host bootstrap + volume tree + .env contract (D-01, D-02, D-03, D-14)
+- [ ] 01-02-PLAN.md — GPU preflight script + state file schema (D-05, D-07, INFRA-01)
+- [ ] 01-03-PLAN.md — compose.yml: x-gpu anchor, four networks, gpu-preflight + Ollama (D-04, D-06, D-11, D-12, D-13, INFRA-02..05, BCKND-01)
+- [ ] 01-04-PLAN.md — Smoke test + README runbook + curated model pull (D-08, D-09, D-10)
 
 ### Phase 2: MVP Vertical Slice — Router + Ollama + SSE
 **Goal:** Smallest end-to-end thing that proves the architecture: one agent curl-streams tokens from a real local model through the router, with auth and abort-propagation correct from day one. No platform services; no Anthropic; no other backends.
