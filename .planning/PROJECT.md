@@ -72,15 +72,20 @@ Un endpoint único, estable y multi-protocolo para que los agentes del usuario c
 
 - **Hardware target**: GPU NVIDIA con 16 GB de VRAM (tier RTX 4080 / 4060 Ti 16 GB). Cómodo para 13B–14B en Q4–Q5 y 7B–8B en Q8.
 - **Sistema operativo**: Linux (WSL2 detectado en el entorno actual). Docker Compose v2.
+- **Hardware verificado en Phase 1**: NVIDIA RTX 5060 Ti, 16 GB VRAM, driver 595.97, Docker Desktop on Windows + WSL2 (no NCT en el distro WSL). El stack Walking Skeleton corre end-to-end con `llama3.2:3b-instruct-q4_K_M` consumiendo ~3.9 GiB VRAM en GPU.
 - **Caso de uso principal**: clientes API (agentes, scripts, automatizaciones tipo n8n) consumiendo el router.
 - **Caso de uso secundario**: research / experimentación — comparar y probar modelos manualmente.
 - **Visión a largo plazo**: capa de fine-tuning como milestone separado, una vez el router esté estable y el usuario sepa qué modelos quiere afinar.
 - **Inspiración mental**: "OpenRouter self-hosted" / "local AI gateway" para uso personal.
 
+## Phase Progress
+
+- **Phase 1 — GPU + Compose Foundation:** ✅ Complete (2026-05-10). Walking Skeleton runnable end-to-end on a real GPU host. Five inline fixes applied during verification (egress, healthcheck, libcuda wrapper, smoke-test WSL2 adaptation, in-container driver capture). Bin scripts and `compose.yml` form the foundation Phase 2+ will build on.
+
 ## Constraints
 
 - **Hardware**: VRAM tope 16 GB — cualquier modelo que no quepa cuantizado va por Ollama Cloud
-- **Tech stack — runtime de inferencia**: NVIDIA Container Toolkit obligatorio; driver NVIDIA propietario en host; Compose v2
+- **Tech stack — runtime de inferencia**: NVIDIA Container Toolkit obligatorio en hosts Linux nativos; driver NVIDIA propietario en host; Compose v2. En Docker Desktop on Windows + WSL2, el toolkit no es necesario en el distro WSL — el wrapper `bin/gpu-init-libcuda.sh` (Phase 1) crea el symlink `libcuda.so.1` que falta en esa variante. Decidido tras la verificación de Phase 1.
 - **Tech stack — router**: Node + Fastify + TypeScript (decisión cerrada)
 - **API contract**: compatibilidad simultánea con OpenAI y Anthropic (no es opcional)
 - **Auth**: bearer token único en `.env`; rotación manual aceptable
@@ -120,4 +125,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-05-09 after initialization*
+*Last updated: 2026-05-10 after Phase 1 (GPU + Compose Foundation) completion.*
