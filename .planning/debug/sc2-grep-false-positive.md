@@ -1,9 +1,10 @@
 ---
-status: investigating
+status: diagnosed
 trigger: "Phase 1 SC2 acceptance grep returns 3 (not 0) on compose.yml — false positive from anti-pattern strings inside header comments"
 created: 2026-05-11T18:30:00Z
-updated: 2026-05-11T21:30:00Z
+updated: 2026-05-11T21:45:00Z
 reopened: 2026-05-11T21:30:00Z  # re-opened to validate Plan 01-06's proposed fix before /gsd-execute-phase, mirroring the preflight session's validation pass
+validated: 2026-05-11T21:45:00Z  # Plan 01-06 validated — Q1/Q3 hold, Q2 partial (01-UAT.md line 101 ref confirmed stale; executor must use content-anchored locates for that file)
 ---
 
 ## Current Focus
