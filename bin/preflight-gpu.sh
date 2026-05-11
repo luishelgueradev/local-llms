@@ -17,7 +17,7 @@
 #
 # Host-mode check matrix:
 #   gpu_device           functional   /dev/dxg or /dev/nvidia* present
-#   host_nvidia_smi      functional   nvidia-smi works on host
+#   host_nvidia_smi      diagnostic   host nvidia-smi on PATH (advisory; absent on Docker Desktop + WSL2)
 #   container_nvidia_smi functional   nvidia-smi works inside a container — authoritative
 #   nvidia_ctk           diagnostic   nvidia-ctk binary present (advisory)
 #   daemon_json          diagnostic   /etc/docker/daemon.json has nvidia runtime (advisory)
@@ -43,6 +43,16 @@
 # NOTE: do NOT use `set -e` — we want to run all checks even if early ones fail,
 # so the state file records the full picture. Track failures via a counter.
 set -uo pipefail
+
+# ─── Tmp file cleanup trap ───────────────────────────────────────────────────
+# The state-file write below uses a tmp + atomic-rename pattern. Without this
+# trap, a SIGINT during the rename (e.g. user Ctrl-Cs while an old root-owned
+# state file blocks the move) leaves `${TMPFILE}` orphaned on disk. The trap
+# ensures the tmp file is removed on any exit path — normal, signal, or error.
+# Declared at script scope (initialised empty) so `set -u` doesn't fault when
+# the trap fires before line ~461 assigns ${TMPFILE}.
+TMPFILE=""
+trap '[ -n "${TMPFILE:-}" ] && rm -f "${TMPFILE}" 2>/dev/null; exit' EXIT INT TERM HUP
 
 # ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -336,14 +346,18 @@ if [ "$IN_CONTAINER" = "true" ]; then
   run_check "nvidia_ctk"            check_nvidia_ctk           diagnostic   true   # skipped
   run_check "daemon_json"           check_daemon_json          diagnostic   true   # skipped
 else
-  # Host: 3 functional checks (gate exit) + 2 diagnostic checks (advisory).
-  # The diagnostic pair is intentionally non-gating: Docker Desktop on
-  # Windows + WSL2 has neither nvidia-ctk nor /etc/docker/daemon.json yet
-  # exposes the GPU into containers correctly. The functional check
-  # `container_nvidia_smi` is the authoritative test — if it passes, GPU
-  # passthrough works regardless of how the toolkit got configured.
+  # Host: 2 functional checks (gate exit) + 3 diagnostic checks (advisory).
+  # The diagnostic triplet is intentionally non-gating on WSL2 + Docker
+  # Desktop: the Windows-side nvidia-smi is reachable via projected paths
+  # (/usr/lib/wsl/lib/nvidia-smi, /mnt/c/Windows/System32/nvidia-smi.exe)
+  # but not on the WSL distro's PATH, so `command -v nvidia-smi` reports
+  # absent even though GPU passthrough is functional. The same is true of
+  # nvidia-ctk and /etc/docker/daemon.json on this host class. The
+  # functional check `container_nvidia_smi` is the authoritative test —
+  # if it passes, GPU passthrough works regardless of how the toolkit
+  # got configured.
   run_check "gpu_device"            check_gpu_device           functional
-  run_check "host_nvidia_smi"       check_host_nvidia_smi      functional
+  run_check "host_nvidia_smi"       check_host_nvidia_smi      diagnostic
   run_check "container_nvidia_smi"  check_container_nvidia_smi functional
   run_check "nvidia_ctk"            check_nvidia_ctk           diagnostic
   run_check "daemon_json"           check_daemon_json          diagnostic
@@ -448,7 +462,16 @@ build_check_kinds_json() {
   echo "$json"
 }
 
-# ─── Write state file atomically (temp + mv) (D-07) ─────────────────────────
+# ─── Write state file atomically (D-07) ─────────────────────────────────────
+# Python path: writes JSON to a tmp file in the destination directory, then
+# uses os.replace() — Linux rename(2) — to atomically swap it into place.
+# rename(2) succeeds with directory-write permission alone, irrespective of
+# the existing destination file's owner. This survives the cross-mode case
+# where the in-container `gpu-preflight` (uid 0) wrote the previous state
+# file and a host run as a non-root user is now overwriting it. The trap
+# above guards `${TMPFILE}` on any signal-driven abort.
+# Printf fallback (no python3): uses `install -T` for the same atomic-replace
+# semantics. `install` calls rename(2) too and is in coreutils.
 
 # Ensure the directory exists (bootstrap-host.sh creates it, but be defensive)
 if ! mkdir -p "${HOST_DATA_ROOT}" 2>/dev/null; then
