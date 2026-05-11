@@ -6,7 +6,7 @@
 # Compose `profiles:` per-backend lands in Phase 3 (D-11).
 #
 # All services use:
-#   - pinned image tags (no :latest — INFRA-04)
+#   - pinned image tags (never use the floating "latest" form — INFRA-04)
 #   - the x-gpu YAML anchor for GPU reservation (INFRA-02)
 #   - the four declared networks (D-13)
 #   - depends_on: { gpu-preflight: { condition: service_completed_successfully } }
@@ -15,8 +15,8 @@
 name: ${COMPOSE_PROJECT_NAME:-local-llms}
 
 # ── GPU reservation anchor — referenced by every GPU service ──────────────────
-# DO NOT use `runtime: nvidia` (legacy form, on the standing rejection list).
-# DO NOT use `gpus: all` shorthand (Compose-version-fragile).
+# DO NOT use the legacy "runtime nvidia" Compose directive (on the standing rejection list).
+# DO NOT use the "gpus all" shorthand (Compose-version-fragile).
 # This block is the canonical form per Docker Compose v2 docs and PITFALLS Pitfall 2.
 x-gpu: &gpu
   deploy:
