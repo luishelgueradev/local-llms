@@ -496,6 +496,7 @@ else
     _PREFLIGHT_CHECK_KINDS_JSON="${CHECK_KINDS_JSON}" \
     _PREFLIGHT_PASSED="${PASSED}" \
     _PREFLIGHT_TMPFILE="${TMPFILE}" \
+    _PREFLIGHT_STATE_FILE="${STATE_FILE}" \
     python3 - <<'PYEOF'
 import json, os, sys
 
@@ -520,18 +521,42 @@ state = {
 }
 
 tmpfile = os.environ.get("_PREFLIGHT_TMPFILE", "")
+state_file = os.environ.get("_PREFLIGHT_STATE_FILE", "")
+if not tmpfile or not state_file:
+    print("preflight writer: missing _PREFLIGHT_TMPFILE or _PREFLIGHT_STATE_FILE", file=sys.stderr)
+    sys.exit(2)
+
+# Write JSON to tmp file in the same directory as state_file (already true by
+# construction: TMPFILE = STATE_FILE + ".tmp.$$").
 with open(tmpfile, "w") as f:
     json.dump(state, f, indent=2)
     f.write("\n")
+
+# Atomic-replace using rename(2). Succeeds with directory-write permission
+# alone — does NOT require write permission on the destination file itself.
+# This is the fix for the `mv: replace ...` interactive prompt: GNU `mv`
+# falls back to interactive confirmation when stdin is a TTY and the calling
+# user can't unlink the destination. os.replace bypasses that prompt path
+# entirely — it's a direct rename(2) syscall.
+try:
+    os.replace(tmpfile, state_file)
+except OSError as e:
+    print(f"preflight writer: os.replace failed: {e}", file=sys.stderr)
+    # Clean up the tmp file ourselves; the bash-side trap is also a backstop.
+    try:
+        os.unlink(tmpfile)
+    except OSError:
+        pass
+    sys.exit(3)
 
 sys.exit(0)
 PYEOF
     PY_EXIT=$?
     if [ "$PY_EXIT" -eq 0 ]; then
-      mv "${TMPFILE}" "${STATE_FILE}"
       log "State written to ${STATE_FILE}"
     else
       log_always "WARNING: python3 failed to write state file (exit ${PY_EXIT})"
+      # The trap will also clean ${TMPFILE} on EXIT, but be explicit here too.
       rm -f "${TMPFILE}"
     fi
   else
@@ -587,13 +612,26 @@ PYEOF
       "${KINDS_LINES}" \
       "${PASSED}" > "${TMPFILE}"
 
-    if mv "${TMPFILE}" "${STATE_FILE}" 2>/dev/null; then
+    if install -T -m 0644 "${TMPFILE}" "${STATE_FILE}" 2>/dev/null; then
+      # install -T copies+renames atomically and sets the target's mode to 0644.
+      # Like os.replace, it uses rename(2) under the hood and succeeds with
+      # directory-write permission alone.
+      rm -f "${TMPFILE}"
       log "State written to ${STATE_FILE}"
     else
-      log_always "WARNING: failed to move ${TMPFILE} to ${STATE_FILE}"
+      log_always "WARNING: install -T failed to write ${STATE_FILE}"
       rm -f "${TMPFILE}"
     fi
   fi
+fi
+
+# ─── Sanity: confirm the state file is host-readable by the invoking user ────
+# Catches the rare case where the rename succeeded but the file is owned by
+# someone else and not readable. (Should not happen after the os.replace fix,
+# but a 4-line guard is cheap.)
+if [ -f "${STATE_FILE}" ] && [ ! -r "${STATE_FILE}" ]; then
+  log_always "WARNING: state file ${STATE_FILE} exists but is not readable by user $(id -un)."
+  log_always "         Run: sudo chown $(id -un):$(id -gn) \"${STATE_FILE}\""
 fi
 
 # ─── Final summary ───────────────────────────────────────────────────────────
