@@ -36,7 +36,7 @@ reported: |
 severity: blocker
 
 ### 3. compose.yml shape (SC2)
-expected: `docker compose config` shows every GPU service references the same `x-gpu` YAML anchor (driver: nvidia, count: all, capabilities include `gpu`). No service uses the legacy `runtime: nvidia` form. No service uses `:latest`. Verify with: `grep -cE '(:latest|runtime: nvidia|gpus: all)' compose.yml` returns 0.
+expected: `docker compose config` shows every GPU service references the same `x-gpu` YAML anchor (driver: nvidia, count: all, capabilities include `gpu`). No service uses the legacy `runtime: nvidia` form. No service uses `:latest`. Verify with: `grep -vE '^[[:space:]]*#' compose.yml | grep -cE '(:latest|runtime: nvidia|gpus: all)'` returns 0.
 result: issue
 reported: |
   `grep -cE '(:latest|runtime: nvidia|gpus: all)' compose.yml` returns 3, not 0. All 3 matches are header comments documenting the anti-patterns (lines 9, 18, 19) — substantively the config is clean: `docker compose config` shows pinned images (`nvidia/cuda:12.6.0-base-ubuntu24.04`, `ollama/ollama:0.5.7`), modern `deploy.resources.reservations.devices` syntax, the `x-gpu` anchor merged into both `gpu-preflight` and `ollama` services. Same false-positive pattern Phase 1 already fixed twice in scripts.
