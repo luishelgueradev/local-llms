@@ -89,7 +89,21 @@ export function registerChatCompletionsRoute(
         controller.abort(new Error('client-disconnect'));
         stopHeartbeat?.();  // no-op until heartbeat starts in the stream branch
       };
-      req.raw.socket?.once('close', onClose);
+      // WR-05 fix: silent optional-chain previously masked the no-socket case
+      // (app.inject() under vitest; future HTTP/2 where IncomingMessage.socket
+      // detaches). Without a `socket`, the 'close' listener never registers and
+      // SC3 (client-disconnect → abort propagation) silently degrades to "router
+      // holds the stream open until upstream completes". Log a warn when this
+      // happens so the degradation is observable in production logs.
+      const sock = req.raw.socket;
+      if (sock) {
+        sock.once('close', onClose);
+      } else {
+        req.log.warn(
+          { url: req.url },
+          'stream: req.raw.socket undefined — abort propagation may not fire (HTTP/2 or inject?)',
+        );
+      }
 
       try {
         if (body.stream === true) {
