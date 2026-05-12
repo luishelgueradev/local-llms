@@ -1,12 +1,24 @@
 import { describe, expect, it } from 'vitest';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { makeBearerHook } from '../../src/auth/bearer.js';
+import { NO_ENVELOPE, mapToHttpStatus, toOpenAIErrorEnvelope } from '../../src/errors/envelope.js';
 
 const TOKEN = 'local-llms_a1b2c3d4e5f6abcdefabcdefabcdefab';
 
 async function buildTestApp(): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });
-  app.addHook('preHandler', makeBearerHook(TOKEN));
+  // Production wires the hook on 'onRequest' (app.ts:46) so auth gates run before
+  // body parsing — IN-04 alignment. Match that here so the unit test exercises the
+  // same hook phase as production.
+  app.addHook('onRequest', makeBearerHook(TOKEN));
+  // WR-06: makeBearerHook now throws BearerAuthError instead of inlining the
+  // 401 envelope. Register the same setErrorHandler as buildApp() so the throw
+  // flows through the D-C1 path and the response shape matches integration.
+  app.setErrorHandler((err, _req, reply) => {
+    const env = toOpenAIErrorEnvelope(err);
+    if (env === NO_ENVELOPE) return;
+    reply.code(mapToHttpStatus(err)).send(env);
+  });
   app.get('/healthz', async () => ({ status: 'ok' }));
   app.post('/v1/chat/completions', async () => ({ ok: true }));
   return app;
@@ -75,7 +87,15 @@ describe('bearer auth preHandler (ROUTE-03, SC4 auth half)', () => {
   it('NEVER logs the supplied bearer value (SC5 baseline)', async () => {
     const lines: string[] = [];
     const app = Fastify({ logger: { level: 'warn', stream: { write: (m: string) => lines.push(m) } } as never });
-    app.addHook('preHandler', makeBearerHook(TOKEN));
+    app.addHook('onRequest', makeBearerHook(TOKEN));
+    // Same setErrorHandler as production so the BearerAuthError throw (WR-06)
+    // flows through `req.log.warn` exactly once via D-C1.
+    app.setErrorHandler((err, req, reply) => {
+      const env = toOpenAIErrorEnvelope(err);
+      if (env === NO_ENVELOPE) return;
+      req.log.warn({ err, url: req.url }, 'route error -> envelope');
+      reply.code(mapToHttpStatus(err)).send(env);
+    });
     app.post('/v1/anything', async () => ({}));
 
     const leakValue = 'leakvalueXYZ';

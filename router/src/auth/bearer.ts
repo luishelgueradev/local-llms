@@ -14,7 +14,7 @@ export function makeBearerHook(expectedToken: string) {
   // happy and ensures the comparison still runs in constant time.
   const padBuf = randomBytes(expectedBuf.length);
 
-  return async function bearerPreHandler(req: FastifyRequest, reply: FastifyReply) {
+  return async function bearerOnRequest(req: FastifyRequest, _reply: FastifyReply) {
     const path = (req.url.split('?')[0] ?? '/');
     if (PUBLIC_PATHS.has(path)) return;
 
@@ -24,16 +24,14 @@ export function makeBearerHook(expectedToken: string) {
     // so the constant-time timingSafeEqual below still sees the supplied token
     // verbatim. WR-02 fix.
     const SCHEME = 'bearer ';
+    // WR-06 fix: throw BearerAuthError instead of building the envelope here.
+    // app.setErrorHandler in app.ts (D-C1) translates it via toOpenAIErrorEnvelope
+    // -> 401 / authentication_error / unauthorized — same wire shape as the old
+    // inline `reply.code(401).send(...)`, but with a single source of truth.
+    // The centralized handler also runs `req.log.warn({ err, url, status }, ...)`,
+    // so the auth-fail audit line still appears in production logs.
     if (typeof auth !== 'string' || auth.length < SCHEME.length || auth.slice(0, SCHEME.length).toLowerCase() !== SCHEME) {
-      req.log.warn({ url: req.url, hasHeader: typeof auth === 'string' }, 'auth: missing or malformed bearer header');
-      return reply.code(401).send({
-        error: {
-          message: 'Missing or malformed Authorization header',
-          type: 'authentication_error',
-          code: 'unauthorized',
-          param: null,
-        },
-      });
+      throw new BearerAuthError('Missing or malformed Authorization header');
     }
 
     const supplied = auth.slice(SCHEME.length);
@@ -53,15 +51,7 @@ export function makeBearerHook(expectedToken: string) {
     }
 
     if (!ok) {
-      req.log.warn({ url: req.url }, 'auth: bearer mismatch');
-      return reply.code(401).send({
-        error: {
-          message: 'Invalid bearer token',
-          type: 'authentication_error',
-          code: 'unauthorized',
-          param: null,
-        },
-      });
+      throw new BearerAuthError('Invalid bearer token');
     }
   };
 }
