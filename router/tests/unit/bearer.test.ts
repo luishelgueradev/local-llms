@@ -74,7 +74,7 @@ describe('bearer auth preHandler (ROUTE-03, SC4 auth half)', () => {
 
   it('NEVER logs the supplied bearer value (SC5 baseline)', async () => {
     const lines: string[] = [];
-    const app = Fastify({ logger: { level: 'warn', stream: { write: (m) => lines.push(m) } } as never });
+    const app = Fastify({ logger: { level: 'warn', stream: { write: (m: string) => lines.push(m) } } as never });
     app.addHook('preHandler', makeBearerHook(TOKEN));
     app.post('/v1/anything', async () => ({}));
 
