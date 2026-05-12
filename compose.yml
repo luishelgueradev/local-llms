@@ -88,6 +88,7 @@ services:
   ollama:
     image: ollama/ollama:0.5.7
     container_name: ${COMPOSE_PROJECT_NAME:-local-llms}-ollama
+    profiles: [ollama]
     <<: *gpu
     restart: unless-stopped
     # GPU init wrapper (libcuda symlink for Docker Desktop / WSL2 — see
@@ -159,6 +160,52 @@ services:
       gpu-preflight:
         condition: service_completed_successfully
 
+  # ── llama.cpp-server (Phase 3 — D-A5, BCKND-02) ─────────────────────────────
+  # Serves a single GGUF model (Qwen2.5-7B-Instruct-Q4_K_M) with full GPU offload.
+  # Joins the `backend` network only — NO host port (T-3-04 mitigation; D-A6).
+  # Profile-gated: only active when `--profile llamacpp` is passed.
+  # GGUF file must be present at ${HOST_DATA_ROOT}/models-gguf/gguf/ before starting
+  # (manual one-time download per README Phase 3 section + Plan 05 smoke test).
+  llamacpp:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda-b9115   # [VERIFIED 2026-05-12 per 03-RESEARCH §External Pins]
+    container_name: ${COMPOSE_PROJECT_NAME:-local-llms}-llamacpp
+    profiles: [llamacpp]
+    <<: *gpu
+    restart: unless-stopped
+    entrypoint: ["/usr/local/bin/gpu-init-libcuda.sh"]
+    command:
+      - "/app/llama-server"
+      - "-m"
+      - "/models/Qwen2.5-7B-Instruct-Q4_K_M.gguf"
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8080"
+      - "--n-gpu-layers"
+      - "99"
+      - "--ctx-size"
+      - "16384"
+      - "--parallel"
+      - "2"
+      - "--metrics"
+    networks: [backend]
+    volumes:
+      # Read-only GGUF mount — D-A8; NEVER mount models-gguf/ollama here (store separation).
+      - ${HOST_DATA_ROOT:-/srv/local-llms}/models-gguf/gguf:/models:ro
+      # GPU init wrapper (same as ollama service — reuses Phase 1 libcuda symlink script).
+      - ./bin/gpu-init-libcuda.sh:/usr/local/bin/gpu-init-libcuda.sh:ro
+    healthcheck:
+      # server-cuda image ships curl (unlike ollama/ollama which uses `ollama list`).
+      # Verified per 03-RESEARCH §A6.
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      start_period: 60s    # cold model load can take up to 60s on large GGUFs
+      retries: 5
+    depends_on:
+      gpu-preflight:
+        condition: service_completed_successfully
+
   # ── Router (Phase 2 — D-A1, D-A4, ROUTE-01..ROUTE-08) ──────────────────────
   # The single externally-reachable model surface (localhost-only until Phase 6
   # puts Traefik in front). Joins app + backend; D-13 networks unchanged.
@@ -194,6 +241,10 @@ services:
     depends_on:
       ollama:
         condition: service_healthy
+        required: false      # Compose >= 2.20.2 — allows router to boot without ollama (Pitfall 2)
+      llamacpp:
+        condition: service_healthy
+        required: false      # Compose >= 2.20.2 — allows router to boot without llamacpp
 
   # ─── router-dev (D-A3) ──────────────────────────────────────────────────────
   # Dev-only sibling of `router:` — same networks + healthcheck + env, but
@@ -227,6 +278,10 @@ services:
     depends_on:
       ollama:
         condition: service_healthy
+        required: false      # Compose >= 2.20.2 — consistent with router service
+      llamacpp:
+        condition: service_healthy
+        required: false
     healthcheck:
       test: ["CMD-SHELL", "node -e \"fetch('http://localhost:3000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
       interval: 10s
