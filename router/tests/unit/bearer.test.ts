@@ -20,6 +20,7 @@ async function buildTestApp(): Promise<FastifyInstance> {
     reply.code(mapToHttpStatus(err)).send(env);
   });
   app.get('/healthz', async () => ({ status: 'ok' }));
+  app.get('/readyz', async () => ({ status: 'ready', checked_at: new Date().toISOString(), backends: [] }));
   app.post('/v1/chat/completions', async () => ({ ok: true }));
   return app;
 }
@@ -80,6 +81,22 @@ describe('bearer auth preHandler (ROUTE-03, SC4 auth half)', () => {
     const res = await app.inject({
       method: 'GET', url: '/healthz',
       headers: { authorization: 'Bearer totally-wrong' },
+    });
+    expect(res.statusCode).toBe(200);
+  });
+
+  // Phase 3: /readyz added to PUBLIC_PATHS (D-D1)
+  it('skips auth on /readyz (PUBLIC_PATHS)', async () => {
+    const app = await buildTestApp();
+    const res = await app.inject({ method: 'GET', url: '/readyz' });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it('skips auth on /readyz even with a wrong token', async () => {
+    const app = await buildTestApp();
+    const res = await app.inject({
+      method: 'GET', url: '/readyz',
+      headers: { authorization: 'Bearer totally-wrong-token' },
     });
     expect(res.statusCode).toBe(200);
   });

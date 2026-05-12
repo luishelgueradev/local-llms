@@ -25,6 +25,10 @@ async function main(): Promise<void> {
     pollingIntervalMs: 1000,
     onReload: (next) => {
       app.log.info({ models: next.models.length, names: next.models.map((m) => m.name) }, 'registry reloaded');
+      // Phase 3: re-register liveness probes against the new URL set.
+      // liveness.start() is idempotent — de-dups timers; clears removed URLs (Pitfall 6).
+      const urls = Array.from(new Set(next.models.map((m) => m.backend_url)));
+      app.liveness.start(urls);
     },
     onError: (err) => {
       // D-C3 — keep previous registry, log at error, do not crash.

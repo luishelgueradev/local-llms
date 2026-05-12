@@ -3,7 +3,7 @@ import type { FastifyRequest, FastifyReply } from 'fastify';
 import { BearerAuthError } from '../errors/envelope.js';
 
 /** Routes that skip bearer auth. ROUTE-04 is the single source of truth. */
-export const PUBLIC_PATHS: ReadonlySet<string> = new Set(['/healthz']);
+export const PUBLIC_PATHS: ReadonlySet<string> = new Set(['/healthz', '/readyz']);
 
 export function makeBearerHook(expectedToken: string) {
   if (!expectedToken || expectedToken.length < 8) {

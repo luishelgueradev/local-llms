@@ -13,6 +13,16 @@ import { makeOllamaAdapterFromEntry } from './backends/ollama-openai.js';
 import type { AdapterFactory } from './backends/adapter.js';
 import { registerModelsRoute } from './routes/v1/models.js';
 import { toOpenAIErrorEnvelope, mapToHttpStatus, NO_ENVELOPE } from './errors/envelope.js';
+import { makeLivenessScheduler, type LivenessScheduler } from './backends/liveness.js';
+import { makeAdapter as defaultMakeAdapter } from './backends/factory.js';
+import { registerReadyz } from './routes/readyz.js';
+
+// Fastify module augmentation so TypeScript knows about app.liveness (D-D decorator).
+declare module 'fastify' {
+  interface FastifyInstance {
+    liveness: LivenessScheduler;
+  }
+}
 
 export interface BuildAppOpts {
   registry: RegistryStore;
@@ -24,6 +34,12 @@ export interface BuildAppOpts {
    * through the network at all).
    */
   makeAdapter?: AdapterFactory;
+  /**
+   * Optional liveness scheduler factory — defaults to makeLivenessScheduler.
+   * Tests inject a fake here for deterministic, fast /readyz behavior without
+   * spinning up real upstream probes.
+   */
+  livenessFactory?: (opts: Parameters<typeof makeLivenessScheduler>[0]) => LivenessScheduler;
 }
 
 export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
@@ -60,8 +76,61 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
     reply.code(status).send(env);
   });
 
+  // -------------------------------------------------------------------------
+  // Liveness scheduler (Plan 03-03, ROUTE-06)
+  // -------------------------------------------------------------------------
+
+  // Adapter cache for probes — one adapter instance per distinct URL.
+  // Cleared on app.close() so connections are released on graceful shutdown.
+  const probeAdapters = new Map<string, ReturnType<typeof defaultMakeAdapter>>();
+  const probeAdapterFor = (url: string) => {
+    let a = probeAdapters.get(url);
+    if (!a) {
+      const reg = opts.registry.get();
+      const entry = reg.models.find((m) => m.backend_url === url);
+      if (!entry) throw new Error(`No registry entry for URL "${url}"`);
+      a = defaultMakeAdapter(entry);
+      probeAdapters.set(url, a);
+    }
+    return a;
+  };
+
+  const schedulerOpts: Parameters<typeof makeLivenessScheduler>[0] = {
+    intervalMs: 10_000,
+    timeoutMs: 2_000,
+    logger: app.log as Parameters<typeof makeLivenessScheduler>[0]['logger'],
+    probe: async (url, signal) => {
+      const adapter = probeAdapterFor(url);
+      return adapter.probeLiveness(signal);
+    },
+  };
+
+  // Allow tests to inject a fake scheduler for deterministic behavior.
+  const factory = opts.livenessFactory ?? makeLivenessScheduler;
+  const liveness = factory(schedulerOpts);
+
+  // Decorate so index.ts can call liveness.start(urls) on hot-reload.
+  // TypeScript sees it via the FastifyInstance augmentation above.
+  app.decorate('liveness', liveness);
+
+  // Kick off the first probe set against the current registry snapshot.
+  const distinctUrls = Array.from(new Set(opts.registry.get().models.map((m) => m.backend_url)));
+  liveness.start(distinctUrls);
+
+  // Shutdown hook (D-D7) — clears all timers so process exit is clean.
+  app.addHook('onClose', async () => {
+    liveness.stop();
+    probeAdapters.clear();
+  });
+
+  // -------------------------------------------------------------------------
   // Routes
+  // -------------------------------------------------------------------------
+
   registerHealthz(app, opts.registry);
+
+  // GET /readyz — public, per-backend liveness summary (Plan 03-03, ROUTE-06).
+  registerReadyz(app, opts.registry, liveness);
 
   // Chat completions — non-stream branch in plan 02-03; stream branch in plan 02-04
   // (same route file; plan 02-04 replaces the 501 stub).
