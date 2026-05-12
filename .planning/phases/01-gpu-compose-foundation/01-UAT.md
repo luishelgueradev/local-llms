@@ -1,5 +1,5 @@
 ---
-status: diagnosed
+status: resolved
 phase: 01-gpu-compose-foundation
 source:
   - 01-01-SUMMARY.md
@@ -7,7 +7,8 @@ source:
   - 01-03-SUMMARY.md
   - 01-04-SUMMARY.md
 started: 2026-05-11T17:50:00Z
-updated: 2026-05-11T18:25:00Z
+updated: 2026-05-12T01:15:00Z
+resolved: 2026-05-12T01:15:00Z  # all 3 gaps closed by plans 01-05 + 01-06, verified on real WSL2 + Docker Desktop + RTX 5060 Ti host
 ---
 
 ## Current Test
@@ -72,7 +73,7 @@ blocked: 0
 ## Gaps
 
 - truth: "bin/preflight-gpu.sh exits 0 on a host where the authoritative container_nvidia_smi check passes"
-  status: failed
+  status: resolved
   reason: |
     User reported: host_nvidia_smi FAILed on a WSL2 + Docker Desktop host even though container_nvidia_smi PASSed (the authoritative test per Phase 1 design). Since host_nvidia_smi is in the functional set, the script exits non-zero — directly contradicting the Phase 1 Defect 2 rationale ("split functional vs diagnostic so Docker Desktop on Windows + WSL2 works"). On WSL2 hosts, the Windows-side nvidia-smi is not reachable from the WSL distro's PATH, but GPU passthrough still works (proven by container_nvidia_smi PASS).
   severity: blocker
@@ -92,7 +93,7 @@ blocked: 0
   debug_session: ".planning/debug/preflight-gpu-wsl2-and-state-write.md"
 
 - truth: "preflight script writes the state file non-interactively (no `mv -i` overwrite prompt) and cleans up its tmp files"
-  status: failed
+  status: resolved
   reason: |
     User reported: state file write at `${HOST_DATA_ROOT}/.preflight-state.json` triggered `mv: replace '/srv/local-llms/.preflight-state.json', overriding mode 0644 (rw-r--r--)?` — an interactive prompt that blocks the script when an existing state file is present. This breaks the compose `gpu-preflight` one-shot service (which runs non-interactively) on the second and subsequent runs.
 
@@ -135,7 +136,7 @@ blocked: 0
   debug_session: ".planning/debug/preflight-gpu-wsl2-and-state-write.md"
 
 - truth: "SC2 acceptance grep returns 0 against compose.yml"
-  status: failed
+  status: resolved
   reason: |
     `grep -cE '(:latest|runtime: nvidia|gpus: all)' compose.yml` returns 3, not 0. All 3 matches are header comments at lines 9, 18, 19 documenting the anti-patterns ("no :latest", "DO NOT use runtime: nvidia", "DO NOT use gpus: all"). The substantive config is clean: pinned image tags, modern `deploy.resources.reservations.devices` syntax, x-gpu anchor merged. Same false-positive pattern as Phase 1 Plan 02 and Plan 04 ("acceptance-criteria-vs-implementation contradiction"). Fix: either exclude comment lines in the grep (`grep -vE '^[[:space:]]*#' compose.yml | grep -cE ...`) or rephrase the comments to avoid the literal patterns.
   severity: minor
