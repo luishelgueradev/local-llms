@@ -64,10 +64,16 @@ export function registerChatCompletionsRoute(
       // passthrough schema produces a superset that is type-compatible at runtime.
       const upstreamParams = { ...body, model: entry.backend_model } as unknown as ChatCompletionCreateParams;
 
-      // AbortController scoped to the request — cancels upstream when the route handler
-      // returns or throws. Plan 02-04's stream branch upgrades this with req.raw.on('close').
+      // AbortController — cancels upstream if the TCP socket closes (client disconnects).
+      // IMPORTANT: Use req.raw.socket.once('close') NOT req.raw.once('close').
+      // The IncomingMessage's 'close' event fires when the message body is consumed
+      // (immediately after Fastify parses the body), NOT on client disconnect.
+      // The Socket's 'close' event fires only when the TCP connection is destroyed.
+      // Plan 02-04's stream branch uses the same pattern — the only difference is
+      // that the stream branch also listens on 'close' to stop the heartbeat.
       const controller = new AbortController();
-      req.raw.once('close', () => controller.abort(new Error('client-disconnect')));
+      const onSocketClose = () => controller.abort(new Error('client-disconnect'));
+      req.raw.socket?.once('close', onSocketClose);
 
       if (body.stream === true) {
         // STREAM BRANCH — implemented in plan 02-04. Returning 501 here is the
@@ -84,11 +90,16 @@ export function registerChatCompletionsRoute(
       }
 
       // NON-STREAM BRANCH
-      const result = await adapter.chatCompletions(upstreamParams, controller.signal);
-      // Send result verbatim — this is OAI-01 non-stream half + OAI-05 non-stream half.
-      // The setErrorHandler in app.ts handles any thrown APIError / APIConnectionError /
-      // APITimeoutError -> 502/504 with the OpenAI envelope.
-      return reply.send(result);
+      try {
+        const result = await adapter.chatCompletions(upstreamParams, controller.signal);
+        // Send result verbatim — this is OAI-01 non-stream half + OAI-05 non-stream half.
+        // The setErrorHandler in app.ts handles any thrown APIError / APIConnectionError /
+        // APITimeoutError -> 502/504 with the OpenAI envelope.
+        return reply.send(result);
+      } finally {
+        // Remove the socket listener to avoid memory leaks on long-lived keep-alive connections.
+        req.raw.socket?.off('close', onSocketClose);
+      }
     },
   );
 }
