@@ -1,7 +1,39 @@
-// Plan 02-01 placeholder: Fastify bootstrap, auth, routes land in plan 02-02.
-// This file exists so `tsup` (stage 2 of the 4-stage Dockerfile) can compile
-// the entry point. The container starts but does NOT listen on any port yet —
-// /healthz and /v1/chat/completions land in plan 02-02.
-//
-// The Compose healthcheck will fail until plan 02-02 ships the server bootstrap.
-// Per 02-01-PLAN.md: "the runtime container would crash on start until then (intentional)".
+import { loadEnv } from './config/env.js';
+import { loadRegistryFromFile, makeRegistryStore } from './config/registry.js';
+import { buildApp } from './app.js';
+import { makeLoggerOptions } from './log/logger.js';
+
+async function main(): Promise<void> {
+  const env = loadEnv();
+  const loggerOpts = makeLoggerOptions({ level: env.LOG_LEVEL, isDev: env.NODE_ENV !== 'production' });
+
+  // Fail-fast on bad models.yaml (D-C3 startup half — hot-reload's keep-previous semantics
+  // land in plan 02-05's watcher).
+  const initialRegistry = loadRegistryFromFile(env.MODELS_YAML_PATH);
+  const registry = makeRegistryStore(initialRegistry);
+
+  const app = await buildApp({ registry, bearerToken: env.ROUTER_BEARER_TOKEN, loggerOpts });
+
+  const closeGracefully = async (signal: string) => {
+    app.log.info({ signal }, 'received shutdown signal — closing');
+    try {
+      await app.close();
+      process.exit(0);
+    } catch (err) {
+      app.log.error({ err }, 'error during shutdown');
+      process.exit(1);
+    }
+  };
+  process.once('SIGTERM', () => void closeGracefully('SIGTERM'));
+  process.once('SIGINT', () => void closeGracefully('SIGINT'));
+
+  try {
+    await app.listen({ port: env.PORT, host: '0.0.0.0' });
+    app.log.info({ port: env.PORT, registry_models: registry.get().models.length }, 'router listening');
+  } catch (err) {
+    app.log.fatal({ err }, 'failed to start');
+    process.exit(1);
+  }
+}
+
+void main();
