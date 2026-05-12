@@ -73,7 +73,7 @@ Plans:
 **Plans:** 5 plans
 Plans:
 **Wave 1**
-- [ ] 03-02-PLAN.md — Slice B+E: schema widening (LocalBackendEnum, required capabilities/vram_budget_gb, VRAM-envelope superRefine), RegistryStore.getCreatedAtSec snapshot timestamp (D-C3), `/v1/models` route, app.ts factory swap + route registration, router/models.yaml data population (both entries + backends section) (OAI-03, BCKND-04)
+- [x] 03-02-PLAN.md — Slice B+E: schema widening (LocalBackendEnum, required capabilities/vram_budget_gb, VRAM-envelope superRefine), RegistryStore.getCreatedAtSec snapshot timestamp (D-C3), `/v1/models` route, app.ts factory swap + route registration, router/models.yaml data population (both entries + backends section) (OAI-03, BCKND-04)
 
 **Wave 2** *(depends on Wave 1 — Plan 03-02 owns the widened schema + populated models.yaml; this plan loads them)*
 - [ ] 03-01-PLAN.md — Slice A: llama.cpp Compose service + LlamacppOpenAIAdapter + factory dispatch + msw handlers + SC1 integration proof (BCKND-02, BCKND-05)
