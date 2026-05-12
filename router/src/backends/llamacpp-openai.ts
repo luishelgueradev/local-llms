@@ -8,14 +8,25 @@ import type {
 } from 'openai/resources/chat/completions';
 import type { BackendAdapter } from './adapter.js';
 
-export class OllamaOpenAIAdapter implements BackendAdapter {
+/**
+ * LlamacppOpenAIAdapter — mirrors OllamaOpenAIAdapter exactly.
+ * Differences: apiKey placeholder is 'llamacpp' (SDK v6 throws on empty apiKey),
+ * and the default baseURL targets the llama.cpp-server OpenAI-compat endpoint.
+ *
+ * Note on stream_options.include_usage: the llama.cpp-server /v1/chat/completions
+ * endpoint accepts this parameter. If a specific build does not emit the final
+ * usage chunk, the router's pass-through still works — it forwards whatever the
+ * upstream emits. The stream_options flag is kept unconditional to mirror
+ * OllamaOpenAIAdapter (D-B3 drift prevention).
+ */
+export class LlamacppOpenAIAdapter implements BackendAdapter {
   private readonly client: OpenAI;
 
   constructor(baseURL: string) {
-    // baseURL example: 'http://ollama:11434/v1'
-    // apiKey is a non-empty placeholder per D-B1; local Ollama ignores it.
+    // baseURL example: 'http://llamacpp:8080/v1'
+    // apiKey is a non-empty placeholder per D-B1; llama.cpp-server ignores it.
     // SDK v6 throws at construction time on empty apiKey (RESEARCH §Anti-Patterns).
-    this.client = new OpenAI({ baseURL, apiKey: 'ollama', timeout: 60_000 });
+    this.client = new OpenAI({ baseURL, apiKey: 'llamacpp', timeout: 60_000 });
   }
 
   async chatCompletions(req: ChatCompletionCreateParams, signal: AbortSignal): Promise<ChatCompletion> {
@@ -36,8 +47,8 @@ export class OllamaOpenAIAdapter implements BackendAdapter {
       stream: true,
       // include_usage = true causes the upstream to emit a final chunk with
       // choices: [] + usage: { prompt_tokens, completion_tokens, total_tokens }
-      // BEFORE its own `data: [DONE]`. Verified empirically against Ollama 0.5.7
-      // (RESEARCH §Pitfall 4 lines 647–657).
+      // BEFORE its own `data: [DONE]`. Kept for consistency with OllamaOpenAIAdapter
+      // (D-B3 drift prevention — see llamacpp-openai.ts class comment).
       stream_options: { include_usage: true },
     };
     // Await the APIPromise to get the Stream<ChatCompletionChunk>,
@@ -61,8 +72,8 @@ export class OllamaOpenAIAdapter implements BackendAdapter {
   }
 }
 
-/** Convenience factory: build an OllamaOpenAIAdapter from a ModelEntry. */
+/** Convenience factory: build a LlamacppOpenAIAdapter from a ModelEntry. */
 import type { ModelEntry } from '../config/registry.js';
-export function makeOllamaAdapterFromEntry(entry: ModelEntry): OllamaOpenAIAdapter {
-  return new OllamaOpenAIAdapter(entry.backend_url);
+export function makeLlamacppAdapterFromEntry(entry: ModelEntry): LlamacppOpenAIAdapter {
+  return new LlamacppOpenAIAdapter(entry.backend_url);
 }

@@ -5,7 +5,7 @@ import type {
 } from 'openai/resources/chat/completions';
 
 /**
- * Backend abstraction (D-B2). Phase 2 ships only OllamaOpenAIAdapter.
+ * Backend abstraction (D-B2). Phase 2 shipped OllamaOpenAIAdapter.
  * Phase 3 adds LlamacppOpenAIAdapter; Phase 8 adds OllamaCloudAdapter.
  *
  * Route handlers MUST type their backend arg as BackendAdapter (NOT a concrete class)
@@ -29,6 +29,15 @@ export interface BackendAdapter {
     req: ChatCompletionCreateParams,
     signal: AbortSignal,
   ): Promise<AsyncIterable<ChatCompletionChunk>>;
+
+  /**
+   * Liveness probe. Used by /readyz scheduler (Plan 03). Returns ok=true iff backend
+   * responds with a non-empty /v1/models data array within the supplied signal's deadline.
+   * Never throws — failures are surfaced via { ok: false, error }.
+   *
+   * Adapters: OllamaOpenAIAdapter, LlamacppOpenAIAdapter (Phase 3); Phase 8: OllamaCloudAdapter.
+   */
+  probeLiveness(signal: AbortSignal): Promise<{ ok: boolean; latencyMs: number; error?: string }>;
 }
 
 /**

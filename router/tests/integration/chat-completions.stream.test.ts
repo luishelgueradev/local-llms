@@ -138,6 +138,9 @@ describe('POST /v1/chat/completions stream=true — abort + error paths (SC3 moc
       async chatCompletions(_req: ChatCompletionCreateParams, _signal: AbortSignal): Promise<ChatCompletion> {
         throw new Error('not used in stream test');
       }
+      async probeLiveness(_signal: AbortSignal): Promise<{ ok: boolean; latencyMs: number; error?: string }> {
+        return { ok: true, latencyMs: 0 };
+      }
       async chatCompletionsStream(_req: ChatCompletionCreateParams, signal: AbortSignal): Promise<AsyncIterable<ChatCompletionChunk>> {
         capturedSignal = signal;
         return (async function* () {
