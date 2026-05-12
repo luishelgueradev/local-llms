@@ -10,12 +10,15 @@ import {
   RegistryUnknownModelError,
 } from '../../src/config/registry.js';
 
+// Phase 3: capabilities + vram_budget_gb are now required.
 const MIN_YAML = `
 models:
   - name: llama3.2:3b-instruct-q4_K_M
     backend: ollama
     backend_url: http://ollama:11434/v1
     backend_model: llama3.2:3b-instruct-q4_K_M
+    capabilities: [chat]
+    vram_budget_gb: 4
 `;
 
 const FORWARD_COMPAT_YAML = `
@@ -32,7 +35,7 @@ models:
 `;
 
 describe('models.yaml registry — zod schema (ROUTE-02 startup half)', () => {
-  it('accepts the Phase 2 minimum', () => {
+  it('accepts the Phase 3 minimum (capabilities + vram_budget_gb required)', () => {
     expect(() => loadRegistryFromString(MIN_YAML)).not.toThrow();
   });
 
@@ -55,16 +58,20 @@ models:
   - backend: ollama
     backend_url: http://x/v1
     backend_model: m
+    capabilities: [chat]
+    vram_budget_gb: 4
     `)).toThrow();
   });
 
-  it('rejects when backend is unknown (Phase 2 enum is just ["ollama"])', () => {
+  it('rejects when backend is unknown (Phase 3 enum is ["ollama","llamacpp"])', () => {
     expect(() => loadRegistryFromString(`
 models:
   - name: x
     backend: vllm
     backend_url: http://x/v1
     backend_model: m
+    capabilities: [chat]
+    vram_budget_gb: 4
     `)).toThrow();
   });
 
@@ -75,6 +82,8 @@ models:
     backend: ollama
     backend_url: not-a-url
     backend_model: m
+    capabilities: [chat]
+    vram_budget_gb: 4
     `)).toThrow();
   });
 
@@ -115,7 +124,14 @@ describe('models.yaml registry — store (ROUTE-02 startup half)', () => {
     const next: typeof reg = {
       models: [
         ...reg.models,
-        { name: 'newmodel', backend: 'ollama', backend_url: 'http://ollama:11434/v1', backend_model: 'newmodel' },
+        {
+          name: 'newmodel',
+          backend: 'ollama',
+          backend_url: 'http://ollama:11434/v1',
+          backend_model: 'newmodel',
+          capabilities: ['chat'],
+          vram_budget_gb: 4,
+        },
       ],
     };
     store._swap(next);
@@ -143,10 +159,14 @@ models:
     backend: ollama
     backend_url: http://ollama:11434/v1
     backend_model: llama3.2:3b-instruct-q4_K_M
+    capabilities: [chat]
+    vram_budget_gb: 4
   - name: newmodel
     backend: ollama
     backend_url: http://ollama:11434/v1
     backend_model: newmodel
+    capabilities: [chat]
+    vram_budget_gb: 4
     `, 250);
 
     expect(reloaded).toBeTruthy();

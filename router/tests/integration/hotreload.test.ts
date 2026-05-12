@@ -16,12 +16,15 @@ import { OllamaOpenAIAdapter } from '../../src/backends/ollama-openai.js';
 import type { ModelEntry } from '../../src/config/registry.js';
 
 const TOKEN = 'local-llms_t1t2t3t4t5t6t7t8t9t0aabbccddeeff';
+// Phase 3: capabilities + vram_budget_gb are required in the schema.
 const INITIAL = `
 models:
   - name: llama3.2:3b-instruct-q4_K_M
     backend: ollama
     backend_url: http://upstream-mock:11434/v1
     backend_model: llama3.2:3b-instruct-q4_K_M
+    capabilities: [chat]
+    vram_budget_gb: 4
 `;
 
 let dir: string;
@@ -62,6 +65,8 @@ describe('models.yaml hot-reload (SC4 hot-reload half, ROUTE-02)', () => {
     backend: ollama
     backend_url: http://upstream-mock:11434/v1
     backend_model: qwen-new
+    capabilities: [chat]
+    vram_budget_gb: 4
 `);
     await new Promise((r) => setTimeout(r, 250));
 
