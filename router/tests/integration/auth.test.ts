@@ -73,14 +73,14 @@ describe('bearer auth + skip-list (SC4 auth half, ROUTE-03, ROUTE-04)', () => {
     expect(res.statusCode).toBe(401);
   });
 
-  it('Any /v1/* request returns NOT 401 with correct bearer (404 expected because the route is not wired in plan 02-02; plan 02-03 wires it)', async () => {
+  it('Any /v1/* request returns NOT 401 with correct bearer (route now wired in plan 02-03)', async () => {
     const res = await app.inject({
       method: 'POST', url: '/v1/chat/completions',
       headers: { authorization: `Bearer ${TOKEN}` },
     });
-    // After plan 02-03 + 02-04 land, this becomes 200/400/502 etc.
-    // For plan 02-02, the route does not exist yet — auth passes, then Fastify 404s.
+    // After plan 02-03, the route exists. Auth passes (correct token),
+    // then zod validation rejects the missing body -> 400.
     expect(res.statusCode).not.toBe(401);
-    expect([404, 405]).toContain(res.statusCode);
+    expect([400, 404, 405]).toContain(res.statusCode);
   });
 });

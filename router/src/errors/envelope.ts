@@ -1,5 +1,6 @@
 import { APIConnectionError, APIConnectionTimeoutError, APIUserAbortError } from 'openai';
 import { z } from 'zod/v4';
+import { hasZodFastifySchemaValidationErrors } from '@bram-dc/fastify-type-provider-zod';
 
 export type OpenAIErrorEnvelope = {
   error: { message: string; type: string; code: string; param: string | null };
@@ -32,6 +33,10 @@ export class RegistryUnknownModelError extends Error {
 export function mapToHttpStatus(err: unknown): number {
   if (err instanceof BearerAuthError) return 401;
   if (err instanceof z.ZodError) return 400;
+  // Fastify wraps zod validation errors into its own ValidationError shape (statusCode: 400).
+  // hasZodFastifySchemaValidationErrors checks for the Fastify+zod validation error sentinel.
+  if (hasZodFastifySchemaValidationErrors(err)) return 400;
+  if (typeof err === 'object' && err !== null && 'statusCode' in err && (err as { statusCode: number }).statusCode === 400) return 400;
   if (err instanceof RegistryUnknownModelError) return 404;
   // APIConnectionTimeoutError extends APIConnectionError — check FIRST for 504, before the 502 below
   if (err instanceof APIConnectionTimeoutError) return 504;
@@ -54,6 +59,20 @@ export function toOpenAIErrorEnvelope(err: unknown): EnvelopeOrSkip {
         type: 'invalid_request_error',
         code: 'invalid_request',
         param: err.issues[0]?.path.join('.') ?? null,
+      },
+    };
+  }
+  // Fastify wraps zod validation errors into its own shape with a `validation` array.
+  // The type provider uses the ZodFastifySchemaValidationError sentinel symbol.
+  if (hasZodFastifySchemaValidationErrors(err)) {
+    const first = err.validation[0];
+    const message = err.validation.map((v) => `${v.instancePath}: ${v.message}`).join('; ') || 'invalid request body';
+    return {
+      error: {
+        message,
+        type: 'invalid_request_error',
+        code: 'invalid_request',
+        param: first?.instancePath?.replace(/^\//, '') ?? null,
       },
     };
   }
