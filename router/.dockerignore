@@ -1,0 +1,14 @@
+node_modules
+dist
+.env
+.env.local
+.env.*
+coverage
+tests
+*.md
+.git
+.gitignore
+.dockerignore
+Dockerfile
+biome.json
+vitest.config.ts

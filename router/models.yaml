@@ -1,0 +1,13 @@
+# router/models.yaml — Phase 2 reads only: name, backend, backend_url, backend_model.
+# Phase 3+ optional fields (capabilities, vram_budget_gb, concurrency, max_model_len, profile)
+# are present and accepted by zod but ignored at runtime in Phase 2 (D-B4 forward-compat).
+models:
+  - name: llama3.2:3b-instruct-q4_K_M
+    backend: ollama
+    backend_url: http://ollama:11434/v1
+    backend_model: llama3.2:3b-instruct-q4_K_M
+    capabilities: [chat]
+    vram_budget_gb: 4
+    concurrency: 2
+    max_model_len: 8192
+    profile: ollama
