@@ -335,14 +335,33 @@ else
   fail "SC4 hot-reload: no 'registry reloaded' log line within 1s of edit. Last log lines: $(echo "${NEW_LINES}" | tail -5)"
 fi
 
-# SC5: zero matches for bearer/authorization in router logs
+# SC5: zero matches for the actual bearer-token value, or for an Authorization
+# header carrying a token-shaped suffix, in router logs.
+#
+# Why this regex shape (was loosened after smoke-test #1):
+#   The previous form `bearer [a-z0-9_]+|authorization:[[:space:]]*bearer`
+#   false-matched the auth-failure log MESSAGE TEXT — strings like
+#   "missing or malformed bearer header" trip `bearer [a-z]+`. The router
+#   intentionally emits that message on 401 paths; it does NOT contain a token.
+#
+#   The robust check is two-pronged:
+#     1) Grep for the literal ROUTER_BEARER_TOKEN value (zero false positives).
+#     2) Grep for a token-SHAPED suffix after `bearer ` / `authorization: bearer ` —
+#        require >= 16 chars of token-typical characters so descriptive English words
+#        like "header" / "token" never match. Real bearer tokens are 32+ chars.
 echo ""
 echo "[smoke-test-router] SC5: scanning router logs for bearer/authorization leaks..."
-LEAK_COUNT=$(docker compose logs --no-color "${ROUTER_SVC}" 2>&1 | grep -ciE 'bearer [a-z0-9_]+|authorization:[[:space:]]*bearer' || true)
+SC5_LOGS=$(docker compose logs --no-color "${ROUTER_SVC}" 2>&1 || true)
+# Prong 1: literal token value (definitive)
+LITERAL_LEAKS=$(printf '%s\n' "${SC5_LOGS}" | grep -cF "${ROUTER_BEARER_TOKEN}" || true)
+# Prong 2: token-shaped suffix after bearer/authorization
+SHAPED_LEAKS=$(printf '%s\n' "${SC5_LOGS}" | grep -ciE 'bearer [A-Za-z0-9._+/=-]{16,}|authorization:[[:space:]]*bearer[[:space:]]+[A-Za-z0-9._+/=-]{16,}' || true)
+LEAK_COUNT=$(( LITERAL_LEAKS + SHAPED_LEAKS ))
 if [[ "${LEAK_COUNT}" -ne 0 ]]; then
-  fail "SC5: found ${LEAK_COUNT} potential bearer-token log leak lines (expected 0). First match: $(docker compose logs --no-color "${ROUTER_SVC}" 2>&1 | grep -iE 'bearer [a-z0-9_]+|authorization:[[:space:]]*bearer' | head -1)"
+  FIRST_MATCH=$(printf '%s\n' "${SC5_LOGS}" | grep -iE "${ROUTER_BEARER_TOKEN}|bearer [A-Za-z0-9._+/=-]{16,}|authorization:[[:space:]]*bearer[[:space:]]+[A-Za-z0-9._+/=-]{16,}" | head -1)
+  fail "SC5: found ${LEAK_COUNT} bearer-token leak line(s) (literal=${LITERAL_LEAKS}, shaped=${SHAPED_LEAKS}, expected 0). First match: ${FIRST_MATCH}"
 else
-  pass "SC5: zero bearer/authorization matches in router logs after a full session"
+  pass "SC5: zero bearer-token leaks in router logs after a full session"
 fi
 
 # Final summary
