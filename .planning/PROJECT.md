@@ -97,15 +97,16 @@ Un endpoint único, estable y multi-protocolo para que los agentes del usuario c
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| Router en Node + Fastify + TypeScript | Ecosistema OpenAI/Anthropic SDK maduro en TS, streaming SSE bien resuelto, ligero en Docker | — Pending |
-| API contract dual: OpenAI + Anthropic | Maximiza compatibilidad con SDKs y herramientas de agentes existentes | — Pending |
-| Selección de modelo explícita por nombre | Simple, predecible, fácil de depurar; los agentes ya saben qué modelo quieren | — Pending |
-| Auth: bearer token único | Single user; multi-key añade complejidad sin valor en v1 | — Pending |
-| Backends: Ollama + llama.cpp + vLLM | Cubre el espectro: catálogo cómodo, control GGUF, throughput HF | — Pending |
-| Ollama Cloud como fallback (no backend principal) | Aprovecha hardware local y delega solo lo que no cabe | — Pending |
+| Router en Node + Fastify + TypeScript | Ecosistema OpenAI/Anthropic SDK maduro en TS, streaming SSE bien resuelto, ligero en Docker | ✓ Validated in Phase 2 — Fastify 5.8 + openai 6.37 + fastify-sse-v2 entrega SSE + non-stream + auth + hot-reload con 66 tests verdes |
+| API contract dual: OpenAI + Anthropic | Maximiza compatibilidad con SDKs y herramientas de agentes existentes | ◐ Partially Validated — Phase 2 entrega la mitad OpenAI (`POST /v1/chat/completions` stream + non-stream); Anthropic surface llega en Phase 4 |
+| Selección de modelo explícita por nombre | Simple, predecible, fácil de depurar; los agentes ya saben qué modelo quieren | ✓ Validated in Phase 2 — `models.yaml` + zod registry + `_swap` hot-reload pattern; client manda `model: <name>` y el router resuelve al backend |
+| Auth: bearer token único | Single user; multi-key añade complejidad sin valor en v1 | ✓ Validated in Phase 2 — bearer `onRequest` hook con timing-safe compare + length-padding; `/healthz` público; `/v1/*` requiere bearer (401 en miss/wrong) |
+| Backends: Ollama + llama.cpp + vLLM | Cubre el espectro: catálogo cómodo, control GGUF, throughput HF | ◐ Partially Validated — Ollama vivo en Phase 2 vía `OllamaOpenAIAdapter` + `BackendAdapter` seam; llama.cpp + vLLM llegan en Phase 3/7 |
+| Ollama Cloud como fallback (no backend principal) | Aprovecha hardware local y delega solo lo que no cabe | — Pending Phase 8 |
 | Alcance "plataforma completa" (incluye Open WebUI + Redis + Postgres + Traefik) | Decisión consciente del usuario tras pesar MVP lean vs plataforma; orientado a una mini-plataforma personal | ⚠️ Revisit — riesgo de scope creep documentado |
 | Fine-tuning fuera de v1 | Foco en estabilizar router primero; fine-tuning es un proyecto distinto en milestone futuro | — Pending |
-| Modalidades v1: chat + embeddings + vision + tool calling | Cubre todas las necesidades típicas de agentes modernos | — Pending |
+| Modalidades v1: chat + embeddings + vision + tool calling | Cubre todas las necesidades típicas de agentes modernos | ◐ Partially Validated — chat live in Phase 2; embeddings/vision/tools llegan en Phase 4/7 |
+| Router es la única superficie externa (Ollama no expone host port) | Defensa en profundidad: aunque el cliente esté en loopback, no puede saltarse el router | ✓ Validated in Phase 2 (D-A4) — `ports: ['127.0.0.1:11434:11434']` retirado de Ollama; smoke verifica que `curl http://127.0.0.1:11434/api/tags` da connection refused |
 
 ## Evolution
 
@@ -125,4 +126,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-05-10 after Phase 1 (GPU + Compose Foundation) completion.*
+*Last updated: 2026-05-12 after Phase 2 (MVP Vertical Slice — Router + Ollama + SSE) completion.*
