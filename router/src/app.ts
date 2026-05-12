@@ -11,6 +11,7 @@ import { registerHealthz } from './routes/healthz.js';
 import { registerChatCompletionsRoute } from './routes/v1/chat-completions.js';
 import { makeOllamaAdapterFromEntry } from './backends/ollama-openai.js';
 import type { AdapterFactory } from './backends/adapter.js';
+import { registerModelsRoute } from './routes/v1/models.js';
 import { toOpenAIErrorEnvelope, mapToHttpStatus, NO_ENVELOPE } from './errors/envelope.js';
 
 export interface BuildAppOpts {
@@ -68,6 +69,11 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
     registry: opts.registry,
     makeAdapter: opts.makeAdapter ?? makeOllamaAdapterFromEntry,
   });
+
+  // GET /v1/models — bearer-gated; lists all registry models (Plan 03-02, OAI-03).
+  // Option β: app.ts keeps makeOllamaAdapterFromEntry for chat; Plan 03-01 (wave 2)
+  // will swap it to defaultMakeAdapter from factory.ts.
+  registerModelsRoute(app, opts.registry);
 
   return app;
 }

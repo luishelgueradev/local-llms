@@ -5,25 +5,62 @@ import { z } from 'zod/v4';
 import { RegistryUnknownModelError } from '../errors/envelope.js';
 
 /**
- * Phase 2 reads only: name, backend, backend_url, backend_model.
- * Phase 3+ optional fields (capabilities, vram_budget_gb, concurrency, max_model_len, profile)
- * are present and accepted by zod but ignored at runtime in Phase 2 (D-B4 forward-compat).
+ * Phase 3 widens the backend enum and makes capabilities + vram_budget_gb REQUIRED
+ * for local backends. Phase 8 widens to include 'ollama-cloud' with a discriminated
+ * union so cloud entries may omit vram_budget_gb.
  */
+export const LocalBackendEnum = z.enum(['ollama', 'llamacpp']);
+// Phase 8 widens to include 'ollama-cloud' (with a discriminated union to allow cloud entries to skip vram_budget_gb).
+
 export const ModelEntrySchema = z.object({
   name: z.string().min(1),
-  backend: z.enum(['ollama']), // Phase 3 widens to ['ollama','llamacpp']; Phase 8 adds 'ollama-cloud'
+  backend: LocalBackendEnum,
   backend_url: z.string().url(),
   backend_model: z.string().min(1),
-  // Phase 3+ — accept but ignore (D-B4)
-  capabilities: z.array(z.enum(['chat', 'embeddings', 'vision', 'tools'])).optional(),
-  vram_budget_gb: z.number().positive().optional(),
+  // Phase 3: capabilities + vram_budget_gb are now REQUIRED fields (Phase 2 accepted them without requiring them).
+  capabilities: z.array(z.enum(['chat', 'embeddings', 'vision', 'tools'])).min(1),
+  vram_budget_gb: z.number().positive(),
+  // Per-model concurrency is accepted-but-ignored in Phase 3 (D-B6); backend-level cap is authoritative.
   concurrency: z.number().int().positive().optional(),
   max_model_len: z.number().int().positive().optional(),
   profile: z.string().optional(),
 });
 
+/**
+ * Optional top-level backends: section — forward-compat for Plan 04 semaphore wiring.
+ * Keys are backend names (e.g. 'ollama', 'llamacpp'). Values provide concurrency cap
+ * and queue timeout. When absent, Plan 04 defaults to concurrency:2 / queue_max_wait_ms:30_000.
+ */
+const BackendsSection = z.record(
+  z.string(),
+  z.object({
+    base_url: z.string().url().optional(),
+    concurrency: z.number().int().positive().default(2),
+    queue_max_wait_ms: z.number().int().positive().default(30_000),
+  }),
+).optional();
+
 export const RegistrySchema = z.object({
   models: z.array(ModelEntrySchema).min(1, 'models.yaml must declare at least one model'),
+  backends: BackendsSection,
+}).superRefine((reg, ctx) => {
+  // Read env at refinement time (not module load) — allows operators to change VRAM_ENVELOPE_GB
+  // via `docker compose restart router` without rebundling, AND lets tests toggle per-case
+  // without vi.resetModules() (approach b from 03-CONTEXT D-E2).
+  const envelope = Number(process.env['VRAM_ENVELOPE_GB'] ?? 16);
+  const sums = new Map<string, number>();
+  for (const m of reg.models) {
+    sums.set(m.backend, (sums.get(m.backend) ?? 0) + m.vram_budget_gb);
+  }
+  for (const [name, sum] of sums) {
+    if (sum > envelope) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['models'],
+        message: `Config error: backend "${name}" declared models sum to ${sum} GB, exceeds VRAM_ENVELOPE_GB=${envelope}. Reduce vram_budget_gb on one or more entries.`,
+      });
+    }
+  }
 });
 
 export type ModelEntry = z.infer<typeof ModelEntrySchema>;
@@ -45,16 +82,26 @@ export function loadRegistryFromString(content: string): Registry {
 
 export interface RegistryStore {
   get(): Registry;
+  /** D-C3 (revision 1): Unix seconds; stable across the lifetime of a registry snapshot.
+   * Refreshes only when watchRegistry successfully swaps a new YAML (i.e., on _swap). */
+  getCreatedAtSec(): number;
   resolve(name: string): ModelEntry;
-  /** Used by plan 02-05's watchRegistry to swap in a new validated snapshot atomically. */
+  /** Used by watchRegistry to swap in a new validated snapshot atomically.
+   * Also advances createdAtSec — only called on SUCCESSFUL validation, so failed
+   * hot-reloads do NOT change the timestamp (D-E2 step 4). */
   _swap(next: Registry): void;
 }
 
 export function makeRegistryStore(initial: Registry): RegistryStore {
   let snapshot: Registry = initial;
+  // D-C3 (revision 1): snapshot-stable timestamp set at boot time.
+  let createdAtSec = Math.floor(Date.now() / 1000);
   return {
     get(): Registry {
       return snapshot;
+    },
+    getCreatedAtSec(): number {
+      return createdAtSec;
     },
     resolve(name: string): ModelEntry {
       const found = snapshot.models.find((m) => m.name === name);
@@ -65,6 +112,10 @@ export function makeRegistryStore(initial: Registry): RegistryStore {
     },
     _swap(next: Registry): void {
       snapshot = next;
+      // D-C3 (revision 1): advance createdAtSec on every SUCCESSFUL swap.
+      // watchRegistry only calls _swap when the new YAML parses cleanly —
+      // so failed hot-reloads do NOT advance this value (D-E2 step 4 guarantee).
+      createdAtSec = Math.floor(Date.now() / 1000);
     },
   };
 }
@@ -105,11 +156,15 @@ export function watchRegistry(
     if (stopped) return;
     try {
       const next = loadRegistryFromFile(path);
+      // _swap atomically updates both the snapshot AND createdAtSec.
+      // This is the ONLY path that advances createdAtSec — failed reloads
+      // (caught below) do NOT reach here (D-E2 step 4 + D-C3 revision 1).
       store._swap(next);
       opts.onReload?.(next);
     } catch (err) {
       // D-C3 row "models.yaml hot-reload validation fail":
       // log at error AND keep previous registry — DO NOT crash, DO NOT swap.
+      // createdAtSec is also preserved (not advanced) because _swap was not called.
       opts.onError?.(err);
     }
   };

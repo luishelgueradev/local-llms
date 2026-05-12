@@ -2,30 +2,30 @@
 gsd_state_version: 1.0
 milestone: v0.9.0
 milestone_name: milestone
-status: planning
-last_updated: "2026-05-12T17:24:45.131Z"
+status: executing
+last_updated: "2026-05-12T23:08:06.759Z"
 progress:
   total_phases: 9
   completed_phases: 2
-  total_plans: 11
+  total_plans: 16
   completed_plans: 11
-  percent: 100
+  percent: 69
 ---
 
 # Project State: local-llms
 
 **Last Updated:** 2026-05-12
-**Status:** Ready to plan
+**Status:** Executing Phase 03
 
 ## Project Reference
 
 **Core Value:** Un endpoint único, estable y multi-protocolo para que los agentes del usuario consuman cualquier modelo disponible — local cuando cabe, Ollama Cloud cuando no — sin que el cliente se entere de quién está respondiendo detrás.
 
-**Current Focus:** Phase 02 — mvp-vertical-slice-router-ollama-sse
+**Current Focus:** Phase 03 — multi-backend-dispatch-llama-cpp-registry-hardening
 
 ## Current Position
 
-Phase: 02 (mvp-vertical-slice-router-ollama-sse) — EXECUTING
+Phase: 03 (multi-backend-dispatch-llama-cpp-registry-hardening) — EXECUTING
 Plan: 1 of 5
 
 - **Milestone:** v1

@@ -11,12 +11,15 @@ import type { ModelEntry } from '../../src/config/registry.js';
 const TOKEN = 'local-llms_t1t2t3t4t5t6t7t8t9t0aabbccddeeff';
 const MODEL_NAME = 'llama3.2:3b-instruct-q4_K_M';
 const UPSTREAM_BASE = 'http://upstream-mock:11434/v1';
+// Phase 3: capabilities + vram_budget_gb are required in the schema.
 const YAML = `
 models:
   - name: ${MODEL_NAME}
     backend: ollama
     backend_url: ${UPSTREAM_BASE}
     backend_model: ${MODEL_NAME}
+    capabilities: [chat]
+    vram_budget_gb: 4
 `;
 
 let app: FastifyInstance;
