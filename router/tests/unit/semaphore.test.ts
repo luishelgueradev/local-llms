@@ -99,12 +99,10 @@ describe('BackendSemaphore', () => {
     const p3 = sem.acquire();
     // Advance by 60ms past the 50ms timeout
     vi.advanceTimersByTime(60);
-    await expect(p3).rejects.toMatchObject({
-      code: 'backend_saturated',
-      backend: 'ollama',
-    });
-    const err = await p3.catch((e) => e as BackendSaturatedError);
-    expect(err).toBeInstanceOf(BackendSaturatedError);
+    let caughtErr: unknown;
+    await p3.catch((e: unknown) => { caughtErr = e; });
+    expect(caughtErr).toBeInstanceOf(BackendSaturatedError);
+    const err = caughtErr as BackendSaturatedError;
     expect(err.waitedMs).toBeGreaterThanOrEqual(50);
     expect(err.code).toBe('backend_saturated');
     expect(err.backend).toBe('ollama');
