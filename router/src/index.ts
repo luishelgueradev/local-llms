@@ -55,4 +55,19 @@ async function main(): Promise<void> {
   }
 }
 
-void main();
+main().catch((err: unknown) => {
+  // No app.log available yet (we crashed before or during buildApp). Emit a single
+  // pino-shaped JSON line on stderr so log shippers still parse it; level 60 = fatal.
+  // WR-03 fix — surface pre-listen throws (loadEnv / loadRegistryFromFile / buildApp)
+  // through structured logging instead of as an unhandled promise rejection.
+  const e = err as { name?: string; message?: string; stack?: string } | undefined;
+  process.stderr.write(
+    `${JSON.stringify({
+      level: 60,
+      time: Date.now(),
+      msg: 'failed to start',
+      err: { name: e?.name, message: e?.message, stack: e?.stack },
+    })}\n`,
+  );
+  process.exit(1);
+});
