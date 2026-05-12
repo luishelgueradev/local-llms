@@ -1,9 +1,12 @@
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from '@bram-dc/fastify-type-provider-zod';
 import { z } from 'zod/v4';
-import type { ChatCompletionCreateParams } from 'openai/resources/chat/completions';
+import type { ChatCompletionChunk, ChatCompletionCreateParams } from 'openai/resources/chat/completions';
 import type { RegistryStore } from '../../config/registry.js';
 import type { AdapterFactory, BackendAdapter } from '../../backends/adapter.js';
+import { startHeartbeat } from '../../sse/heartbeat.js';
+import { chunkToSseEvents } from '../../sse/stream.js';
+import { NO_ENVELOPE, mapToHttpStatus, toOpenAIErrorEnvelope } from '../../errors/envelope.js';
 
 /**
  * OpenAI chat-completions request body. Required fields are zod-validated;
@@ -37,8 +40,8 @@ export interface RegisterChatCompletionsOpts {
 /**
  * Register POST /v1/chat/completions on the typed Fastify instance.
  *
- * Phase 2 ships the non-stream branch only. The stream branch returns 501 here;
- * plan 02-04 replaces the 501 stub with the full SSE handler from RESEARCH §Pattern 3.
+ * Plan 02-04: non-stream branch from plan 02-03 is unchanged; stream branch
+ * replaces the 501 stub with the full RESEARCH §Pattern 3 wiring.
  */
 export function registerChatCompletionsRoute(
   app: FastifyInstance,
@@ -57,48 +60,92 @@ export function registerChatCompletionsRoute(
       const entry = opts.registry.resolve(body.model);
       const adapter: BackendAdapter = opts.makeAdapter(entry);
 
-      // Map the registry's `backend_model` onto the upstream call's `model` field,
-      // because the registry name (e.g. 'gpt-4-friendly-alias') may differ from the
-      // backend's actual model id. Phase 2 keeps them identical, but the seam exists.
+      // Map registry name -> backend model id (Phase 2: identical; the seam exists for Phase 3+)
       // Cast to ChatCompletionCreateParams so the adapter methods accept it — the zod
       // passthrough schema produces a superset that is type-compatible at runtime.
       const upstreamParams = { ...body, model: entry.backend_model } as unknown as ChatCompletionCreateParams;
 
-      // AbortController — cancels upstream if the TCP socket closes (client disconnects).
-      // IMPORTANT: Use req.raw.socket.once('close') NOT req.raw.once('close').
-      // The IncomingMessage's 'close' event fires when the message body is consumed
-      // (immediately after Fastify parses the body), NOT on client disconnect.
-      // The Socket's 'close' event fires only when the TCP connection is destroyed.
-      // Plan 02-04's stream branch uses the same pattern — the only difference is
-      // that the stream branch also listens on 'close' to stop the heartbeat.
+      // ── AbortController: load-bearing for SC3 ──────────────────────────────
+      // The signal is forwarded to undici by the openai SDK, which closes the
+      // upstream TCP socket when controller.abort() fires. RESEARCH Pitfall 2.
       const controller = new AbortController();
-      const onSocketClose = () => controller.abort(new Error('client-disconnect'));
-      req.raw.socket?.once('close', onSocketClose);
 
-      if (body.stream === true) {
-        // STREAM BRANCH — implemented in plan 02-04. Returning 501 here is the
-        // contract that plan 02-04 must replace. tests/integration/chat-completions.stream.test.ts
-        // will FAIL until plan 02-04 ships the real handler.
-        return reply.code(501).send({
-          error: {
-            message: 'Streaming branch implemented in plan 02-04 (Phase 2, Wave 4)',
-            type: 'not_implemented',
-            code: 'stream_pending',
-            param: 'stream',
-          },
-        });
-      }
+      // BLOCKER fix (D-C4): exactly ONE 'close' listener; heartbeat-stop wired through
+      // a mutable closure variable so the listener can clean up BOTH the abort and the
+      // heartbeat. Adding a second anonymous listener would leak (no .off() ref).
+      let stopHeartbeat: (() => void) | null = null;
 
-      // NON-STREAM BRANCH
+      // Use req.raw.once('close') NOT req.raw.once('aborted') — 'aborted' is HTTP/1.1-only
+      // and Phase 6 (Traefik) lands H/2 (RESEARCH Anti-Patterns row).
+      // Note: For the close event on IncomingMessage (req.raw), 'close' fires when the
+      // HTTP response is fully closed (i.e., TCP connection destroyed). This is the
+      // correct event for detecting client disconnect on the request side via Fastify's
+      // inject() and real connections alike.
+      const onClose = (): void => {
+        controller.abort(new Error('client-disconnect'));
+        stopHeartbeat?.();  // no-op until heartbeat starts in the stream branch
+      };
+      req.raw.once('close', onClose);
+
       try {
+        if (body.stream === true) {
+          // ── STREAM BRANCH (RESEARCH §Pattern 3 — load-bearing for SC1 + SC3) ──
+          let upstream: AsyncIterable<ChatCompletionChunk>;
+          try {
+            // Some SDKs throw synchronously on bad params; some return a thenable that
+            // rejects. Wrap in try/catch so a PRE-STREAM error becomes a JSON envelope
+            // rather than starting an SSE response we can't recover from.
+            upstream = await adapter.chatCompletionsStream(upstreamParams, controller.signal);
+          } catch (err) {
+            // HTTP not yet 200; emit envelope.
+            req.raw.off('close', onClose);
+            const env = toOpenAIErrorEnvelope(err);
+            const status = mapToHttpStatus(err);
+            if (env === NO_ENVELOPE) return;  // client gone — defensive
+            return reply.code(status).send(env);
+          }
+
+          // Start the heartbeat AFTER the upstream resolves but BEFORE consuming.
+          // Pattern 3 line 488 starts it after the first byte; in our shape, reply.sse(...)
+          // flushes headers on the first iteration, so starting before the first yield
+          // is equivalent. Stops in the iterator's onCleanup AND via onClose's stopHeartbeat
+          // hook (single listener, belt-and-suspenders cleanup paths).
+          const heartbeat = startHeartbeat(reply.raw);
+          stopHeartbeat = () => heartbeat.stop();  // wires onClose to also stop heartbeat
+
+          const sseCleanup = (): void => {
+            heartbeat.stop();
+            req.raw.off('close', onClose);
+          };
+
+          // The SSE plugin sets Content-Type + Cache-Control + Connection on first yield
+          // and calls reply.raw.end() when the iterable completes.
+          await reply.sse(chunkToSseEvents(upstream, {
+            signal: controller.signal,
+            onCleanup: sseCleanup,
+          }));
+
+          // Belt-and-suspenders log: if the request ended with a client-abort, log info.
+          if (controller.signal.aborted) {
+            req.log.info({
+              url: req.url,
+              bytesEmitted: heartbeat.bytesSinceStart,
+              msSinceStart: heartbeat.msSinceStart,
+            }, 'stream: client disconnected');
+          }
+          return;
+        }
+
+        // ── NON-STREAM BRANCH (unchanged from plan 02-03) ────────────────────
         const result = await adapter.chatCompletions(upstreamParams, controller.signal);
-        // Send result verbatim — this is OAI-01 non-stream half + OAI-05 non-stream half.
-        // The setErrorHandler in app.ts handles any thrown APIError / APIConnectionError /
-        // APITimeoutError -> 502/504 with the OpenAI envelope.
+        req.raw.off('close', onClose);
         return reply.send(result);
-      } finally {
-        // Remove the socket listener to avoid memory leaks on long-lived keep-alive connections.
-        req.raw.socket?.off('close', onSocketClose);
+      } catch (err) {
+        // Defense in depth — anything thrown synchronously / from the non-stream branch
+        // ends up here. setErrorHandler in app.ts will turn it into the OpenAI envelope;
+        // re-throw so the centralized handler sees it.
+        req.raw.off('close', onClose);
+        throw err;
       }
     },
   );

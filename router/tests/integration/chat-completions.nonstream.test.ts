@@ -105,16 +105,6 @@ describe('POST /v1/chat/completions stream=false (SC2, OAI-01 non-stream half, O
     expect(env.error.type).toBe('invalid_request_error');
   });
 
-  it('stream=true returns 501 (stub for plan 02-04) — this test will be DELETED in plan 02-04', async () => {
-    const res = await app.inject({
-      method: 'POST',
-      url: '/v1/chat/completions',
-      headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
-      payload: { model: MODEL_NAME, messages: [{ role: 'user', content: 'hi' }], stream: true },
-    });
-    expect(res.statusCode).toBe(501);
-    expect(res.json().error.code).toBe('stream_pending');
-  });
 });
 
 // Live Ollama smoke probe — opt-in via LIVE_OLLAMA=1.
