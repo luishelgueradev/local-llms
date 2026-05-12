@@ -95,6 +95,26 @@ Do NOT add `default-runtime: nvidia` to `/etc/docker/daemon.json` — `compose.y
 
    > **If Step 4 fails with `size_vram=0`:** that is real silent CPU fallback — the costliest debug session in this project's research. The model loaded but inference runs on CPU and is 50-100x slower than GPU. Re-run `bash bin/preflight-gpu.sh`, look for a failed functional check, follow the remediation hint. Do not proceed to Phase 2 until the smoke test passes — the foundation is the whole point of Phase 1.
 
+6. **Verify the router is wired end-to-end (Phase 2).**
+
+   ```bash
+   docker compose up -d --build router
+   bash bin/smoke-test-router.sh
+   ```
+
+   What the script does:
+   - Posts a non-stream `POST /v1/chat/completions` to the router and asserts the OpenAI ChatCompletion shape with `usage.{prompt_tokens, completion_tokens, total_tokens}` populated (SC2).
+   - Posts a streaming `POST /v1/chat/completions` and asserts the SSE response emits `data:` chunks, terminates with `data: [DONE]`, and the second-to-last chunk has the `usage` field (SC1, OAI-04, OAI-05).
+   - Kills a streaming curl mid-flight and polls `docker compose exec ollama curl http://localhost:11434/api/ps` to confirm the abort chain reaches Ollama (SC3 — see RESEARCH §Pitfall 2 for the chain).
+   - Asserts `/healthz` returns 200 unauth + every `/v1/*` route returns 401 missing/wrong bearer (SC4 auth half).
+   - Edits `router/models.yaml` and asserts the router logs `registry reloaded` within 1 s (SC4 hot-reload half).
+   - Greps `docker compose logs router` for any `bearer ...` or `authorization: bearer ...` matches and asserts ZERO (SC5 — pino redact end-to-end).
+
+   Exits 0 on full pass. The output ends with "Phase 2 router verification: COMPLETE."
+
+   > **If SC3 reports a residual VRAM warning:** that is OK — Ollama keeps the model resident in VRAM until `keep_alive` expires (default 5 m). The abort frees the GPU compute slot, not the VRAM. The actual abort-chain regression is covered by the vitest integration test (`router/tests/integration/chat-completions.stream.test.ts -t 'aborts upstream on client disconnect'`).
+   > **If SC5 fails:** something is logging the bearer value or `Authorization:` header. Check that the offending log statement uses `req.log.warn({ url, hasHeader: <bool> }, '...')` instead of dumping the raw request, and re-verify the pino `redact:` paths in `router/src/log/logger.ts`.
+
 ## What Phase 1 establishes
 
 These decisions are set in stone by Phase 1. Later phases inherit them and do not re-discuss them.
@@ -117,6 +137,21 @@ These decisions are set in stone by Phase 1. Later phases inherit them and do no
 - `.env` / `.env.example` — environment contract (gitignored / committed). 8 v1 keys; future phases append, never rename.
 - `/srv/local-llms/` — host data root. NOT in-repo, NOT Docker named volumes. Created by bootstrap.
 - `.planning/` — get-shit-done planning artifacts (PROJECT, ROADMAP, REQUIREMENTS, RESEARCH, per-phase contexts and plans).
+
+## What Phase 2 establishes
+
+These decisions are set in stone by Phase 2. Later phases inherit them and do not re-discuss them.
+
+1. **Router project layout:** code lives in `router/` (top-level subdir) with its own `package.json`, `tsconfig.json`, `src/`, and `Dockerfile`. (D-A1)
+2. **Multi-stage Dockerfile:** 4-stage `deps` → `build` → `prod-deps` → `runtime`; runtime base is `node:22-bookworm-slim`. NEVER `node:22-alpine`, NEVER `:latest`. (D-A2)
+3. **Single externally-reachable surface:** the router publishes `127.0.0.1:3000:3000` (localhost-only). Ollama no longer publishes a host port — every probe goes through `docker compose exec ollama curl ...` or through the router. Phase 6 (Traefik) removes the router's host port too. (D-A4)
+4. **Upstream call pattern:** the router talks to Ollama via the `openai` SDK v6 pointed at `http://ollama:11434/v1` with a placeholder `apiKey: 'ollama'`. The SAME SDK pattern will be reused in Phase 7 (vLLM) and Phase 8 (Ollama Cloud). (D-B1)
+5. **`BackendAdapter` seam:** every backend implementation conforms to a single `BackendAdapter` interface (chatCompletions / chatCompletionsStream); Phase 3 adds `LlamacppOpenAIAdapter` and Phase 8 adds `OllamaCloudAdapter` against this seam without router-code changes. (D-B2)
+6. **Usage tokens passed through:** `stream_options: { include_usage: true }` is set on every upstream call; the final SSE chunk carries `prompt_tokens` / `completion_tokens` / `total_tokens` from the backend, never synthesized router-side. (D-B3)
+7. **`models.yaml` is forward-compatible:** Phase 2 reads `name`, `backend`, `backend_url`, `backend_model`; Phase 3+ optional fields (`capabilities`, `vram_budget_gb`, `concurrency`, `max_model_len`, `profile`) are accepted by zod from day one — no YAML rewrites between phases. (D-B4)
+8. **Per-route OpenAI error envelope:** `{ "error": { "message", "type", "code", "param" } }` for `/v1/chat/completions` and `/healthz`. Phase 4's `/v1/messages` will emit the Anthropic shape side-by-side; no cross-protocol translation. (D-C1)
+9. **Mid-stream error frame:** every stream — clean OR errored OR client-aborted — terminates with `data: [DONE]`. Real upstream errors emit `event: error` BEFORE `[DONE]`; client-aborts skip the error frame (RESEARCH Pitfall 8). (D-C2)
+10. **pino redact from first commit:** `redact: { paths: [req.headers.authorization, req.headers.cookie, *.apiKey, ...], censor: '[REDACTED]' }`. The bash smoke test asserts `docker compose logs router | grep -ciE 'bearer|authorization:bearer'` returns zero across a full session. (ROUTE-05 / SC5)
 
 ## Anti-patterns rejected by this stack
 

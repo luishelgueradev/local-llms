@@ -105,13 +105,12 @@ services:
     #              DNS errors (the v1.0 architecture had ollama on backend
     #              only and assumed pulls would work — they don't because
     #              `internal: true` blocks egress). See 01-04 verification.
-    # Phase 1 also publishes a localhost-only host port so the smoke test
-    # (Plan 04) can hit the API without going through a router that doesn't
-    # exist yet. After Phase 2 lands the router, the `ports:` block can be
-    # REMOVED. The localhost-only bind keeps the surface off the LAN even
-    # before the router.
-    ports:
-      - "127.0.0.1:11434:11434"
+    # ── Phase 2 D-A4 removed: Ollama host port `127.0.0.1:11434:11434` ────────
+    # The router (compose service `router`) is now the only externally-reachable
+    # surface (on `127.0.0.1:3000:3000`). Any direct-Ollama probe MUST go through
+    # `docker compose exec -T ollama curl http://localhost:11434/...` from the host,
+    # which is what bin/smoke-test-gpu.sh and bin/smoke-test-router.sh use.
+    # See 02-CONTEXT.md D-A4 + 02-RESEARCH.md Assumption A5 for the rationale.
     networks:
       - backend
       - app

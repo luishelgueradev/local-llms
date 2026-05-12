@@ -257,8 +257,12 @@ wait "${CURL_PID}" 2>/dev/null || true
 #     snapshot2.expires_at > snapshot1.expires_at + slack     → still generating → abort FAILED
 #
 # Distinguishes "abort propagated, keep_alive resident" from "abort never propagated".
+# Note: Ollama image (ollama/ollama:0.5.7) does not ship curl. Use router container's
+# Node.js fetch (backend network) to probe Ollama /api/ps (D-A4 + Phase 2 fix).
 _ollama_ps_snapshot() {
-  docker compose exec -T "${OLLAMA_SVC}" curl -fsS http://localhost:11434/api/ps 2>/dev/null || true
+  docker compose exec -T "${ROUTER_SVC}" node -e \
+    "fetch('http://ollama:11434/api/ps').then(r=>r.text()).then(t=>process.stdout.write(t)).catch(()=>process.exit(1))" \
+    2>/dev/null || true
 }
 
 SNAP1=$(_ollama_ps_snapshot)

@@ -35,10 +35,40 @@ set -uo pipefail
 # ---------------------------------------------------------------------------
 readonly DEFAULT_MODEL="llama3.2:3b-instruct-q4_K_M"
 readonly DEFAULT_VRAM_THRESHOLD_MB=1024
-readonly OLLAMA_URL="http://127.0.0.1:11434"
+readonly OLLAMA_URL="http://127.0.0.1:11434"  # label only — no longer a reachable host port (Phase 2 D-A4)
 readonly OLLAMA_SVC="ollama"
 readonly PROMPT="What is 2+2? Answer in one short sentence."
 readonly KEEP_ALIVE="5m"
+
+# Phase 2 D-A4 + RESEARCH Assumption A5: Ollama no longer publishes a host port.
+# The Ollama container image (ollama/ollama:0.5.7) does not ship curl or wget.
+# All Ollama probes go through `docker compose exec -T router node -e "fetch(...)"`.
+# The router service is on the `backend` network and can reach Ollama at http://ollama:11434.
+# OLLAMA_URL above is kept as a label for diagnostic banner output only.
+readonly OLLAMA_INTERNAL_URL="http://ollama:11434"
+readonly ROUTER_SVC="router"
+
+# ollama_get PATH: GET request to Ollama via the router container's Node.js fetch.
+# Returns the response body on success, empty string on failure.
+ollama_get() {
+  local path="${1:-/}"
+  docker compose exec -T "${ROUTER_SVC}" node -e \
+    "fetch('${OLLAMA_INTERNAL_URL}${path}').then(r=>r.text()).then(t=>process.stdout.write(t)).catch(()=>process.exit(1))" \
+    2>/dev/null || true
+}
+
+# ollama_post PATH BODY: POST JSON body to Ollama via the router container's Node.js fetch.
+# Returns the response body on success, empty string on failure.
+ollama_post() {
+  local path="${1:-/}"
+  local body="${2:-{}}"
+  docker compose exec -T \
+    -e "_OLLAMA_URL=${OLLAMA_INTERNAL_URL}${path}" \
+    -e "_OLLAMA_BODY=${body}" \
+    "${ROUTER_SVC}" node -e \
+    "const u=process.env._OLLAMA_URL,b=process.env._OLLAMA_BODY;fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:b}).then(r=>r.text()).then(t=>process.stdout.write(t)).catch(()=>process.exit(1))" \
+    2>/dev/null || true
+}
 
 # ---------------------------------------------------------------------------
 # CLI argument parsing
@@ -127,11 +157,11 @@ echo "[smoke-test] Pre-flight: ollama service is running."
 # ---------------------------------------------------------------------------
 # Pre-flight: Ollama API must be reachable
 # ---------------------------------------------------------------------------
-echo "[smoke-test] Pre-flight: checking Ollama API reachability at ${OLLAMA_URL} ..."
+echo "[smoke-test] Pre-flight: checking Ollama API reachability via 'docker compose exec ollama' ..."
 
-TAGS_RESPONSE=$(curl -fsS "${OLLAMA_URL}/api/tags" 2>/dev/null || true)
+TAGS_RESPONSE=$(ollama_get "/api/tags")
 if [[ -z "$TAGS_RESPONSE" ]]; then
-  fail "ollama is not reachable on ${OLLAMA_URL}. Check \`docker compose ps ollama\` healthcheck status."
+  fail "ollama is not reachable via docker compose exec. Check \`docker compose ps ollama\` healthcheck status."
   echo ""
   echo "[smoke-test] Cannot proceed without a reachable Ollama API. Aborting."
   exit 1
@@ -139,7 +169,7 @@ fi
 
 # Verify it returned a JSON object (not an error page)
 if ! echo "$TAGS_RESPONSE" | python3 -c 'import sys, json; json.load(sys.stdin)' 2>/dev/null; then
-  fail "ollama API at ${OLLAMA_URL}/api/tags did not return valid JSON. Check \`docker compose logs ollama\`."
+  fail "ollama API (via exec) at /api/tags did not return valid JSON. Check \`docker compose logs ollama\`."
   echo ""
   echo "[smoke-test] Cannot proceed without a valid Ollama API response. Aborting."
   exit 1
@@ -180,7 +210,7 @@ echo ""
 #           post-generate nvidia-smi inspection in Step 2 cannot race against
 #           Ollama's idle-unload timer.
 # ---------------------------------------------------------------------------
-echo "[smoke-test] Step 1: issuing POST ${OLLAMA_URL}/api/generate ..."
+echo "[smoke-test] Step 1: issuing POST http://localhost:11434/api/generate (via docker compose exec) ..."
 echo "[smoke-test]          model=${MODEL}  stream=false  keep_alive=${KEEP_ALIVE}"
 
 # Build JSON safely — pass shell vars to python via env, never via string
@@ -200,10 +230,7 @@ print(json.dumps({
 }))
 ')
 
-GENERATE_RESPONSE=$(curl -fsS \
-  -H 'Content-Type: application/json' \
-  -d "$REQUEST_BODY" \
-  "${OLLAMA_URL}/api/generate" 2>/dev/null || true)
+GENERATE_RESPONSE=$(ollama_post "/api/generate" "$REQUEST_BODY")
 
 if [[ -z "$GENERATE_RESPONSE" ]]; then
   fail "POST /api/generate returned no response. Check \`docker compose logs ollama\`."
@@ -284,7 +311,7 @@ echo "[smoke-test] Step 4: asserting model is resident in VRAM (via ollama /api/
 
 GPU_RESIDENCY_DETAIL="not yet checked"
 
-PS_RESPONSE=$(curl -s --max-time 5 "${OLLAMA_URL}/api/ps" 2>/dev/null || true)
+PS_RESPONSE=$(ollama_get "/api/ps")
 
 if [[ -z "$PS_RESPONSE" ]]; then
   fail "could not reach ${OLLAMA_URL}/api/ps. Cannot assert GPU residency."
