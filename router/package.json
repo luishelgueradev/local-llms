@@ -1,0 +1,37 @@
+{
+  "name": "@local-llms/router",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.0.0" },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsup",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "test:unit": "vitest run tests/unit",
+    "test:integration": "vitest run tests/integration",
+    "lint": "biome check src tests",
+    "format": "biome format --write src tests",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "fastify": "^5.8.5",
+    "fastify-sse-v2": "^4.2.2",
+    "@bram-dc/fastify-type-provider-zod": "^7.0.1",
+    "zod": "^4.4.3",
+    "openai": "^6.37.0",
+    "js-yaml": "^4.1.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "@types/node": "^22.0.0",
+    "@types/js-yaml": "^4.0.0",
+    "tsx": "^4.21.0",
+    "tsup": "^8.5.1",
+    "vitest": "^4.1.6",
+    "msw": "^2.14.6",
+    "pino-pretty": "^11.0.0",
+    "@biomejs/biome": "latest"
+  }
+}
