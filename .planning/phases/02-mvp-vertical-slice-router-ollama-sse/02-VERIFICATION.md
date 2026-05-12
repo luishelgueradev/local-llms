@@ -1,8 +1,8 @@
 ---
 phase: 02-mvp-vertical-slice-router-ollama-sse
 verified: 2026-05-12T00:00:00Z
-status: human_needed
-score: 5/6 must-haves verified
+status: passed
+score: 6/6 must-haves verified (SC3 attested via HUMAN-UAT.md)
 overrides_applied: 0
 human_verification:
   - test: "SC3 live abort — kill curl mid-stream and confirm Ollama stops generating within ~1s"
