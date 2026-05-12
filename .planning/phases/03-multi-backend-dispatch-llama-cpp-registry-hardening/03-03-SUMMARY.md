@@ -189,3 +189,20 @@ app.liveness.start(newUrls);
 | T-3-D3 (overlapping probes) | MITIGATED | inFlight Set guard in runOne; test 9 asserts exactly 1 call on never-resolving probe |
 
 ## Self-Check: PASSED
+
+| Item | Status |
+|------|--------|
+| router/src/backends/liveness.ts | FOUND |
+| router/src/routes/readyz.ts | FOUND |
+| router/tests/unit/liveness.test.ts | FOUND |
+| router/tests/unit/readyz.stale.test.ts | FOUND |
+| router/tests/integration/readyz.test.ts | FOUND |
+| router/tests/integration/shutdown.test.ts | FOUND |
+| .planning/phases/.../03-03-SUMMARY.md | FOUND |
+| commit 4e0ca73 (RED Task 1) | FOUND |
+| commit b57a838 (GREEN Task 1) | FOUND |
+| commit 4656497 (RED Task 2) | FOUND |
+| commit 6c1aa2d (GREEN Task 2) | FOUND |
+| commit 2696deb (docs/SUMMARY) | FOUND |
+| Full test suite (20 files, 140 pass) | PASSED |
+| npx tsc --noEmit | CLEAN |
