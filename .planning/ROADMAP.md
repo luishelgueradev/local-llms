@@ -79,7 +79,7 @@ Plans:
 - [x] 03-01-PLAN.md — Slice A: llama.cpp Compose service + LlamacppOpenAIAdapter + factory dispatch + msw handlers + SC1 integration proof (BCKND-02, BCKND-05)
 
 **Wave 3** *(depends on Wave 2 — needs probeLiveness on adapters + factory.ts; also needs widened registry + getCreatedAtSec from Wave 1)*
-- [ ] 03-03-PLAN.md — Slice C: /readyz endpoint + per-backend liveness probe scheduler + onClose shutdown hook + hot-reload re-registration (ROUTE-06)
+- [x] 03-03-PLAN.md — Slice C: /readyz endpoint + per-backend liveness probe scheduler + onClose shutdown hook + hot-reload re-registration (ROUTE-06)
 
 **Wave 4** *(depends on Wave 3 — serializes app.ts edits between 03-03 and this plan; both touch app.ts + module-augmentation block)*
 - [ ] 03-04-PLAN.md — Slice D: per-backend BackendSemaphore (hand-rolled with revision-1 drain() abort-listener cleanup) + BackendSaturatedError → 429 + Retry-After + safeRelease idempotency on stream end / abort / mid-stream error (with grep-verifiable sseCleanup→safeRelease lockdown) + chat-completions test-fixture updates for the widened RegisterChatCompletionsOpts (ROUTE-07)
