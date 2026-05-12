@@ -70,7 +70,22 @@ Plans:
   3. `GET /v1/models` returns every registry model with capability flags (`chat`, `embeddings`, `vision`, `tools`); `/readyz` returns 200 only when all configured backends pass their liveness probe and 503 otherwise; per-backend liveness is probed on a schedule and cached.
   4. `models.yaml` declares per-model VRAM budget (max-model-len, expected VRAM share); a config that would exceed the 16 GB envelope is rejected at startup with a clear error rather than crashing on first request.
   5. Per-backend concurrency cap is configurable via `models.yaml`; the (N+1)th in-flight request to a saturated backend either queues to completion or returns `429 Retry-After`. Compose `profiles:` allow bringing up exactly one backend (`vllm` | `llamacpp` | `ollama`) without breaking the rest of the stack.
-**Plans:** TBD
+**Plans:** 5 plans
+Plans:
+**Wave 1**
+- [ ] 03-02-PLAN.md — Slice B+E: schema widening (LocalBackendEnum, required capabilities/vram_budget_gb, VRAM-envelope superRefine), RegistryStore.getCreatedAtSec snapshot timestamp (D-C3), `/v1/models` route, app.ts factory swap + route registration, router/models.yaml data population (both entries + backends section) (OAI-03, BCKND-04)
+
+**Wave 2** *(depends on Wave 1 — Plan 03-02 owns the widened schema + populated models.yaml; this plan loads them)*
+- [ ] 03-01-PLAN.md — Slice A: llama.cpp Compose service + LlamacppOpenAIAdapter + factory dispatch + msw handlers + SC1 integration proof (BCKND-02, BCKND-05)
+
+**Wave 3** *(depends on Wave 2 — needs probeLiveness on adapters + factory.ts; also needs widened registry + getCreatedAtSec from Wave 1)*
+- [ ] 03-03-PLAN.md — Slice C: /readyz endpoint + per-backend liveness probe scheduler + onClose shutdown hook + hot-reload re-registration (ROUTE-06)
+
+**Wave 4** *(depends on Wave 3 — serializes app.ts edits between 03-03 and this plan; both touch app.ts + module-augmentation block)*
+- [ ] 03-04-PLAN.md — Slice D: per-backend BackendSemaphore (hand-rolled with revision-1 drain() abort-listener cleanup) + BackendSaturatedError → 429 + Retry-After + safeRelease idempotency on stream end / abort / mid-stream error (with grep-verifiable sseCleanup→safeRelease lockdown) + chat-completions test-fixture updates for the widened RegisterChatCompletionsOpts (ROUTE-07)
+
+**Wave 5** *(depends on Waves 1–4; live verification)*
+- [ ] 03-05-PLAN.md — Slice F: bin/smoke-test-router.sh extension (SC1 profile-swap verification) + README Phase 3 docs (manual GGUF download, --profile pattern, /readyz semantics) + human-verify checkpoint against live GPU+stack (BCKND-02, BCKND-05)
 
 ### Phase 4: Anthropic Surface — `/v1/messages`, Tool Calling, Vision
 **Goal:** Land the single hardest item in the project — bidirectional Anthropic ↔ canonical ↔ OpenAI translation with typed streaming events, parallel tool calls, and vision — on top of a small, fast stack so tests are quick and the canonical-shape decision propagates correctly into every later phase.
@@ -160,7 +175,7 @@ Plans:
 |-------|----------------|--------|-----------|
 | 1. GPU + Compose Foundation | 4/4 | Complete | 2026-05-10 |
 | 2. MVP Vertical Slice — Router + Ollama + SSE | 0/0 | Not started | - |
-| 3. Multi-Backend Dispatch — llama.cpp + Registry Hardening | 0/0 | Not started | - |
+| 3. Multi-Backend Dispatch — llama.cpp + Registry Hardening | 0/5 | Planned (revision 1) | - |
 | 4. Anthropic Surface — `/v1/messages`, Tool Calling, Vision | 0/0 | Not started | - |
 | 5. Postgres + Observability Seam | 0/0 | Not started | - |
 | 6. Traefik + TLS + Open WebUI | 0/0 | Not started | - |
@@ -181,6 +196,9 @@ Plans:
 - Phases 4, 6, 7, and 8 are flagged for `/gsd-research-phase` before planning per SUMMARY.md "Research Flags".
 - Phase 6 is the only phase with a UI surface (Open WebUI); the rest are backend/infra. `/gsd-ui-phase` recommendation belongs to Phase 6.
 - "Mode: mvp" applies to every phase: each phase ships an end-to-end vertical slice that delivers an observable user-facing capability — not a pile of backend tasks waiting on integration.
+- **Phase 3 plans were revised 2026-05-12** in response to `gsd-plan-checker` blockers — see the Wave block above for the new layout (Wave 1: 03-02 owns models.yaml; Waves 2–5 serialize the rest to avoid file-level collisions on `router/models.yaml` and `router/src/app.ts`).
 
 ---
 *Roadmap created: 2026-05-10*
+*Phase 3 plans added: 2026-05-12*
+*Phase 3 revision 1 applied: 2026-05-12 — wave reorder + Blocker 4 (D-C3) + Warnings 5/6/7*

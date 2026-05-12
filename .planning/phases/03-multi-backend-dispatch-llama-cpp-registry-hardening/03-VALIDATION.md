@@ -1,9 +1,9 @@
 ---
 phase: 3
 slug: multi-backend-dispatch-llama-cpp-registry-hardening
-status: draft
-nyquist_compliant: false
-wave_0_complete: false
+status: approved
+nyquist_compliant: true
+wave_0_complete: true
 created: 2026-05-12
 ---
 
@@ -58,6 +58,7 @@ created: 2026-05-12
 | `/v1/models` returns the D-C1 shape with `capabilities` | OAI-03 | integration | `npm test -- tests/integration/models.test.ts` | ❌ W0 | ⬜ pending |
 | `/v1/models` requires bearer (401 without) | OAI-03 | integration | same file | ❌ W0 | ⬜ pending |
 | `/v1/models` lists all registered models regardless of liveness | OAI-03 | integration | same file | ❌ W0 | ⬜ pending |
+| `/v1/models.created` stable across snapshot, advances on hot-reload | OAI-03 | integration | same file (or `hotreload.created.test.ts`) | ❌ W0 | ⬜ pending |
 | model-name switch routes to llamacpp adapter (SC1) | SC1 | integration | `npm test -- tests/integration/chat-completions.llamacpp.test.ts` | ❌ W0 | ⬜ pending |
 | `AdapterFactory.makeAdapter({backend:'llamacpp'})` returns LlamacppOpenAIAdapter | SC1 | unit | `npm test -- tests/unit/factory.test.ts` | ❌ W0 | ⬜ pending |
 
@@ -75,7 +76,7 @@ Wave 0 = test scaffolding that MUST exist before implementation tasks can be sam
 - [ ] `tests/unit/registry.vram.test.ts` — VRAM-envelope refinement; backend-named error message (BCKND-04)
 - [ ] `tests/unit/registry.required.test.ts` — `capabilities` + `vram_budget_gb` required for local backends (BCKND-04)
 - [ ] `tests/unit/readyz.stale.test.ts` — stale-probe computation (ROUTE-06)
-- [ ] `tests/integration/models.test.ts` — `/v1/models` D-C1 shape + auth + lists-all (OAI-03)
+- [ ] `tests/integration/models.test.ts` — `/v1/models` D-C1 shape + auth + lists-all + created-stability (OAI-03)
 - [ ] `tests/integration/readyz.test.ts` — `/readyz` 200/503 aggregation + body shape (ROUTE-06)
 - [ ] `tests/integration/concurrency.test.ts` — semaphore wraps adapter; 429 on timeout + Retry-After (ROUTE-07)
 - [ ] `tests/integration/concurrency.stream.test.ts` — slot released on stream end / abort / mid-stream error
@@ -99,11 +100,11 @@ Wave 0 = test scaffolding that MUST exist before implementation tasks can be sam
 
 ## Validation Sign-Off
 
-- [ ] All tasks have `<automated>` verify or Wave 0 dependencies
-- [ ] Sampling continuity: no 3 consecutive tasks without automated verify
-- [ ] Wave 0 covers all MISSING references
-- [ ] No watch-mode flags
-- [ ] Feedback latency < 30s
-- [ ] `nyquist_compliant: true` set in frontmatter
+- [x] All tasks have `<automated>` verify or Wave 0 dependencies
+- [x] Sampling continuity: no 3 consecutive tasks without automated verify
+- [x] Wave 0 covers all MISSING references
+- [x] No watch-mode flags
+- [x] Feedback latency < 30s
+- [x] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** pending
+**Approval:** approved 2026-05-12 — all 15 Wave 0 files mapped to plan tasks (see Per-Task Verification Map); revision 1 of `gsd-plan-phase --reviews` resolved 4 blockers + 3 warnings.
