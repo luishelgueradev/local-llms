@@ -33,6 +33,11 @@ beforeEach(async () => {
     bearerToken: TOKEN,
     loggerOpts: false as never,
     makeAdapter: (entry: ModelEntry) => new OllamaOpenAIAdapter(entry.backend_url),
+    // Revision 1 (Warning 5) — fake semaphore that grants immediately + idempotent release.
+    // These tests do not exercise the rate-limit path; the fake bypasses the real semaphore.
+    semaphores: {
+      get: () => ({ acquire: async () => () => {}, stats: () => ({ inFlight: 0, queued: 0 }) }) as never,
+    },
   });
 });
 afterEach(async () => {
@@ -171,6 +176,10 @@ describe('POST /v1/chat/completions stream=true — abort + error paths (SC3 moc
       bearerToken: TOKEN,
       loggerOpts: false as never,
       makeAdapter: () => new MockAbortAdapter(),
+      // Revision 1 (Warning 5) — fake semaphore for this local buildApp instance.
+      semaphores: {
+        get: () => ({ acquire: async () => () => {}, stats: () => ({ inFlight: 0, queued: 0 }) }) as never,
+      },
     });
 
     // Start inject (non-blocking — runs the SSE generator in the background)

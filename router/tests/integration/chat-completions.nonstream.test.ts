@@ -32,6 +32,11 @@ beforeEach(async () => {
     bearerToken: TOKEN,
     loggerOpts: false as never,
     makeAdapter: (entry: ModelEntry) => new OllamaOpenAIAdapter(entry.backend_url),
+    // Revision 1 (Warning 5) — fake semaphore that grants immediately + idempotent release.
+    // These tests do not exercise the rate-limit path; the fake bypasses the real semaphore.
+    semaphores: {
+      get: () => ({ acquire: async () => () => {}, stats: () => ({ inFlight: 0, queued: 0 }) }) as never,
+    },
   });
 });
 afterEach(async () => {
