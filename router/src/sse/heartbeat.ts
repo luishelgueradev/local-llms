@@ -23,6 +23,11 @@ export interface SocketLike {
   writableEnded?: boolean;
 }
 
+// ': keep-alive\n\n' is 14 bytes UTF-8 (':' + ' ' + 'keep-alive' + '\n' + '\n').
+// Compute once at module load so the per-beat counter never drifts (WR-01 fix).
+const HEARTBEAT_PAYLOAD = ': keep-alive\n\n';
+const HEARTBEAT_PAYLOAD_BYTES = Buffer.byteLength(HEARTBEAT_PAYLOAD, 'utf8');
+
 export function startHeartbeat(socket: SocketLike, intervalMs = 15_000): HeartbeatHandle {
   const startedAt = Date.now();
   let bytes = 0;
@@ -37,9 +42,8 @@ export function startHeartbeat(socket: SocketLike, intervalMs = 15_000): Heartbe
   const beat = (): void => {
     if (stopped || socket.writableEnded) return;
     try {
-      socket.write(': keep-alive\n\n');
-      // ': keep-alive\n\n' is 16 bytes UTF-8
-      bytes += 16;
+      socket.write(HEARTBEAT_PAYLOAD);
+      bytes += HEARTBEAT_PAYLOAD_BYTES;
     } catch {
       // EPIPE on a closed socket — clean up silently (Pitfall 3).
       stop();
