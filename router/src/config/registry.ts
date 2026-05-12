@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, watch as fsWatch, watchFile as fsWatchFile, unwatchFile as fsUnwatchFile } from 'node:fs';
+import type { FSWatcher, Stats } from 'node:fs';
 import yaml from 'js-yaml';
 import { z } from 'zod/v4';
 import { RegistryUnknownModelError } from '../errors/envelope.js';
@@ -69,3 +70,79 @@ export function makeRegistryStore(initial: Registry): RegistryStore {
 }
 
 export { RegistryUnknownModelError } from '../errors/envelope.js';
+
+// ─── Hot-reload (Plan 02-05) ─────────────────────────────────────────────────
+// RESEARCH §Pitfall 6 (250ms debounce; keep previous on error)
+// RESEARCH §Pitfall 7 (fs.watch on WSL2 — listen to both 'change' and 'rename')
+
+export interface WatchRegistryOpts {
+  debounceMs?: number;
+  onReload?: (next: Registry) => void;
+  onError?: (err: unknown) => void;
+  /** RESEARCH A4 / Pitfall 7 — polling fallback for WSL2 + Docker Desktop. */
+  usePolling?: boolean;
+  pollingIntervalMs?: number;
+}
+
+export interface RegistryWatcher {
+  stop(): void;
+}
+
+export function watchRegistry(
+  path: string,
+  store: RegistryStore,
+  opts: WatchRegistryOpts = {},
+): RegistryWatcher {
+  const debounceMs = opts.debounceMs ?? 250;
+  const usePolling = opts.usePolling ?? false;
+  const pollingIntervalMs = opts.pollingIntervalMs ?? 1000;
+  let timer: NodeJS.Timeout | null = null;
+  let watcher: FSWatcher | null = null;
+  let pollingActive = false;
+  let stopped = false;
+
+  const reload = (): void => {
+    if (stopped) return;
+    try {
+      const next = loadRegistryFromFile(path);
+      store._swap(next);
+      opts.onReload?.(next);
+    } catch (err) {
+      // D-C3 row "models.yaml hot-reload validation fail":
+      // log at error AND keep previous registry — DO NOT crash, DO NOT swap.
+      opts.onError?.(err);
+    }
+  };
+
+  const scheduleReload = (): void => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(reload, debounceMs);
+  };
+
+  try {
+    if (usePolling) {
+      // fs.watchFile polls — reliable on WSL2 bind mounts, heavier than fs.watch.
+      // listener fires whenever stats change; debounce identically.
+      fsWatchFile(path, { interval: pollingIntervalMs, persistent: false }, (curr: Stats, prev: Stats) => {
+        if (curr.mtimeMs !== prev.mtimeMs || curr.size !== prev.size) scheduleReload();
+      });
+      pollingActive = true;
+    } else {
+      // fs.watch: both 'change' and 'rename' come through the same listener (Pitfall 7).
+      watcher = fsWatch(path, { persistent: false }, (_eventType, _filename) => scheduleReload());
+    }
+  } catch (err) {
+    // fs.watch / fs.watchFile can throw on a missing file. Surface so the caller decides.
+    opts.onError?.(err);
+  }
+
+  return {
+    stop(): void {
+      if (stopped) return;
+      stopped = true;
+      if (timer) { clearTimeout(timer); timer = null; }
+      if (watcher) { try { watcher.close(); } catch { /* idempotent */ } watcher = null; }
+      if (pollingActive) { try { fsUnwatchFile(path); } catch { /* idempotent */ } pollingActive = false; }
+    },
+  };
+}

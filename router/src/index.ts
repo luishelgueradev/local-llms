@@ -1,5 +1,5 @@
 import { loadEnv } from './config/env.js';
-import { loadRegistryFromFile, makeRegistryStore } from './config/registry.js';
+import { loadRegistryFromFile, makeRegistryStore, watchRegistry } from './config/registry.js';
 import { buildApp } from './app.js';
 import { makeLoggerOptions } from './log/logger.js';
 
@@ -14,9 +14,28 @@ async function main(): Promise<void> {
 
   const app = await buildApp({ registry, bearerToken: env.ROUTER_BEARER_TOKEN, loggerOpts });
 
-  const closeGracefully = async (signal: string) => {
+  // RESEARCH A4 / Pitfall 7 — operator opts into polling fallback for WSL2 + Docker
+  // Desktop bind-mount flakiness via env. Default false (event-based fs.watch).
+  const usePolling = process.env.MODELS_YAML_WATCH === 'poll';
+  if (usePolling) app.log.info('registry hot-reload: polling fallback enabled (MODELS_YAML_WATCH=poll)');
+
+  const watcher = watchRegistry(env.MODELS_YAML_PATH, registry, {
+    debounceMs: 250,
+    usePolling,
+    pollingIntervalMs: 1000,
+    onReload: (next) => {
+      app.log.info({ models: next.models.length, names: next.models.map((m) => m.name) }, 'registry reloaded');
+    },
+    onError: (err) => {
+      // D-C3 — keep previous registry, log at error, do not crash.
+      app.log.error({ err }, 'registry hot-reload failed (keeping previous in-memory registry)');
+    },
+  });
+
+  const closeGracefully = async (signal: string): Promise<void> => {
     app.log.info({ signal }, 'received shutdown signal — closing');
     try {
+      watcher.stop();
       await app.close();
       process.exit(0);
     } catch (err) {

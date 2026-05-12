@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { writeFileSync, mkdtempSync } from 'node:fs';
+import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   loadRegistryFromFile,
   loadRegistryFromString,
   makeRegistryStore,
+  watchRegistry,
   RegistryUnknownModelError,
 } from '../../src/config/registry.js';
 
@@ -122,9 +123,97 @@ describe('models.yaml registry — store (ROUTE-02 startup half)', () => {
   });
 });
 
-// Hot-reload tests are plan 02-05's responsibility — keep the stubs.
-describe('models.yaml registry — hot-reload (ROUTE-02, SC4) — implemented in plan 02-05', () => {
-  it.todo('debounce coalesces double-write within 250ms');
-  it.todo('invalid YAML keeps the previous registry in memory (D-C3 row)');
-  it.todo('valid edit swaps the registry atomically');
+describe('models.yaml registry — hot-reload (ROUTE-02 hot-reload half, SC4)', () => {
+  async function writeAndWait(path: string, content: string, marginMs = 350): Promise<void> {
+    writeFileSync(path, content);
+    await new Promise((r) => setTimeout(r, marginMs));
+  }
+
+  it('valid edit swaps the registry atomically', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'reg-watch-'));
+    const path = join(dir, 'models.yaml');
+    writeFileSync(path, MIN_YAML);
+    const store = makeRegistryStore(loadRegistryFromString(MIN_YAML));
+    let reloaded: unknown = null;
+    const w = watchRegistry(path, store, { debounceMs: 100, onReload: (n) => { reloaded = n; } });
+
+    await writeAndWait(path, `
+models:
+  - name: llama3.2:3b-instruct-q4_K_M
+    backend: ollama
+    backend_url: http://ollama:11434/v1
+    backend_model: llama3.2:3b-instruct-q4_K_M
+  - name: newmodel
+    backend: ollama
+    backend_url: http://ollama:11434/v1
+    backend_model: newmodel
+    `, 250);
+
+    expect(reloaded).toBeTruthy();
+    expect(store.get().models).toHaveLength(2);
+    expect(store.resolve('newmodel').backend).toBe('ollama');
+    w.stop();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('debounce coalesces double-write within debounce window', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'reg-watch-'));
+    const path = join(dir, 'models.yaml');
+    writeFileSync(path, MIN_YAML);
+    const store = makeRegistryStore(loadRegistryFromString(MIN_YAML));
+    let reloadCount = 0;
+    const w = watchRegistry(path, store, { debounceMs: 200, onReload: () => { reloadCount++; } });
+
+    // Two rapid writes within the debounce window — should coalesce to 1 reload.
+    writeFileSync(path, `${MIN_YAML}\n# comment one\n`);
+    await new Promise((r) => setTimeout(r, 50));
+    writeFileSync(path, `${MIN_YAML}\n# comment two\n`);
+    await new Promise((r) => setTimeout(r, 350));
+
+    expect(reloadCount).toBe(1);  // coalesced
+    w.stop();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('invalid YAML keeps the previous registry in memory (D-C3 row)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'reg-watch-'));
+    const path = join(dir, 'models.yaml');
+    writeFileSync(path, MIN_YAML);
+    const store = makeRegistryStore(loadRegistryFromString(MIN_YAML));
+    let errored = 0;
+    let reloaded = 0;
+    const w = watchRegistry(path, store, {
+      debounceMs: 100,
+      onReload: () => { reloaded++; },
+      onError: () => { errored++; },
+    });
+
+    await writeAndWait(path, `
+models:
+  - backend: ollama
+    backend_url: http://ollama:11434/v1
+    # name missing — should fail zod
+    `, 250);
+
+    expect(errored).toBe(1);
+    expect(reloaded).toBe(0);
+    // Previous registry MUST still resolve correctly.
+    expect(store.resolve('llama3.2:3b-instruct-q4_K_M').backend).toBe('ollama');
+    w.stop();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('.stop() is idempotent and prevents further reloads', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'reg-watch-'));
+    const path = join(dir, 'models.yaml');
+    writeFileSync(path, MIN_YAML);
+    const store = makeRegistryStore(loadRegistryFromString(MIN_YAML));
+    let reloaded = 0;
+    const w = watchRegistry(path, store, { debounceMs: 50, onReload: () => { reloaded++; } });
+    w.stop();
+    w.stop();  // idempotent
+    await writeAndWait(path, `${MIN_YAML}\n# after stop\n`, 200);
+    expect(reloaded).toBe(0);
+    rmSync(dir, { recursive: true, force: true });
+  });
 });
