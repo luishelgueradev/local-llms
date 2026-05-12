@@ -124,10 +124,22 @@ export function registerChatCompletionsRoute(
 
           // The SSE plugin sets Content-Type + Cache-Control + Connection on first yield
           // and calls reply.raw.end() when the iterable completes.
-          await reply.sse(chunkToSseEvents(upstream, {
-            signal: controller.signal,
-            onCleanup: sseCleanup,
-          }));
+          //
+          // WR-04 fix: wrap in try/finally so the heartbeat is always stopped, including
+          // when `reply.sse(...)` rejects synchronously (e.g., headers already sent /
+          // plugin in a degraded state). Without this, the `onCleanup` callback inside
+          // the iterator never runs, and `onClose`/`stopHeartbeat` may also have been
+          // detached, leaving an unref'd interval scheduled until the next EPIPE.
+          // `heartbeat.stop()` is idempotent — calling it twice (here AND from
+          // sseCleanup) is safe.
+          try {
+            await reply.sse(chunkToSseEvents(upstream, {
+              signal: controller.signal,
+              onCleanup: sseCleanup,
+            }));
+          } finally {
+            heartbeat.stop();
+          }
 
           // Belt-and-suspenders log: if the request ended with a client-abort, log info.
           if (controller.signal.aborted) {
