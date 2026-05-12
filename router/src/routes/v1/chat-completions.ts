@@ -75,17 +75,21 @@ export function registerChatCompletionsRoute(
       // heartbeat. Adding a second anonymous listener would leak (no .off() ref).
       let stopHeartbeat: (() => void) | null = null;
 
-      // Use req.raw.once('close') NOT req.raw.once('aborted') — 'aborted' is HTTP/1.1-only
-      // and Phase 6 (Traefik) lands H/2 (RESEARCH Anti-Patterns row).
-      // Note: For the close event on IncomingMessage (req.raw), 'close' fires when the
-      // HTTP response is fully closed (i.e., TCP connection destroyed). This is the
-      // correct event for detecting client disconnect on the request side via Fastify's
-      // inject() and real connections alike.
+      // IMPORTANT: Use req.raw.socket.once('close') NOT req.raw.once('close').
+      // IncomingMessage 'close' fires when the HTTP message body is fully consumed
+      // by Fastify's body parser — i.e., IMMEDIATELY after the body is parsed, not
+      // when the TCP connection closes. This was verified empirically in plan 02-03
+      // (see "Socket vs IncomingMessage close" decision) and confirmed in plan 02-04
+      // live testing: using req.raw.once('close') caused controller.abort() to fire
+      // before chatCompletionsStream() was called, producing empty 200 responses.
+      // Socket 'close' fires only when the underlying TCP connection is destroyed,
+      // which is the correct signal for client disconnect.
+      // Not using req.raw.once('aborted') because 'aborted' is HTTP/1.1-only.
       const onClose = (): void => {
         controller.abort(new Error('client-disconnect'));
         stopHeartbeat?.();  // no-op until heartbeat starts in the stream branch
       };
-      req.raw.once('close', onClose);
+      req.raw.socket?.once('close', onClose);
 
       try {
         if (body.stream === true) {
@@ -98,7 +102,7 @@ export function registerChatCompletionsRoute(
             upstream = await adapter.chatCompletionsStream(upstreamParams, controller.signal);
           } catch (err) {
             // HTTP not yet 200; emit envelope.
-            req.raw.off('close', onClose);
+            req.raw.socket?.off('close', onClose);
             const env = toOpenAIErrorEnvelope(err);
             const status = mapToHttpStatus(err);
             if (env === NO_ENVELOPE) return;  // client gone — defensive
@@ -115,7 +119,7 @@ export function registerChatCompletionsRoute(
 
           const sseCleanup = (): void => {
             heartbeat.stop();
-            req.raw.off('close', onClose);
+            req.raw.socket?.off('close', onClose);
           };
 
           // The SSE plugin sets Content-Type + Cache-Control + Connection on first yield
@@ -138,13 +142,13 @@ export function registerChatCompletionsRoute(
 
         // ── NON-STREAM BRANCH (unchanged from plan 02-03) ────────────────────
         const result = await adapter.chatCompletions(upstreamParams, controller.signal);
-        req.raw.off('close', onClose);
+        req.raw.socket?.off('close', onClose);
         return reply.send(result);
       } catch (err) {
         // Defense in depth — anything thrown synchronously / from the non-stream branch
         // ends up here. setErrorHandler in app.ts will turn it into the OpenAI envelope;
         // re-throw so the centralized handler sees it.
-        req.raw.off('close', onClose);
+        req.raw.socket?.off('close', onClose);
         throw err;
       }
     },
