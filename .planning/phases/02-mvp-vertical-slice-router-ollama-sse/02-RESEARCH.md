@@ -868,29 +868,25 @@ This research was unusually verifiable thanks to the live Phase 1 environment + 
 | A4 | `node:fs.watch` fires reliably on bind-mounted files inside Docker on WSL2 + Docker Desktop ≥ 4.34 (the most recent on this host). | Pitfall 7 | Medium — historically flaky on WSL2; the Pitfall 7 mitigation (fall back to `fs.watchFile` polling) is the planner's escape hatch. The integration test will surface flakiness immediately. |
 | A5 | `compose.yml` line 113-114's host-port block on Ollama can be removed without breaking Phase 1's smoke test. (The Phase 1 smoke test hits `http://127.0.0.1:11434` directly — REMOVING the port WILL break `bin/smoke-test-gpu.sh`.) | Compose integration | **MEDIUM-HIGH** — this needs an explicit test plan. Either: (a) `bin/smoke-test-gpu.sh` is updated to `docker compose exec ollama curl -fsS http://localhost:11434/api/version` (no host port needed); or (b) the Phase 2 plan keeps the host port for backward-compat and removes it as a separate task. The CONTEXT.md is explicit (D-A4) about removal in same phase, so option (a) is correct — the planner MUST update the GPU smoke test in the same phase. |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **Should `/healthz` probe Ollama, or just return `200 {"status":"ok"}` blindly?**
-   - What we know: ROUTE-04 separates `/healthz` (liveness) from `/readyz` (any-backend-ready). `/readyz` is deferred to Phase 3. The Compose healthcheck on the router uses `/healthz`.
-   - What's unclear: should the Phase 2 `/healthz` probe Ollama at all? PITFALLS Pitfall 12 says "/healthz must NOT require auth" (locked) but doesn't say what `/healthz` should DO.
-   - Recommendation: **`/healthz` returns `200 {"status":"ok", "service":"router", "phase":2, "registry_models":N}` synchronously, no upstream calls.** Liveness = "the process is up and the registry parsed successfully at startup". Phase 3's `/readyz` adds the upstream probe. This matches Kubernetes/Compose semantics (liveness ≠ readiness) and avoids `/healthz` becoming a DoS pivot through the router.
+> All five open questions were resolved during planning and the chosen recommendations are
+> applied in the Phase 2 plans (02-01 .. 02-05). Captured here for the audit trail.
 
-2. **Healthcheck command in compose: curl-in-image vs `node -e fetch`?**
-   - What we know: `node:22-bookworm-slim` does NOT ship `curl` by default; Phase 1 documented this exact issue and switched the Ollama healthcheck to use `ollama list` (which is in-image).
-   - Two options: (a) `RUN apt-get install -y --no-install-recommends curl` in the Dockerfile runtime stage (~5 MB image growth); (b) `node -e "fetch('http://localhost:3000/healthz').then(r=>process.exit(r.ok?0:1))"`. Both work.
-   - Recommendation: **use `node -e fetch`**. We already have node in the image. It's also more accurate to the actual application's runtime (if `node` itself is broken, the healthcheck correctly fails). One less binary.
+1. **RESOLVED — `/healthz` returns synchronous JSON, no upstream probe.** Returns `200 {"status":"ok", "service":"router", "phase":2, "registry_models":N}`. Liveness = "process up + registry parsed at startup". Phase 3's `/readyz` will add the upstream probe. Applied in plan 02-02 (`routes/healthz.ts`).
+   - Original framing: should `/healthz` probe Ollama, or return blindly?
+   - Rationale: ROUTE-04 separates liveness from readiness; matches Kubernetes/Compose semantics; avoids `/healthz` becoming a DoS pivot through the router.
 
-3. **`@fastify/cors` — register or not?**
-   - What we know: Open WebUI hits the router server-to-server (Phase 6). Agents are server-side too. Browsers do NOT hit the router directly in Phase 2.
-   - Recommendation: **DO NOT register `@fastify/cors` in Phase 2.** Adding it means picking allowed origins, which we don't have yet. Phase 6 (Traefik + Open WebUI) revisits if needed. Locking it down to `[]` now is fine.
+2. **RESOLVED — Healthcheck uses `node -e fetch`, not curl-in-image.** `node:22-bookworm-slim` doesn't ship curl; rather than +5 MB for `apt-get install -y curl`, use `node -e "fetch('http://localhost:3000/healthz').then(r=>process.exit(r.ok?0:1))"`. Applied in plan 02-01 task 3 (Dockerfile + Compose router service block).
+   - Rationale: node is already in the image; healthcheck failing if node itself is broken is correct behavior; one less binary to maintain.
 
-4. **Should the dev profile share the production Dockerfile's stage 4 or use its own image?**
-   - What we know: D-A3 says `tsx watch src/index.ts` with bind mount; D-A2 specifies the 4-stage prod Dockerfile.
-   - Two options: (a) `compose.override.yml` (gitignored) that overrides `command: tsx watch src/index.ts` and bind-mounts `./router/src:/app/src`, while reusing the prod-built image (which has tsx as a devDep — except stage 4 strips devDeps); (b) Compose `profiles: [dev]` block with a separate `router-dev:` service that uses `node:22-bookworm-slim` directly + bind-mounted source + `npm install` on first up.
-   - Recommendation: **option (b)** — dedicated `router-dev` service under `profiles: [dev]`. Cleaner: prod stays minimal (no devDeps), dev is explicit. Run dev with `docker compose --profile dev up router-dev`. The override file path (option a) requires gitignoring a file, which is friction.
+3. **RESOLVED — `@fastify/cors` is NOT registered in Phase 2.** Open WebUI is server-to-server (Phase 6); no browser callers in Phase 2. Picking allowed origins is premature. Applied implicitly across plans 02-01..02-05 (no `@fastify/cors` in `package.json`).
+   - Rationale: locking down to `[]` now beats picking origins we don't have yet; Phase 6 (Traefik + Open WebUI) revisits.
 
-5. **Should the `BackendAdapter` interface's signal arg be `AbortSignal | undefined` or required `AbortSignal`?**
-   - Recommendation: **required `AbortSignal`**. The non-stream branch creates one anyway (defensive: if Fastify times out, abort upstream). Phase 3's adapters MUST accept it. Optional encourages "I'll wire it later", which is the SC3 bug pattern.
+4. **RESOLVED — Dev workflow uses `profiles: [dev]` `router-dev` service, NOT a `compose.override.yml` file.** A separate `router-dev` service builds against the Dockerfile's `target: deps` stage (which has `tsx` as a devDep), bind-mounts `./router/src`, and runs `npx tsx watch src/index.ts`. Toggled with `docker compose --profile dev up router-dev`. Applied in plan 02-01 task 3 (Compose `router-dev:` block).
+   - Rationale: prod stays minimal (no devDeps in `router:`); dev is explicit; no gitignore friction. The original override-file approach (option a in the plan-checker review) was actively broken because the prod runtime stage strips devDeps and would not have `tsx` available — the profile approach side-steps that footgun.
+
+5. **RESOLVED — `BackendAdapter` `signal` arg is REQUIRED `AbortSignal`, not optional.** Applied in plan 02-03 (`backends/adapter.ts`). Non-stream branch creates an `AbortController` anyway (defensive: if Fastify times out, abort upstream); Phase 3's adapters MUST accept it. Making it optional encourages "I'll wire it later" — the SC3 bug pattern.
 
 ## Environment Availability
 
