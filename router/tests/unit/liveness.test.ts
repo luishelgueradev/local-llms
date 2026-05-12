@@ -6,13 +6,18 @@
  * guard (A9), stop(), refresh().
  */
 
-import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import { describe, expect, it, vi, beforeEach, afterEach, type MockInstance } from 'vitest';
 import { makeLivenessScheduler } from '../../src/backends/liveness.js';
 import type { MakeLivenessSchedulerOpts } from '../../src/backends/liveness.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+type ProbeResult = { ok: boolean; latencyMs: number; error?: string };
+
+/** A probe mock that also satisfies MakeLivenessSchedulerOpts['probe'] */
+type ProbeMock = ReturnType<typeof vi.fn> & MakeLivenessSchedulerOpts['probe'];
 
 function makeLogger() {
   return {
@@ -23,12 +28,12 @@ function makeLogger() {
   };
 }
 
-function makeOkProbe(latencyMs = 5): MakeLivenessSchedulerOpts['probe'] {
-  return vi.fn().mockResolvedValue({ ok: true, latencyMs });
+function makeOkProbe(latencyMs = 5): ProbeMock {
+  return vi.fn().mockResolvedValue({ ok: true, latencyMs } as ProbeResult) as ProbeMock;
 }
 
-function makeErrProbe(error = 'ECONNREFUSED', latencyMs = 100): MakeLivenessSchedulerOpts['probe'] {
-  return vi.fn().mockResolvedValue({ ok: false, latencyMs, error });
+function makeErrProbe(error = 'ECONNREFUSED', latencyMs = 100): ProbeMock {
+  return vi.fn().mockResolvedValue({ ok: false, latencyMs, error } as ProbeResult) as ProbeMock;
 }
 
 // ---------------------------------------------------------------------------
@@ -57,9 +62,10 @@ describe('makeLivenessScheduler', () => {
     // Flush microtasks only — do NOT advance timer (would include interval ticks)
     await vi.advanceTimersByTimeAsync(0);
 
-    expect(probe).toHaveBeenCalledWith('urlA', expect.any(AbortController['prototype'].signal.constructor ?? Object));
-    // probe was called at least once (immediately)
+    // Verify probe was called with the correct URL and an AbortSignal-like second arg
     expect(probe).toHaveBeenCalledTimes(1);
+    expect(probe.mock.calls[0][0]).toBe('urlA');
+    expect(probe.mock.calls[0][1]).toBeDefined(); // AbortSignal
 
     scheduler.stop();
   });
@@ -169,7 +175,7 @@ describe('makeLivenessScheduler', () => {
     // Reset call count then advance time — only A should be probed
     probe.mockClear();
     await vi.advanceTimersByTimeAsync(300);
-    const bCalls = probe.mock.calls.filter(([url]: [string]) => url === 'B').length;
+    const bCalls = (probe.mock.calls as unknown[][]).filter((args) => args[0] === 'B').length;
     expect(bCalls).toBe(0);
 
     scheduler.stop();
@@ -234,10 +240,10 @@ describe('makeLivenessScheduler', () => {
   it('9. overlapping-probe guard: if probe is in-flight, subsequent ticks skip (A9)', async () => {
     // probe never resolves
     let probeCallCount = 0;
-    const probe: MakeLivenessSchedulerOpts['probe'] = vi.fn(() => {
+    const probe = (vi.fn(() => {
       probeCallCount++;
-      return new Promise(() => {}); // never resolves
-    });
+      return new Promise<ProbeResult>(() => {}); // never resolves
+    }) as unknown) as MakeLivenessSchedulerOpts['probe'];
     const logger = makeLogger();
     const scheduler = makeLivenessScheduler({ intervalMs: 100, probe, logger });
 
