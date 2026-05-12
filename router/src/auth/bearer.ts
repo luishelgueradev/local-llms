@@ -19,7 +19,12 @@ export function makeBearerHook(expectedToken: string) {
     if (PUBLIC_PATHS.has(path)) return;
 
     const auth = req.headers.authorization;
-    if (typeof auth !== 'string' || !auth.startsWith('Bearer ')) {
+    // RFC 7235 §2.1 — the auth-scheme token is case-insensitive. Compare only the
+    // 7-byte scheme prefix with toLowerCase(); the credential bytes remain untouched
+    // so the constant-time timingSafeEqual below still sees the supplied token
+    // verbatim. WR-02 fix.
+    const SCHEME = 'bearer ';
+    if (typeof auth !== 'string' || auth.length < SCHEME.length || auth.slice(0, SCHEME.length).toLowerCase() !== SCHEME) {
       req.log.warn({ url: req.url, hasHeader: typeof auth === 'string' }, 'auth: missing or malformed bearer header');
       return reply.code(401).send({
         error: {
@@ -31,7 +36,7 @@ export function makeBearerHook(expectedToken: string) {
       });
     }
 
-    const supplied = auth.slice('Bearer '.length);
+    const supplied = auth.slice(SCHEME.length);
     const suppliedBuf = Buffer.from(supplied, 'utf8');
 
     let ok = false;
