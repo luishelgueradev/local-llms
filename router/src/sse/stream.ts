@@ -30,12 +30,24 @@ export async function* chunkToSseEvents(
     // "every successful stream ends with data: [DONE]" (OpenAI convention).
     yield { data: '[DONE]' };
   } catch (err) {
-    // Pitfall 8 — APIUserAbortError or any signal-driven abort: do NOT emit a frame.
+    // Pitfall 8 — our controller-driven abort (router-initiated, e.g. client
+    // disconnect): do NOT emit a frame. The client is gone; there is no one to
+    // receive `[DONE]` and the response is being torn down anyway.
     if (opts.signal?.aborted) {
       return;
     }
     const env = toOpenAIErrorEnvelope(err);
-    if (env === NO_ENVELOPE) return;  // Defensive — should be covered by signal check, but explicit.
+    if (env === NO_ENVELOPE) {
+      // WR-07 fix: APIUserAbortError NOT originated by `opts.signal` (e.g. the
+      // upstream SDK's own timeout/kill-switch, or any future abort path that
+      // bypasses our controller). The client is still listening — yielding
+      // nothing here would violate the router's contract that "every successful
+      // stream ends with data: [DONE]" (stream.ts comment above) and would hang
+      // strict clients that wait for the terminator before considering the
+      // message complete. Emit a bare [DONE] so the client closes cleanly.
+      yield { event: '', data: '[DONE]' };
+      return;
+    }
     // D-C2 mid-stream frame, byte-exact:
     //   event: error
     //   data: {...envelope...}
