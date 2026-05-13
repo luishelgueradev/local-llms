@@ -1,12 +1,15 @@
 import OpenAI from 'openai';
-import type {
-  ChatCompletion,
-  ChatCompletionChunk,
-  ChatCompletionCreateParams,
-  ChatCompletionCreateParamsNonStreaming,
-  ChatCompletionCreateParamsStreaming,
-} from 'openai/resources/chat/completions';
 import type { BackendAdapter } from './adapter.js';
+import type {
+  CanonicalRequest,
+  CanonicalResponse,
+  CanonicalStreamEvent,
+} from '../translation/canonical.js';
+import { canonicalToOpenAIChatCompletionParams } from '../translation/openai-in.js';
+import {
+  openAIChatCompletionToCanonical,
+  openAIChunksToCanonicalEvents,
+} from '../translation/openai-out.js';
 
 export class OllamaOpenAIAdapter implements BackendAdapter {
   private readonly client: OpenAI;
@@ -18,31 +21,55 @@ export class OllamaOpenAIAdapter implements BackendAdapter {
     this.client = new OpenAI({ baseURL, apiKey: 'ollama', timeout: 60_000 });
   }
 
-  async chatCompletions(req: ChatCompletionCreateParams, signal: AbortSignal): Promise<ChatCompletion> {
-    const params: ChatCompletionCreateParamsNonStreaming = {
-      ...req,
-      stream: false,
-      // Setting stream_options on a non-stream call is harmless; SDK strips it. Keeping
-      // it unconditional avoids drift between the stream and non-stream code paths (D-B3).
-      stream_options: { include_usage: true },
-    };
-    // The SDK forwards `signal` to undici, which closes the upstream socket on abort.
-    return this.client.chat.completions.create(params, { signal });
+  /**
+   * Plan 04 entry point (D-B1, D-B2). Canonical → OpenAI body → SDK call → canonical
+   * response. The OpenAI-compat path covers text + tool-call workloads; the native
+   * /api/chat branch for vision (D-B3) lands in Plan 05.
+   */
+  async chatCompletionsCanonical(
+    canonical: CanonicalRequest,
+    signal: AbortSignal,
+  ): Promise<CanonicalResponse> {
+    const openaiReq = canonicalToOpenAIChatCompletionParams(canonical);
+    const result = await this.client.chat.completions.create(
+      {
+        ...openaiReq,
+        stream: false,
+        // Keeping stream_options unconditional avoids drift between stream/non-stream
+        // code paths (D-B3 of Phase 3). The SDK strips it for non-stream calls.
+        stream_options: { include_usage: true },
+      },
+      { signal },
+    );
+    return openAIChatCompletionToCanonical(result);
   }
 
-  async chatCompletionsStream(req: ChatCompletionCreateParams, signal: AbortSignal): Promise<AsyncIterable<ChatCompletionChunk>> {
-    const params: ChatCompletionCreateParamsStreaming = {
-      ...req,
-      stream: true,
-      // include_usage = true causes the upstream to emit a final chunk with
-      // choices: [] + usage: { prompt_tokens, completion_tokens, total_tokens }
-      // BEFORE its own `data: [DONE]`. Verified empirically against Ollama 0.5.7
-      // (RESEARCH §Pitfall 4 lines 647–657).
-      stream_options: { include_usage: true },
-    };
-    // Await the APIPromise to get the Stream<ChatCompletionChunk>,
-    // which is itself an AsyncIterable<ChatCompletionChunk>.
-    return this.client.chat.completions.create(params, { signal });
+  /**
+   * Plan 04 streaming entry point. Returns an async iterable of CanonicalStreamEvent —
+   * upstream OpenAI chunks are reassembled by `openAIChunksToCanonicalEvents` into
+   * the canonical event sequence (message_start → content_block_* → message_delta →
+   * message_stop). The route layer (canonicalToOpenAISse on /v1/chat/completions or
+   * canonicalToAnthropicSse on /v1/messages) re-emits to the protocol-specific wire
+   * format.
+   */
+  async chatCompletionsCanonicalStream(
+    canonical: CanonicalRequest,
+    signal: AbortSignal,
+  ): Promise<AsyncIterable<CanonicalStreamEvent>> {
+    const openaiReq = canonicalToOpenAIChatCompletionParams(canonical);
+    const upstream = await this.client.chat.completions.create(
+      {
+        ...openaiReq,
+        stream: true,
+        // include_usage = true causes Ollama to emit a final chunk with
+        // choices: [] + usage: { prompt_tokens, completion_tokens, total_tokens }
+        // BEFORE its own `data: [DONE]`. Verified empirically against Ollama 0.5.7
+        // (RESEARCH §Pitfall 4 lines 647–657).
+        stream_options: { include_usage: true },
+      },
+      { signal },
+    );
+    return openAIChunksToCanonicalEvents(upstream, { model: canonical.model });
   }
 
   /**

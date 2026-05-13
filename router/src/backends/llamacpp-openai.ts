@@ -1,23 +1,28 @@
 import OpenAI from 'openai';
-import type {
-  ChatCompletion,
-  ChatCompletionChunk,
-  ChatCompletionCreateParams,
-  ChatCompletionCreateParamsNonStreaming,
-  ChatCompletionCreateParamsStreaming,
-} from 'openai/resources/chat/completions';
 import type { BackendAdapter } from './adapter.js';
+import type {
+  CanonicalRequest,
+  CanonicalResponse,
+  CanonicalStreamEvent,
+} from '../translation/canonical.js';
+import { canonicalToOpenAIChatCompletionParams } from '../translation/openai-in.js';
+import {
+  openAIChatCompletionToCanonical,
+  openAIChunksToCanonicalEvents,
+} from '../translation/openai-out.js';
 
 /**
- * LlamacppOpenAIAdapter — mirrors OllamaOpenAIAdapter exactly.
- * Differences: apiKey placeholder is 'llamacpp' (SDK v6 throws on empty apiKey),
- * and the default baseURL targets the llama.cpp-server OpenAI-compat endpoint.
+ * LlamacppOpenAIAdapter — mirrors OllamaOpenAIAdapter exactly modulo the apiKey
+ * placeholder and baseURL default. Phase 4 (THIS file) widens to the canonical
+ * entry points. No vision branch (D-B4) — llama.cpp's llava sub-protocol is
+ * deferred; vision lives on Ollama in Phase 4 + on vLLM (Qwen2-VL-AWQ) in Phase 7.
  *
  * Note on stream_options.include_usage: the llama.cpp-server /v1/chat/completions
  * endpoint accepts this parameter. If a specific build does not emit the final
- * usage chunk, the router's pass-through still works — it forwards whatever the
- * upstream emits. The stream_options flag is kept unconditional to mirror
- * OllamaOpenAIAdapter (D-B3 drift prevention).
+ * usage chunk, the canonical translator (openAIChunksToCanonicalEvents) still
+ * emits message_delta + message_stop on stream end with output_tokens=0. The
+ * stream_options flag is kept unconditional to mirror OllamaOpenAIAdapter
+ * (D-B3 drift prevention).
  */
 export class LlamacppOpenAIAdapter implements BackendAdapter {
   private readonly client: OpenAI;
@@ -29,31 +34,45 @@ export class LlamacppOpenAIAdapter implements BackendAdapter {
     this.client = new OpenAI({ baseURL, apiKey: 'llamacpp', timeout: 60_000 });
   }
 
-  async chatCompletions(req: ChatCompletionCreateParams, signal: AbortSignal): Promise<ChatCompletion> {
-    const params: ChatCompletionCreateParamsNonStreaming = {
-      ...req,
-      stream: false,
-      // Setting stream_options on a non-stream call is harmless; SDK strips it. Keeping
-      // it unconditional avoids drift between the stream and non-stream code paths (D-B3).
-      stream_options: { include_usage: true },
-    };
-    // The SDK forwards `signal` to undici, which closes the upstream socket on abort.
-    return this.client.chat.completions.create(params, { signal });
+  /**
+   * Plan 04 entry point (D-B1, D-B2, D-B4). Canonical → OpenAI body → SDK call →
+   * canonical response. No vision branch — llama.cpp serves text + tools only in
+   * Phase 4.
+   */
+  async chatCompletionsCanonical(
+    canonical: CanonicalRequest,
+    signal: AbortSignal,
+  ): Promise<CanonicalResponse> {
+    const openaiReq = canonicalToOpenAIChatCompletionParams(canonical);
+    const result = await this.client.chat.completions.create(
+      {
+        ...openaiReq,
+        stream: false,
+        stream_options: { include_usage: true },
+      },
+      { signal },
+    );
+    return openAIChatCompletionToCanonical(result);
   }
 
-  async chatCompletionsStream(req: ChatCompletionCreateParams, signal: AbortSignal): Promise<AsyncIterable<ChatCompletionChunk>> {
-    const params: ChatCompletionCreateParamsStreaming = {
-      ...req,
-      stream: true,
-      // include_usage = true causes the upstream to emit a final chunk with
-      // choices: [] + usage: { prompt_tokens, completion_tokens, total_tokens }
-      // BEFORE its own `data: [DONE]`. Kept for consistency with OllamaOpenAIAdapter
-      // (D-B3 drift prevention — see llamacpp-openai.ts class comment).
-      stream_options: { include_usage: true },
-    };
-    // Await the APIPromise to get the Stream<ChatCompletionChunk>,
-    // which is itself an AsyncIterable<ChatCompletionChunk>.
-    return this.client.chat.completions.create(params, { signal });
+  /**
+   * Plan 04 streaming entry point. Identical to Ollama modulo the SDK client.
+   * No vision branch (D-B4); all requests flow through openAIChunksToCanonicalEvents.
+   */
+  async chatCompletionsCanonicalStream(
+    canonical: CanonicalRequest,
+    signal: AbortSignal,
+  ): Promise<AsyncIterable<CanonicalStreamEvent>> {
+    const openaiReq = canonicalToOpenAIChatCompletionParams(canonical);
+    const upstream = await this.client.chat.completions.create(
+      {
+        ...openaiReq,
+        stream: true,
+        stream_options: { include_usage: true },
+      },
+      { signal },
+    );
+    return openAIChunksToCanonicalEvents(upstream, { model: canonical.model });
   }
 
   /**

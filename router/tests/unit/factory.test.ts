@@ -62,8 +62,9 @@ describe('makeAdapter — factory dispatch by entry.backend', () => {
     const adapter = makeAdapter(ollamaEntry({ backend_url: url }));
     expect(adapter).toBeInstanceOf(OllamaOpenAIAdapter);
     // Adapter is constructed with the entry's backend_url; shape-check via interface
-    expect(typeof adapter.chatCompletions).toBe('function');
-    expect(typeof adapter.chatCompletionsStream).toBe('function');
+    // Plan 04-01 widening — methods renamed to chatCompletionsCanonical{,Stream}.
+    expect(typeof adapter.chatCompletionsCanonical).toBe('function');
+    expect(typeof adapter.chatCompletionsCanonicalStream).toBe('function');
     expect(typeof adapter.probeLiveness).toBe('function');
   });
 
@@ -71,16 +72,16 @@ describe('makeAdapter — factory dispatch by entry.backend', () => {
     const url = 'http://my-llamacpp:8080/v1';
     const adapter = makeAdapter(llamacppEntry({ backend_url: url }));
     expect(adapter).toBeInstanceOf(LlamacppOpenAIAdapter);
-    expect(typeof adapter.chatCompletions).toBe('function');
-    expect(typeof adapter.chatCompletionsStream).toBe('function');
+    expect(typeof adapter.chatCompletionsCanonical).toBe('function');
+    expect(typeof adapter.chatCompletionsCanonicalStream).toBe('function');
     expect(typeof adapter.probeLiveness).toBe('function');
   });
 
-  it('returned adapters expose chatCompletions, chatCompletionsStream, probeLiveness', () => {
+  it('returned adapters expose chatCompletionsCanonical, chatCompletionsCanonicalStream, probeLiveness', () => {
     for (const entry of [ollamaEntry(), llamacppEntry()]) {
       const adapter = makeAdapter(entry);
-      expect(typeof adapter.chatCompletions).toBe('function');
-      expect(typeof adapter.chatCompletionsStream).toBe('function');
+      expect(typeof adapter.chatCompletionsCanonical).toBe('function');
+      expect(typeof adapter.chatCompletionsCanonicalStream).toBe('function');
       expect(typeof adapter.probeLiveness).toBe('function');
     }
   });
