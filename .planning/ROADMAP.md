@@ -82,7 +82,7 @@ Plans:
 - [x] 03-03-PLAN.md — Slice C: /readyz endpoint + per-backend liveness probe scheduler + onClose shutdown hook + hot-reload re-registration (ROUTE-06)
 
 **Wave 4** *(depends on Wave 3 — serializes app.ts edits between 03-03 and this plan; both touch app.ts + module-augmentation block)*
-- [ ] 03-04-PLAN.md — Slice D: per-backend BackendSemaphore (hand-rolled with revision-1 drain() abort-listener cleanup) + BackendSaturatedError → 429 + Retry-After + safeRelease idempotency on stream end / abort / mid-stream error (with grep-verifiable sseCleanup→safeRelease lockdown) + chat-completions test-fixture updates for the widened RegisterChatCompletionsOpts (ROUTE-07)
+- [x] 03-04-PLAN.md — Slice D: per-backend BackendSemaphore (hand-rolled with revision-1 drain() abort-listener cleanup) + BackendSaturatedError → 429 + Retry-After + safeRelease idempotency on stream end / abort / mid-stream error (with grep-verifiable sseCleanup→safeRelease lockdown) + chat-completions test-fixture updates for the widened RegisterChatCompletionsOpts (ROUTE-07)
 
 **Wave 5** *(depends on Waves 1–4; live verification)*
 - [ ] 03-05-PLAN.md — Slice F: bin/smoke-test-router.sh extension (SC1 profile-swap verification) + README Phase 3 docs (manual GGUF download, --profile pattern, /readyz semantics) + human-verify checkpoint against live GPU+stack (BCKND-02, BCKND-05)
