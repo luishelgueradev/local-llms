@@ -120,12 +120,17 @@ export function registerChatCompletionsRoute(
       //
       // The signal is controller.signal so a client disconnect (onClose → controller.abort())
       // also aborts the queue-wait (T-3-D6 mitigation).
+      //
+      // IMPORTANT: The acquire is inside the try block so that BackendSaturatedError
+      // is caught by the catch clause that sets the Retry-After header before re-throw.
+      // If acquire were outside the try, the header would never be set.
       const semaphore = opts.semaphores.get(entry.backend);
-      const release = await semaphore.acquire(controller.signal);
 
       // Idempotent release closure — mirrors heartbeat.stop() pattern.
       // Called from BOTH the finally block AND sseCleanup (Pitfall 1 / T-3-D4).
+      // Initialized as a no-op until acquire succeeds; ensures finally never panics.
       let released = false;
+      let release: () => void = () => {};
       const safeRelease = (): void => {
         if (released) return;
         released = true;
@@ -133,6 +138,10 @@ export function registerChatCompletionsRoute(
       };
 
       try {
+        // Acquire the semaphore slot INSIDE the try block so BackendSaturatedError
+        // is caught below and Retry-After can be set before re-throw.
+        release = await semaphore.acquire(controller.signal);
+        released = false; // reset: the slot is now held
         if (body.stream === true) {
           // ── STREAM BRANCH (RESEARCH §Pattern 3 — load-bearing for SC1 + SC3) ──
           let upstream: AsyncIterable<ChatCompletionChunk>;
