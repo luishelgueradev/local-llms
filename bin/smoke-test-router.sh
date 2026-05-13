@@ -364,6 +364,240 @@ else
   pass "SC5: zero bearer-token leaks in router logs after a full session"
 fi
 
+# ============================================================================
+# Phase 3 — Multi-Backend Dispatch (SC1 verification)
+# ============================================================================
+# Proves the registry-driven backend selection is the actual abstraction:
+# switching `model` in the request body routes to a different backend with
+# zero router-code change between the two backends.
+#
+# Per CONTEXT D-F1 and ROADMAP Phase 3 SC1.
+# ============================================================================
+
+echo ""
+echo "[smoke-test-router] === Phase 3: Multi-backend dispatch ==="
+echo "[smoke-test-router] (this section tears down + restarts compose with --profile swaps; takes ~2 min)"
+
+PHASE3_BASE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+cd "${PHASE3_BASE_DIR}" || { fail "could not cd to project root"; exit 1; }
+
+# --- Pre-flight: confirm Compose version supports `required: false` (>= 2.20.2)
+COMPOSE_VER=$(docker compose version --short 2>/dev/null || echo "0.0.0")
+echo "[smoke-test-router] docker compose version: ${COMPOSE_VER}"
+# Use sort -V to compare versions
+if printf '%s\n%s\n' "2.20.2" "${COMPOSE_VER}" | sort -V -C; then
+  pass "Compose version >= 2.20.2 (depends_on required:false supported)"
+else
+  fail "Compose version ${COMPOSE_VER} < 2.20.2; depends_on required:false may not work; profile swap will fail"
+fi
+
+# --- Pre-flight: confirm the GGUF file exists on host (D-A2 — manual download required)
+GGUF_PATH="${HOST_DATA_ROOT:-/srv/local-llms}/models-gguf/gguf/Qwen2.5-7B-Instruct-Q4_K_M.gguf"
+if [[ -f "${GGUF_PATH}" ]]; then
+  GGUF_SIZE=$(stat -c %s "${GGUF_PATH}" 2>/dev/null || stat -f %z "${GGUF_PATH}" 2>/dev/null || echo "0")
+  # Expected ~4.68 GB +/- 100 MB
+  if (( GGUF_SIZE > 4500000000 && GGUF_SIZE < 5000000000 )); then
+    pass "GGUF present at ${GGUF_PATH} (size ${GGUF_SIZE} bytes)"
+  else
+    fail "GGUF size unexpected: ${GGUF_SIZE} bytes (expected ~4.68 GB)"
+  fi
+else
+  fail "GGUF missing at ${GGUF_PATH}; run: hf download bartowski/Qwen2.5-7B-Instruct-GGUF Qwen2.5-7B-Instruct-Q4_K_M.gguf --local-dir ${HOST_DATA_ROOT:-/srv/local-llms}/models-gguf/gguf"
+  echo "[smoke-test-router] Skipping Phase 3 section — GGUF missing"
+  # Continue without further P3 assertions; FAILURES already incremented
+fi
+
+# Only run the profile-swap tests if GGUF is present
+if [[ -f "${GGUF_PATH}" ]]; then
+
+  # ========================================================================
+  # Subsection A: --profile ollama active
+  # ========================================================================
+  echo ""
+  echo "[smoke-test-router] Phase 3.A: bringing up --profile ollama..."
+  docker compose --profile ollama down --remove-orphans 2>&1 | tail -2
+  docker compose --profile llamacpp down --remove-orphans 2>&1 | tail -2
+  if docker compose --profile ollama up -d --wait 2>&1 | tail -5; then
+    pass "compose --profile ollama up -d --wait succeeded"
+  else
+    fail "compose --profile ollama up -d --wait failed"
+  fi
+
+  # Wait for router /healthz
+  for i in $(seq 1 30); do
+    _p3_code=$(curl -s -o /dev/null -w '%{http_code}' "${ROUTER_URL}/healthz" || echo "000")
+    if [[ "${_p3_code}" == "200" ]]; then break; fi
+    sleep 1
+  done
+  [[ "$(curl -s -o /dev/null -w '%{http_code}' "${ROUTER_URL}/healthz")" == "200" ]] \
+    && pass "router /healthz reachable under --profile ollama" \
+    || fail "router /healthz did not respond under --profile ollama"
+
+  # Assertion A1: /v1/models lists BOTH registry models (D-C4 — listing is decoupled from probes)
+  MODELS_BODY=$(curl -sf -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" "${ROUTER_URL}/v1/models" || true)
+  if echo "${MODELS_BODY}" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+ids = [m['id'] for m in d['data']]
+sys.exit(0 if ('llama3.2:3b-instruct-q4_K_M' in ids and 'qwen2.5-7b-instruct-q4km' in ids) else 1)
+"; then
+    pass "/v1/models lists both ollama AND llamacpp models under --profile ollama (D-C4)"
+  else
+    fail "/v1/models did not list both models; body=${MODELS_BODY}"
+  fi
+
+  # Assertion A2: /readyz returns 503 (the llamacpp backend's URL is unreachable under profile ollama)
+  READYZ_CODE=$(curl -s -o /dev/null -w '%{http_code}' "${ROUTER_URL}/readyz" || true)
+  if [[ "${READYZ_CODE}" == "503" ]]; then
+    pass "/readyz returns 503 under --profile ollama (D-D5 — by design; llamacpp URL unreachable)"
+  else
+    fail "/readyz returned ${READYZ_CODE} under --profile ollama (expected 503; D-D5)"
+  fi
+
+  # Assertion A3: /readyz body has per-backend statuses — exactly one alive + one down
+  READYZ_BODY=$(curl -s "${ROUTER_URL}/readyz" || true)
+  if echo "${READYZ_BODY}" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+alive = [b for b in d['backends'] if b['status'] == 'alive']
+down = [b for b in d['backends'] if b['status'] in ('down', 'stale')]
+if len(alive) == 1 and len(down) == 1 and 'ollama' in alive[0]['url'] and 'llamacpp' in down[0]['url']:
+    sys.exit(0)
+else:
+    print(f'alive={alive}, down={down}', file=sys.stderr)
+    sys.exit(1)
+"; then
+    pass "/readyz body shows ollama alive + llamacpp down (D-D4)"
+  else
+    fail "/readyz body shape wrong; body=${READYZ_BODY}"
+  fi
+
+  # Assertion A4 (SC1 -- half 1): POST /v1/chat/completions with the ollama model serves tokens
+  CHAT_BODY=$(curl -sf -X POST \
+    -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -d '{"model":"llama3.2:3b-instruct-q4_K_M","messages":[{"role":"user","content":"Say hello in exactly two words"}],"stream":false,"max_tokens":20}' \
+    "${ROUTER_URL}/v1/chat/completions" || true)
+  if echo "${CHAT_BODY}" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+content = d['choices'][0]['message']['content']
+sys.exit(0 if isinstance(content, str) and len(content) > 0 else 1)
+"; then
+    pass "POST /v1/chat/completions {model: llama3.2...} returned non-empty content under --profile ollama"
+  else
+    fail "POST /v1/chat/completions to ollama model failed or returned empty; body=${CHAT_BODY}"
+  fi
+
+  # Assertion A5: POST /v1/chat/completions to the llamacpp model returns 4xx/5xx (its backend is down)
+  CHAT_LLAMACPP_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+    -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -d '{"model":"qwen2.5-7b-instruct-q4km","messages":[{"role":"user","content":"hi"}],"stream":false,"max_tokens":5}' \
+    "${ROUTER_URL}/v1/chat/completions" || true)
+  if [[ "${CHAT_LLAMACPP_CODE}" =~ ^[45] ]]; then
+    pass "POST {model: qwen2.5...} returns ${CHAT_LLAMACPP_CODE} under --profile ollama (backend unreachable; expected error)"
+  else
+    fail "POST {model: qwen2.5...} returned ${CHAT_LLAMACPP_CODE} (expected 4xx/5xx; backend should be unreachable)"
+  fi
+
+  # Tear down
+  docker compose --profile ollama down --remove-orphans 2>&1 | tail -2
+
+  # ========================================================================
+  # Subsection B: --profile llamacpp active (the swap -- SC1 proof)
+  # ========================================================================
+  echo ""
+  echo "[smoke-test-router] Phase 3.B: bringing up --profile llamacpp..."
+  if docker compose --profile llamacpp up -d --wait 2>&1 | tail -5; then
+    pass "compose --profile llamacpp up -d --wait succeeded"
+  else
+    fail "compose --profile llamacpp up -d --wait failed"
+  fi
+
+  # Wait for router /healthz (llamacpp cold-start can take ~60s)
+  for i in $(seq 1 90); do
+    _p3_code=$(curl -s -o /dev/null -w '%{http_code}' "${ROUTER_URL}/healthz" || echo "000")
+    if [[ "${_p3_code}" == "200" ]]; then break; fi
+    sleep 1
+  done
+  [[ "$(curl -s -o /dev/null -w '%{http_code}' "${ROUTER_URL}/healthz")" == "200" ]] \
+    && pass "router /healthz reachable under --profile llamacpp" \
+    || fail "router /healthz did not respond under --profile llamacpp"
+
+  # llamacpp cold-start can take ~60s (start_period). Give it time before probing /readyz.
+  echo "[smoke-test-router] waiting up to 90s for llamacpp /readyz to flip alive..."
+  for i in $(seq 1 90); do
+    _p3_body=$(curl -s "${ROUTER_URL}/readyz" || true)
+    if echo "${_p3_body}" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    llamacpp = [b for b in d['backends'] if 'llamacpp' in b['url']]
+    sys.exit(0 if llamacpp and llamacpp[0]['status'] == 'alive' else 1)
+except Exception:
+    sys.exit(1)
+" 2>/dev/null; then
+      break
+    fi
+    sleep 1
+  done
+
+  # Assertion B1 (SC1 -- half 2): POST /v1/chat/completions with the llamacpp model serves tokens
+  CHAT_BODY_2=$(curl -sf -X POST \
+    -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -d '{"model":"qwen2.5-7b-instruct-q4km","messages":[{"role":"user","content":"Say hi in two words"}],"stream":false,"max_tokens":20}' \
+    "${ROUTER_URL}/v1/chat/completions" || true)
+  if echo "${CHAT_BODY_2}" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+content = d['choices'][0]['message']['content']
+sys.exit(0 if isinstance(content, str) and len(content) > 0 else 1)
+"; then
+    pass "POST /v1/chat/completions {model: qwen2.5...} returned non-empty content under --profile llamacpp -- SC1 proven (same endpoint, no router code change between profiles)"
+  else
+    fail "POST /v1/chat/completions to llamacpp model failed or returned empty; body=${CHAT_BODY_2}"
+  fi
+
+  # Assertion B2: /readyz body now shows llamacpp alive + ollama down (inverse of A3)
+  READYZ_BODY_2=$(curl -s "${ROUTER_URL}/readyz" || true)
+  if echo "${READYZ_BODY_2}" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+alive = [b for b in d['backends'] if b['status'] == 'alive']
+down = [b for b in d['backends'] if b['status'] in ('down', 'stale')]
+if len(alive) == 1 and len(down) == 1 and 'llamacpp' in alive[0]['url'] and 'ollama' in down[0]['url']:
+    sys.exit(0)
+else:
+    print(f'alive={alive}, down={down}', file=sys.stderr)
+    sys.exit(1)
+"; then
+    pass "/readyz body shows llamacpp alive + ollama down (inverse of subsection A -- profile swap took effect)"
+  else
+    fail "/readyz body shape wrong under --profile llamacpp; body=${READYZ_BODY_2}"
+  fi
+
+  # Assertion B3: BCKND-02 -- llamacpp is using GPU (nvidia-smi shows the process)
+  if docker compose --profile llamacpp exec -T llamacpp sh -c "command -v nvidia-smi >/dev/null && nvidia-smi --query-compute-apps=name --format=csv,noheader" 2>/dev/null | grep -qiE 'llama|llamacpp|llama-server'; then
+    pass "llamacpp container shows GPU process via nvidia-smi (BCKND-02 -- GPU-resident inference)"
+  else
+    # llamacpp image may not have nvidia-smi binary; fall back to host check
+    if command -v nvidia-smi >/dev/null && nvidia-smi --query-compute-apps=name --format=csv,noheader 2>/dev/null | grep -qiE 'llama|llamacpp|llama-server'; then
+      pass "llamacpp visible in host nvidia-smi --query-compute-apps (BCKND-02)"
+    else
+      fail "could not verify llamacpp GPU residency via nvidia-smi (BCKND-02)"
+    fi
+  fi
+
+  # Tear down
+  docker compose --profile llamacpp down --remove-orphans 2>&1 | tail -2
+
+fi  # end "if GGUF present"
+
+echo ""
+echo "[smoke-test-router] === Phase 3 section complete ==="
+
 # Final summary
 echo ""
 echo "[smoke-test-router] ================================================================"
