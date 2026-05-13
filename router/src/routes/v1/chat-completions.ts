@@ -124,7 +124,11 @@ export function registerChatCompletionsRoute(
       // IMPORTANT: The acquire is inside the try block so that BackendSaturatedError
       // is caught by the catch clause that sets the Retry-After header before re-throw.
       // If acquire were outside the try, the header would never be set.
-      const semaphore = opts.semaphores.get(entry.backend);
+      //
+      // WR-01 fix: opts.semaphores.get() is also inside the try block so a missing
+      // semaphore entry (hot-reload adds a new backend whose Map entry was not rebuilt
+      // — IN-01 forward-looking issue) cleans up the socket 'close' listener via the
+      // catch clause's req.raw.socket?.off('close', onClose) call.
 
       // Idempotent release closure — mirrors heartbeat.stop() pattern.
       // Called from BOTH the finally block AND sseCleanup (Pitfall 1 / T-3-D4).
@@ -138,6 +142,9 @@ export function registerChatCompletionsRoute(
       };
 
       try {
+        // Lookup the semaphore for the resolved backend. Inside the try so a missing
+        // entry routes through the centralized error handler with proper listener cleanup.
+        const semaphore = opts.semaphores.get(entry.backend);
         // Acquire the semaphore slot INSIDE the try block so BackendSaturatedError
         // is caught below and Retry-After can be set before re-throw.
         release = await semaphore.acquire(controller.signal);
