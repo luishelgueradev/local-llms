@@ -98,8 +98,22 @@ Plans:
   3. OpenAI tool definitions are accepted on `/v1/chat/completions` and translated internally to canonical Anthropic-shape content blocks; Anthropic tool definitions are accepted natively on `/v1/messages` without a translation hop; parallel tool calls round-trip end-to-end in both wire formats; `tool_result` blocks with `is_error: true` round-trip correctly; `stop_sequences` ⇄ `stop` mapping works in both directions.
   4. Round-trip golden tests for OpenAI ↔ canonical ↔ Anthropic translations (including parallel tool calls and the error path) pass in CI; the canonical shape is the single source of truth in the router.
   5. Image input (URL + base64) is accepted in both OpenAI and Anthropic protocols; a vision request to a non-vision model returns a structured 400 *before* hitting the backend (capability gating); Ollama vision is routed via the native `/api/chat` path, not the OpenAI-compat shim.
-**Plans:** TBD
-**Research flag:** yes — this phase needs `/gsd-research-phase` during planning to nail down 2026 wire-format specifics for parallel `tool_use` blocks, `input_json_delta` chunking, and `is_error: true` round-trip; per SUMMARY.md this is the single largest source of routing bugs.
+**Plans:** 5 plans
+Plans:
+**Wave 1**
+- [ ] 04-01-PLAN.md — Canonical foundation + BackendAdapter widening + /v1/chat/completions refactor through canonical (no requirement IDs — infrastructure)
+
+**Wave 2** *(blocked on Wave 1)*
+- [ ] 04-02-PLAN.md — POST /v1/messages non-stream + POST /v1/messages/count_tokens + role-alternation + anthropic-version echo + CapabilityNotSupportedError (ANTHR-02, ANTHR-03, ANTHR-04, ANTHR-05)
+
+**Wave 3** *(blocked on Wave 2)*
+- [ ] 04-03-PLAN.md — POST /v1/messages stream branch: typed SSE events, ping heartbeat, mid-stream error frame, input_tokens via gpt-tokenizer pre-count (ANTHR-01 stream, ANTHR-06, ANTHR-07)
+
+**Wave 4** *(blocked on Wave 3 — Plan 04 and Plan 05 run in parallel)*
+- [ ] 04-04-PLAN.md — Tool calling round-trip: openai-in/out tool translation, FINDING 3.4 corrections (tool_choice none + disable_parallel_tool_use modifier), stop_sequences, is_error, parallel tool_use, golden fixtures (ANTHR-08, TOOL-01, TOOL-02, TOOL-03, TOOL-04, TOOL-05)
+- [ ] 04-05-PLAN.md — Vision end-to-end: capability gating on both routes, OllamaOpenAIAdapter native /api/chat dispatch, llama3.2-vision model entry, smoke-test + README + human-verify (VISION-01, VISION-02, VISION-03)
+
+**Research flag:** yes — RESEARCH.md `04-RESEARCH.md` produced; FINDING 3.4 corrects D-D3/D-D4 in CONTEXT.md (Anthropic now natively supports tool_choice:{type:'none'} + disable_parallel_tool_use modifier — Plan 04 implements the corrected mapping).
 
 ### Phase 5: Postgres + Observability Seam
 **Goal:** Now that requests work in both protocols, capture them. Buffered async writes that never block the request path, plus the Prometheus `/metrics` surface and per-agent identity that the user will need to debug runaway agents.
@@ -176,7 +190,7 @@ Plans:
 | 1. GPU + Compose Foundation | 4/4 | Complete | 2026-05-10 |
 | 2. MVP Vertical Slice — Router + Ollama + SSE | 0/0 | Not started | - |
 | 3. Multi-Backend Dispatch — llama.cpp + Registry Hardening | 0/5 | Planned (revision 1) | - |
-| 4. Anthropic Surface — `/v1/messages`, Tool Calling, Vision | 0/0 | Not started | - |
+| 4. Anthropic Surface — `/v1/messages`, Tool Calling, Vision | 0/5 | Planned | - |
 | 5. Postgres + Observability Seam | 0/0 | Not started | - |
 | 6. Traefik + TLS + Open WebUI | 0/0 | Not started | - |
 | 7. Embeddings + vLLM + GPU Telemetry | 0/0 | Not started | - |

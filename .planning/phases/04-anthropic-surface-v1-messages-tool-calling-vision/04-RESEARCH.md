@@ -653,7 +653,7 @@ Source: `https://www.npmjs.com/package/gpt-tokenizer` for import path; `https://
 
 **If this table seems short:** That's because CONTEXT.md is exceptionally thorough — most of the time-sensitive claims were either pre-verified (Anthropic streaming order, tool_choice mapping, msg_start payload structure) or explicitly flagged as Claude's discretion with sane defaults.
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Should `output_tokens` from local backends be split between `message_start.usage.output_tokens: 1` (pre-allocated) and `message_delta.usage.output_tokens: total`, OR emitted as `message_delta.usage.output_tokens: (total - 1)` to account for the pre-allocated 1?**
    - What we know: Anthropic's wire format documents `output_tokens: 1` on `message_start` and the cumulative total on `message_delta`. The pre-allocated 1 is the "role token".
