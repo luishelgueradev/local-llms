@@ -153,6 +153,170 @@ These decisions are set in stone by Phase 2. Later phases inherit them and do no
 9. **Mid-stream error frame:** every stream — clean OR errored OR client-aborted — terminates with `data: [DONE]`. Real upstream errors emit `event: error` BEFORE `[DONE]`; client-aborts skip the error frame (RESEARCH Pitfall 8). (D-C2)
 10. **pino redact from first commit:** `redact: { paths: [req.headers.authorization, req.headers.cookie, *.apiKey, ...], censor: '[REDACTED]' }`. The bash smoke test asserts `docker compose logs router | grep -ciE 'bearer|authorization:bearer'` returns zero across a full session. (ROUTE-05 / SC5)
 
+## Phase 3 — Multi-backend dispatch (llama.cpp + registry hardening)
+
+Phase 3 adds **llama.cpp-server** as a second inference backend alongside Ollama,
+plus router-side hardening (per-backend liveness probes, concurrency caps,
+`GET /v1/models`, VRAM budget enforcement, Compose profiles).
+
+### One-time setup: download the Qwen2.5-7B GGUF
+
+The router does **not** auto-download missing models. Pull the GGUF manually:
+
+```bash
+mkdir -p /srv/local-llms/models-gguf/gguf
+hf download bartowski/Qwen2.5-7B-Instruct-GGUF \
+  Qwen2.5-7B-Instruct-Q4_K_M.gguf \
+  --local-dir /srv/local-llms/models-gguf/gguf
+```
+
+Expected file size: ~4.68 GB. The legacy `huggingface-cli download` alias also works.
+
+If `hf` is not installed: `pip install --user huggingface_hub` then re-run.
+
+### Operational pattern: one backend hot at a time via Compose profiles
+
+Phase 3's 16 GB VRAM envelope allows one heavy backend resident at a time. Pick
+the profile that matches the model you want to serve:
+
+```bash
+# Ollama (3B model — Phase 1 + Phase 2 default)
+docker compose --profile ollama up -d --wait
+
+# OR llama.cpp (Qwen2.5-7B GGUF — Phase 3 new)
+docker compose --profile llamacpp up -d --wait
+```
+
+Both profiles bring up `gpu-preflight` + `router` (those services are
+profile-less and always run). The `router` service uses
+`depends_on: required: false` for both backends, so it boots regardless of
+which profile is active. **Compose version required: >= 2.20.2** for this
+escape hatch — older versions will refuse to start. Check with:
+
+```bash
+docker compose version --short
+```
+
+To swap profiles, tear down the active one before bringing up the other:
+
+```bash
+docker compose --profile ollama down --remove-orphans
+docker compose --profile llamacpp up -d --wait
+```
+
+### `/readyz` semantics
+
+`/readyz` is a Kubernetes-style strict-all readiness check. It returns:
+
+- **HTTP 200** + `{"status": "ready", ...}` only when **every** distinct backend URL
+  declared in `models.yaml` responds to its liveness probe.
+- **HTTP 503** + `{"status": "not_ready", ...}` otherwise — including under
+  the one-profile-at-a-time pattern, where the inactive backend's URL is
+  unreachable.
+
+This is **by design**. Under `--profile ollama`, `/readyz` will be `503` with
+a per-backend body like:
+
+```json
+{
+  "status": "not_ready",
+  "checked_at": "2026-05-12T18:00:00.000Z",
+  "backends": [
+    { "url": "http://ollama:11434/v1",   "status": "alive", "last_probe_at": "...", "latency_ms": 8 },
+    { "url": "http://llamacpp:8080/v1", "status": "down",  "last_probe_at": "...", "error": "ECONNREFUSED" }
+  ]
+}
+```
+
+If you want a process-liveness check (router is up regardless of backend
+status), use `/healthz`. The router's Docker healthcheck uses `/healthz`,
+not `/readyz`.
+
+`/readyz` and `/healthz` are public (no bearer token needed). All other
+endpoints (`/v1/chat/completions`, `/v1/models`) require the bearer token
+from `.env`.
+
+### `models.yaml` shape (Phase 3)
+
+`router/models.yaml` now declares both backend-level and per-model config:
+
+```yaml
+backends:
+  ollama:
+    base_url: http://ollama:11434/v1
+    concurrency: 2          # per-backend concurrent request cap
+    queue_max_wait_ms: 30000  # excess requests wait this long, then 429
+  llamacpp:
+    base_url: http://llamacpp:8080/v1
+    concurrency: 2
+    queue_max_wait_ms: 30000
+
+models:
+  - name: llama3.2:3b-instruct-q4_K_M
+    backend: ollama
+    backend_url: http://ollama:11434/v1
+    backend_model: llama3.2:3b-instruct-q4_K_M
+    capabilities: [chat]
+    vram_budget_gb: 4
+  - name: qwen2.5-7b-instruct-q4km
+    backend: llamacpp
+    backend_url: http://llamacpp:8080/v1
+    backend_model: qwen2.5-7b-instruct-q4_K_M
+    capabilities: [chat, tools]
+    vram_budget_gb: 6
+```
+
+Sum of `vram_budget_gb` per backend must be <= `VRAM_ENVELOPE_GB` (default 16,
+configurable via `.env`). Over-budget declarations are rejected at router boot
+with `Config error: backend "..." declared models sum to NN GB, exceeds
+VRAM_ENVELOPE_GB=16. Reduce vram_budget_gb on one or more entries.`
+
+### Concurrency caps + 429 behavior
+
+The router enforces a per-backend FIFO semaphore. With the defaults
+(`concurrency: 2`, `queue_max_wait_ms: 30000`):
+
+- The first 2 in-flight requests to a backend run immediately
+- The 3rd waits up to 30s for a slot
+- If 30s passes, the 3rd gets `HTTP 429 Too Many Requests` with:
+  ```json
+  {
+    "error": {
+      "message": "Backend \"llamacpp\" saturated; waited 30000ms for a slot",
+      "type": "rate_limit_error",
+      "code": "backend_saturated",
+      "param": null
+    }
+  }
+  ```
+  and `Retry-After: 30` header
+
+Streaming requests hold their slot until the final SSE byte / `[DONE]` /
+client abort. Client disconnect mid-stream releases the slot within ~1s.
+
+### Verifying SC1 — multi-backend dispatch smoke test
+
+The Phase 3 success criterion ("a model-name switch routes to a different
+backend with zero router code change") is verified end-to-end by:
+
+```bash
+bin/smoke-test-router.sh
+```
+
+This script tears down + brings up each profile, calls
+`POST /v1/chat/completions` with the appropriate `model`, and asserts:
+
+- `/v1/models` lists both models regardless of which profile is active
+- `/readyz` returns 503 with exactly-one-alive-one-down under each profile
+- The same endpoint serves Llama 3.2 under `--profile ollama` and Qwen 2.5
+  under `--profile llamacpp` — different vendors, different sizes, different
+  responses, **same router code**
+- Inside the llamacpp container (or via host nvidia-smi), the GPU is
+  actually serving (no silent CPU fallback)
+
+Expect the full Phase 3 section to take ~2 minutes (cold start of llamacpp
+loading 7B weights into VRAM is the slowest step).
+
 ## Anti-patterns rejected by this stack
 
 - `:latest` image tags anywhere — every image pinned to a specific tag.
