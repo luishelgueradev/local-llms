@@ -329,6 +329,12 @@ POST_LINES=$(docker compose logs --no-color "${ROUTER_SVC}" 2>&1 | wc -l)
 NEW_LINE_COUNT=$((POST_LINES - PRE_LINES + 5))
 [[ "${NEW_LINE_COUNT}" -lt 1 ]] && NEW_LINE_COUNT=10
 NEW_LINES=$(docker compose logs --no-color --tail "${NEW_LINE_COUNT}" "${ROUTER_SVC}" 2>&1 || true)
+# WR-03 fix: strip the canary line so re-running the smoke test does not
+# permanently pollute models.yaml. Fixed prefix matches any prior runs' canaries
+# (different timestamps) so leftovers from before this fix also get cleaned up.
+grep -v '^# smoke-test-router hot-reload canary ' "${REPO_ROOT}/router/models.yaml" \
+  > "${REPO_ROOT}/router/models.yaml.tmp" \
+  && mv "${REPO_ROOT}/router/models.yaml.tmp" "${REPO_ROOT}/router/models.yaml"
 if echo "${NEW_LINES}" | grep -q 'registry reloaded'; then
   pass "SC4 hot-reload: router logged 'registry reloaded' within 1s of models.yaml edit"
 else
