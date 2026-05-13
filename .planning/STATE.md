@@ -3,7 +3,8 @@ gsd_state_version: 1.0
 milestone: v0.9.0
 milestone_name: milestone
 status: completed
-last_updated: "2026-05-13T01:42:00.167Z"
+stopped_at: Phase 4 context gathered
+last_updated: "2026-05-13T12:58:16.560Z"
 progress:
   total_phases: 9
   completed_phases: 3
@@ -14,31 +15,31 @@ progress:
 
 # Project State: local-llms
 
-**Last Updated:** 2026-05-12
-**Status:** Phase 03 complete — ready to discuss/plan Phase 04
+**Last Updated:** 2026-05-13
+**Status:** Phase 03 complete — ready to discuss/plan Phase 04 (Anthropic Surface)
 
 ## Project Reference
 
 **Core Value:** Un endpoint único, estable y multi-protocolo para que los agentes del usuario consuman cualquier modelo disponible — local cuando cabe, Ollama Cloud cuando no — sin que el cliente se entere de quién está respondiendo detrás.
 
-**Current Focus:** Phase 03 — multi-backend-dispatch-llama-cpp-registry-hardening
+**Current Focus:** Phase 04 — Anthropic Surface (`/v1/messages`, tool calling, vision). Research-flagged.
 
 ## Current Position
 
-Phase: 03 (multi-backend-dispatch-llama-cpp-registry-hardening) — EXECUTING
-Plan: 1 of 5
+Phase: 04 (anthropic-surface-messages-tool-calling-vision) — NOT STARTED
+Plan: 0 of N (planning pending)
 
 - **Milestone:** v1
-- **Phase:** 3
+- **Phase:** 4
 - **Plan:** Not started
-- **Status:** Awaiting `/gsd-discuss-phase 2` (recommended) or `/gsd-plan-phase 2` to start Phase 2 — the Walking Skeleton from Phase 1 is the foundation the router will plug into.
+- **Status:** Awaiting `/gsd-discuss-phase 4` (recommended — Anthropic translation is the single hardest item in the project; research-flagged) or `/gsd-plan-phase --research-phase 4` to investigate canonical-shape translation, tool-call mapping, and vision routing before planning.
 
 ### Progress
 
 ```
 Phase 1: ██████████ 100% (6/6 requirements) — Complete 2026-05-10
-Phase 2: ░░░░░░░░░░ 0% (0/9 requirements)
-Phase 3: ░░░░░░░░░░ 0% (0/6 requirements)
+Phase 2: ██████████ 100% (9/9 requirements) — Complete 2026-05-12
+Phase 3: ██████████ 100% (6/6 requirements) — Complete 2026-05-13
 Phase 4: ░░░░░░░░░░ 0% (0/16 requirements)
 Phase 5: ░░░░░░░░░░ 0% (0/8 requirements)
 Phase 6: ░░░░░░░░░░ 0% (0/11 requirements)
@@ -46,7 +47,7 @@ Phase 7: ░░░░░░░░░░ 0% (0/7 requirements)
 Phase 8: ░░░░░░░░░░ 0% (0/9 requirements)
 Phase 9: ░░░░░░░░░░ 0% (0/4 requirements)
 
-Overall: █░░░░░░░░░ 8% (6/76 v1 requirements)
+Overall: ███░░░░░░░ 28% (21/76 v1 requirements)
 ```
 
 ## Performance Metrics
@@ -101,14 +102,18 @@ Overall: █░░░░░░░░░ 8% (6/76 v1 requirements)
 
 ## Session Continuity
 
-**Next action:** Run `/gsd-discuss-phase 2` to gather Phase 2 context (router stack decisions inherited from CLAUDE.md but route shape, error envelope, and test boundary still need a quick discussion), or skip to `/gsd-plan-phase 2` if you want to plan directly.
+Last session: 2026-05-13T12:58:16.547Z
+Stopped at: Phase 4 context gathered
+
+**Next action:** Run `/gsd-discuss-phase 4` (recommended) to surface Anthropic-translation tradeoffs (canonical shape, tool-call round-trip, vision routing), or `/gsd-plan-phase --research-phase 4` to research-then-plan in one shot.
 
 **Open questions for the user (none blocking):**
 
+- Phase 4 is research-flagged: Anthropic translation is the hardest piece. Decide between `/gsd-discuss-phase 4` (human-in-loop) vs `/gsd-plan-phase --research-phase 4` (autonomous research).
 - Phase 6 will need to choose Let's Encrypt (public DNS) vs mkcert (LAN-only). Decide before Phase 6 planning.
 - Phase 7 needs the host NVIDIA driver version recorded by the Phase 1 preflight to pick the right vLLM image tag (`cu129` ≥ 555.x, otherwise `cu126`/`cu124`).
 - Phase 8 needs current Ollama Cloud quotas/naming validated empirically (research flag).
 
 ---
 *State initialized: 2026-05-10 after roadmap creation*
-*Last activity: 2026-05-10 — Completed quick task 260510-v8z: Phase 01 script cleanup*
+*Last activity: 2026-05-13 — Phase 3 complete (multi-backend dispatch + registry hardening; verification 6/6; REVIEW fixes WR-01/WR-03/CR-01)*
