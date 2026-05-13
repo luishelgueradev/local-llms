@@ -9,7 +9,6 @@ import { makeBearerHook } from './auth/bearer.js';
 import type { RegistryStore } from './config/registry.js';
 import { registerHealthz } from './routes/healthz.js';
 import { registerChatCompletionsRoute } from './routes/v1/chat-completions.js';
-import { makeOllamaAdapterFromEntry } from './backends/ollama-openai.js';
 import type { AdapterFactory } from './backends/adapter.js';
 import { registerModelsRoute } from './routes/v1/models.js';
 import { toOpenAIErrorEnvelope, mapToHttpStatus, NO_ENVELOPE } from './errors/envelope.js';
@@ -191,15 +190,16 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
   // Chat completions — non-stream branch in plan 02-03; stream branch in plan 02-04
   // (same route file; plan 02-04 replaces the 501 stub).
   // Plan 03-04: semaphores injected for per-backend concurrency cap (ROUTE-07).
+  // Plan 03-01 (deferred CR-01): dispatch by entry.backend via the factory — replaces
+  // the Option β stopgap that hard-coded the Ollama adapter regardless of backend.
+  // Required before Phase 8's OllamaCloudAdapter (different auth surface).
   registerChatCompletionsRoute(app, {
     registry: opts.registry,
-    makeAdapter: opts.makeAdapter ?? makeOllamaAdapterFromEntry,
+    makeAdapter: opts.makeAdapter ?? defaultMakeAdapter,
     semaphores,
   });
 
   // GET /v1/models — bearer-gated; lists all registry models (Plan 03-02, OAI-03).
-  // Option β: app.ts keeps makeOllamaAdapterFromEntry for chat; Plan 03-01 (wave 2)
-  // will swap it to defaultMakeAdapter from factory.ts.
   registerModelsRoute(app, opts.registry);
 
   return app;
