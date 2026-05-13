@@ -85,7 +85,7 @@ Plans:
 - [x] 03-04-PLAN.md — Slice D: per-backend BackendSemaphore (hand-rolled with revision-1 drain() abort-listener cleanup) + BackendSaturatedError → 429 + Retry-After + safeRelease idempotency on stream end / abort / mid-stream error (with grep-verifiable sseCleanup→safeRelease lockdown) + chat-completions test-fixture updates for the widened RegisterChatCompletionsOpts (ROUTE-07)
 
 **Wave 5** *(depends on Waves 1–4; live verification)*
-- [ ] 03-05-PLAN.md — Slice F: bin/smoke-test-router.sh extension (SC1 profile-swap verification) + README Phase 3 docs (manual GGUF download, --profile pattern, /readyz semantics) + human-verify checkpoint against live GPU+stack (BCKND-02, BCKND-05)
+- [x] 03-05-PLAN.md — Slice F: bin/smoke-test-router.sh extension (SC1 profile-swap verification) + README Phase 3 docs (manual GGUF download, --profile pattern, /readyz semantics) + human-verify checkpoint against live GPU+stack (BCKND-02, BCKND-05)
 
 ### Phase 4: Anthropic Surface — `/v1/messages`, Tool Calling, Vision
 **Goal:** Land the single hardest item in the project — bidirectional Anthropic ↔ canonical ↔ OpenAI translation with typed streaming events, parallel tool calls, and vision — on top of a small, fast stack so tests are quick and the canonical-shape decision propagates correctly into every later phase.
