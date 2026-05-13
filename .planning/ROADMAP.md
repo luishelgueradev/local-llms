@@ -101,7 +101,7 @@ Plans:
 **Plans:** 5 plans
 Plans:
 **Wave 1**
-- [ ] 04-01-PLAN.md — Canonical foundation + BackendAdapter widening + /v1/chat/completions refactor through canonical (no requirement IDs — infrastructure)
+- [x] 04-01-PLAN.md — Canonical foundation + BackendAdapter widening + /v1/chat/completions refactor through canonical (no requirement IDs — infrastructure)
 
 **Wave 2** *(blocked on Wave 1)*
 - [ ] 04-02-PLAN.md — POST /v1/messages non-stream + POST /v1/messages/count_tokens + role-alternation + anthropic-version echo + CapabilityNotSupportedError (ANTHR-02, ANTHR-03, ANTHR-04, ANTHR-05)
