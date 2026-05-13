@@ -8,7 +8,11 @@ import { loadRegistryFromString, makeRegistryStore } from '../../src/config/regi
 import { OllamaOpenAIAdapter } from '../../src/backends/ollama-openai.js';
 import type { ModelEntry } from '../../src/config/registry.js';
 import type { BackendAdapter } from '../../src/backends/adapter.js';
-import type { ChatCompletion, ChatCompletionChunk, ChatCompletionCreateParams } from 'openai/resources/chat/completions';
+import type {
+  CanonicalRequest,
+  CanonicalResponse,
+  CanonicalStreamEvent,
+} from '../../src/translation/canonical.js';
 
 const TOKEN = 'local-llms_t1t2t3t4t5t6t7t8t9t0aabbccddeeff';
 const MODEL_NAME = 'llama3.2:3b-instruct-q4_K_M';
@@ -138,31 +142,56 @@ describe('POST /v1/chat/completions stream=true — abort + error paths (SC3 moc
     let chunksYielded = 0;
     let generatorCompleted = false;
 
-    // Mock adapter that captures the signal and generates chunks until aborted
+    // Mock adapter that captures the signal and generates canonical stream events
+    // until aborted. Updated for the Plan 04-01 canonical interface — emits
+    // message_start → many content_block_delta {text_delta} → message_stop.
     class MockAbortAdapter implements BackendAdapter {
-      async chatCompletions(_req: ChatCompletionCreateParams, _signal: AbortSignal): Promise<ChatCompletion> {
+      async chatCompletionsCanonical(_req: CanonicalRequest, _signal: AbortSignal): Promise<CanonicalResponse> {
         throw new Error('not used in stream test');
       }
       async probeLiveness(_signal: AbortSignal): Promise<{ ok: boolean; latencyMs: number; error?: string }> {
         return { ok: true, latencyMs: 0 };
       }
-      async chatCompletionsStream(_req: ChatCompletionCreateParams, signal: AbortSignal): Promise<AsyncIterable<ChatCompletionChunk>> {
+      async chatCompletionsCanonicalStream(_req: CanonicalRequest, signal: AbortSignal): Promise<AsyncIterable<CanonicalStreamEvent>> {
         capturedSignal = signal;
         return (async function* () {
           try {
+            // Emit message_start so canonicalToOpenAISse captures id/model/created.
+            yield {
+              type: 'message_start',
+              message: {
+                id: 'msg_01HXYZTESTABORT00000000000',
+                type: 'message',
+                role: 'assistant',
+                content: [],
+                model: MODEL_NAME,
+                stop_reason: null,
+                stop_sequence: null,
+                usage: { input_tokens: 0, output_tokens: 1 },
+              },
+            } as CanonicalStreamEvent;
+            yield { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } };
             for (let i = 0; i < 200; i++) {
               if (signal.aborted) return;
               chunksYielded++;
               yield {
-                id: 'x', object: 'chat.completion.chunk', created: 0, model: MODEL_NAME,
-                choices: [{ index: 0, delta: { content: `tok${i}` }, finish_reason: null }],
-              } as ChatCompletionChunk;
+                type: 'content_block_delta',
+                index: 0,
+                delta: { type: 'text_delta', text: `tok${i}` },
+              };
               await new Promise<void>((resolve, reject) => {
                 // Respect abort signal in the delay
                 const timer = setTimeout(resolve, 20);
                 signal.addEventListener('abort', () => { clearTimeout(timer); reject(new Error('aborted')); }, { once: true });
               });
             }
+            yield { type: 'content_block_stop', index: 0 };
+            yield {
+              type: 'message_delta',
+              delta: { stop_reason: 'end_turn', stop_sequence: null },
+              usage: { output_tokens: 200 },
+            };
+            yield { type: 'message_stop' };
           } finally {
             generatorCompleted = true;
           }

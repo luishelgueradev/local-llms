@@ -1,13 +1,14 @@
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from '@bram-dc/fastify-type-provider-zod';
 import { z } from 'zod/v4';
-import type { ChatCompletionChunk, ChatCompletionCreateParams } from 'openai/resources/chat/completions';
 import type { RegistryStore } from '../../config/registry.js';
 import type { AdapterFactory, BackendAdapter } from '../../backends/adapter.js';
 import type { BackendSemaphore } from '../../concurrency/semaphore.js';
 import { BackendSaturatedError } from '../../concurrency/semaphore.js';
 import { startHeartbeat } from '../../sse/heartbeat.js';
-import { chunkToSseEvents } from '../../sse/stream.js';
+import { openAIRequestToCanonical } from '../../translation/openai-in.js';
+import { canonicalToOpenAIResponse, canonicalToOpenAISse } from '../../translation/openai-out.js';
+import type { CanonicalStreamEvent } from '../../translation/canonical.js';
 import { NO_ENVELOPE, mapToHttpStatus, toOpenAIErrorEnvelope } from '../../errors/envelope.js';
 
 /**
@@ -16,7 +17,10 @@ import { NO_ENVELOPE, mapToHttpStatus, toOpenAIErrorEnvelope } from '../../error
  * seed, presence_penalty, frequency_penalty, logit_bias, user, etc.) PASSES THROUGH
  * to the upstream SDK call without router-side reshaping.
  *
- * Phase 4 will add stricter validation for tool definitions; Phase 2 keeps it minimal.
+ * Phase 4 (Plan 04-01) flows the parsed body through openAIRequestToCanonical →
+ * adapter.chatCompletionsCanonical{,Stream} → canonicalToOpenAIResponse|canonicalToOpenAISse.
+ * The wire output stays byte-identical to Phase 2/3 (the existing chat-completions
+ * integration tests are the regression gate).
  */
 const ChatMessageSchema = z.object({
   role: z.enum(['system', 'user', 'assistant', 'tool']),
@@ -44,12 +48,10 @@ export interface RegisterChatCompletionsOpts {
 /**
  * Register POST /v1/chat/completions on the typed Fastify instance.
  *
- * Plan 02-04: non-stream branch from plan 02-03 is unchanged; stream branch
- * replaces the 501 stub with the full RESEARCH §Pattern 3 wiring.
- *
- * Plan 03-04: semaphore wraps the adapter call (D-B5) — acquire BEFORE, release
- * in finally (idempotent safeRelease). sseCleanup also calls safeRelease so the
- * slot is released on client-abort mid-stream (Pitfall 1 — T-3-D4 mitigation).
+ * Plan 04-01 (D-A3, D-F3): zod parse → openAIRequestToCanonical → adapter.canonical
+ * → canonicalToOpenAI{Response,Sse}. The AbortController + onClose + safeRelease
+ * + semaphore + heartbeat + sseCleanup plumbing is unchanged byte-for-byte from
+ * Phase 3 — only the middle-three-lines translator pipeline differs.
  */
 export function registerChatCompletionsRoute(
   app: FastifyInstance,
@@ -68,10 +70,12 @@ export function registerChatCompletionsRoute(
       const entry = opts.registry.resolve(body.model);
       const adapter: BackendAdapter = opts.makeAdapter(entry);
 
-      // Map registry name -> backend model id (Phase 2: identical; the seam exists for Phase 3+)
-      // Cast to ChatCompletionCreateParams so the adapter methods accept it — the zod
-      // passthrough schema produces a superset that is type-compatible at runtime.
-      const upstreamParams = { ...body, model: entry.backend_model } as unknown as ChatCompletionCreateParams;
+      // Plan 04-01 (D-A3, D-F3): translate inbound OpenAI body → canonical with the
+      // backend_model id remapped BEFORE translation so the canonical's `model` field
+      // already points to the upstream model id when the adapter receives it.
+      // openAIRequestToCanonical throws ZodError on shape violations — the centralized
+      // error handler maps to 400 + invalid_request envelope (envelope.ts:60-69).
+      const canonical = openAIRequestToCanonical({ ...body, model: entry.backend_model });
 
       // ── AbortController: load-bearing for SC3 ──────────────────────────────
       // The signal is forwarded to undici by the openai SDK, which closes the
@@ -151,12 +155,12 @@ export function registerChatCompletionsRoute(
         released = false; // reset: the slot is now held
         if (body.stream === true) {
           // ── STREAM BRANCH (RESEARCH §Pattern 3 — load-bearing for SC1 + SC3) ──
-          let upstream: AsyncIterable<ChatCompletionChunk>;
+          let upstream: AsyncIterable<CanonicalStreamEvent>;
           try {
             // Some SDKs throw synchronously on bad params; some return a thenable that
             // rejects. Wrap in try/catch so a PRE-STREAM error becomes a JSON envelope
             // rather than starting an SSE response we can't recover from.
-            upstream = await adapter.chatCompletionsStream(upstreamParams, controller.signal);
+            upstream = await adapter.chatCompletionsCanonicalStream(canonical, controller.signal);
           } catch (err) {
             // HTTP not yet 200; emit envelope.
             req.raw.socket?.off('close', onClose);
@@ -174,7 +178,7 @@ export function registerChatCompletionsRoute(
           const heartbeat = startHeartbeat(reply.raw);
           stopHeartbeat = () => heartbeat.stop();  // wires onClose to also stop heartbeat
 
-          // sseCleanup is called by chunkToSseEvents onCleanup on stream end / abort / error.
+          // sseCleanup is called by canonicalToOpenAISse onCleanup on stream end / abort / error.
           // CRITICAL (Pitfall 1 / T-3-D4): sseCleanup MUST call safeRelease so the semaphore
           // slot is released when the SSE stream closes — NOT when the adapter call returns
           // (which is immediately for streaming). Revision 1 Warning 7 makes this grep-verifiable.
@@ -195,7 +199,7 @@ export function registerChatCompletionsRoute(
           // `heartbeat.stop()` is idempotent — calling it twice (here AND from
           // sseCleanup) is safe.
           try {
-            await reply.sse(chunkToSseEvents(upstream, {
+            await reply.sse(canonicalToOpenAISse(upstream, {
               signal: controller.signal,
               onCleanup: sseCleanup,
             }));
@@ -214,10 +218,12 @@ export function registerChatCompletionsRoute(
           return;
         }
 
-        // ── NON-STREAM BRANCH (unchanged from plan 02-03) ────────────────────
-        const result = await adapter.chatCompletions(upstreamParams, controller.signal);
+        // ── NON-STREAM BRANCH (Plan 04-01 D-A3 / D-F3) ───────────────────────
+        // adapter.chatCompletionsCanonical returns a CanonicalResponse; we map it
+        // back to OpenAI ChatCompletion shape (preserving body.id via _upstreamId).
+        const canonicalResult = await adapter.chatCompletionsCanonical(canonical, controller.signal);
         req.raw.socket?.off('close', onClose);
-        return reply.send(result);
+        return reply.send(canonicalToOpenAIResponse(canonicalResult));
       } catch (err) {
         // Defense in depth — anything thrown synchronously / from the non-stream branch
         // ends up here. setErrorHandler in app.ts will turn it into the OpenAI envelope;

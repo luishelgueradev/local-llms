@@ -252,6 +252,13 @@ export async function* canonicalToOpenAISse(
         case 'message_delta': {
           capturedOutputTokens = ev.usage.output_tokens;
           capturedFinishReason = canonicalStopToOpenAIFinish(ev.delta.stop_reason);
+          // Prefer the upstream prompt_tokens carrier (attached non-enumerably by
+          // openAIChunksToCanonicalEvents) when present; falls back to whatever was
+          // captured from message_start (typically 0 in Plan 01 — Plan 03 wires the
+          // route-supplied inputTokensHint so message_start carries the right value).
+          const upstreamInputTokens = (ev.usage as { _upstreamInputTokens?: number })._upstreamInputTokens;
+          const effectiveInputTokens =
+            typeof upstreamInputTokens === 'number' ? upstreamInputTokens : capturedInputTokens;
           // Emit the final usage chunk (matches Phase 2 wire shape — see
           // tests/msw/handlers.ts ollamaStreamHandler lines 84-96: choices:[] + usage).
           const usageChunk: ChatCompletionChunk = {
@@ -261,9 +268,9 @@ export async function* canonicalToOpenAISse(
             model,
             choices: [],
             usage: {
-              prompt_tokens: capturedInputTokens,
+              prompt_tokens: effectiveInputTokens,
               completion_tokens: capturedOutputTokens,
-              total_tokens: capturedInputTokens + capturedOutputTokens,
+              total_tokens: effectiveInputTokens + capturedOutputTokens,
             },
           };
           yield { data: JSON.stringify(usageChunk) };
@@ -401,11 +408,24 @@ export async function* openAIChunksToCanonicalEvents(
         yield { type: 'content_block_stop', index: 0 };
         textBlockOpen = false;
       }
-      yield {
-        type: 'message_delta',
-        delta: { stop_reason: 'end_turn', stop_sequence: null },
+      // Attach the upstream prompt_tokens as a NON-ENUMERABLE carrier on the
+      // message_delta event so canonicalToOpenAISse can compose the final wire-format
+      // usage chunk with the correct prompt_tokens (the canonical event union doesn't
+      // expose input_tokens on message_delta — Plan 03 will swap to inputTokensHint).
+      // The non-enumerable property does NOT pollute JSON.stringify of the event
+      // (Phase 5 logging stays clean — same T-04-A2 mitigation as _upstreamId).
+      const messageDelta = {
+        type: 'message_delta' as const,
+        delta: { stop_reason: 'end_turn' as const, stop_sequence: null },
         usage: { output_tokens: chunk.usage.completion_tokens },
       };
+      Object.defineProperty(messageDelta.usage, '_upstreamInputTokens', {
+        value: chunk.usage.prompt_tokens,
+        enumerable: false,
+        writable: false,
+        configurable: false,
+      });
+      yield messageDelta;
     }
   }
 
