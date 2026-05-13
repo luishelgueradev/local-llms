@@ -1,6 +1,9 @@
 import { APIConnectionError, APIConnectionTimeoutError, APIUserAbortError } from 'openai';
 import { z } from 'zod/v4';
 import { hasZodFastifySchemaValidationErrors } from '@bram-dc/fastify-type-provider-zod';
+// Re-export BackendSaturatedError so callers can import from this file (same pattern as RegistryUnknownModelError).
+export { BackendSaturatedError } from '../concurrency/semaphore.js';
+import { BackendSaturatedError } from '../concurrency/semaphore.js';
 
 export type OpenAIErrorEnvelope = {
   error: { message: string; type: string; code: string; param: string | null };
@@ -38,6 +41,8 @@ export function mapToHttpStatus(err: unknown): number {
   if (hasZodFastifySchemaValidationErrors(err)) return 400;
   if (typeof err === 'object' && err !== null && 'statusCode' in err && (err as { statusCode: number }).statusCode === 400) return 400;
   if (err instanceof RegistryUnknownModelError) return 404;
+  // BackendSaturatedError (Plan 03-04, ROUTE-07) — backend concurrency cap exceeded.
+  if (err instanceof BackendSaturatedError) return 429;
   // APIConnectionTimeoutError extends APIConnectionError — check FIRST for 504, before the 502 below
   if (err instanceof APIConnectionTimeoutError) return 504;
   if (err instanceof APIConnectionError) return 502;
@@ -78,6 +83,17 @@ export function toOpenAIErrorEnvelope(err: unknown): EnvelopeOrSkip {
   }
   if (err instanceof RegistryUnknownModelError) {
     return { error: { message: err.message, type: 'not_found_error', code: 'model_not_found', param: 'model' } };
+  }
+  // BackendSaturatedError (Plan 03-04, ROUTE-07) — backend concurrency cap exceeded; maps to 429 rate_limit_error.
+  if (err instanceof BackendSaturatedError) {
+    return {
+      error: {
+        message: err.message,
+        type: 'rate_limit_error',
+        code: 'backend_saturated',
+        param: null,
+      },
+    };
   }
   // APIConnectionTimeoutError extends APIConnectionError — check FIRST so we get 504 timeout semantics
   if (err instanceof APIConnectionTimeoutError) {

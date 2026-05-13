@@ -10,24 +10,29 @@ export function ollamaNonStreamHandler(opts: {
   content?: string;
   promptTokens?: number;
   completionTokens?: number;
+  delayMs?: number;
 } = {}) {
   const url = opts.url ?? 'http://ollama:11434/v1/chat/completions';
   const model = opts.model ?? 'llama3.2:3b-instruct-q4_K_M';
   const content = opts.content ?? 'Hello from msw';
   const pt = opts.promptTokens ?? 12;
   const ct = opts.completionTokens ?? 4;
-  return http.post(url, async () => HttpResponse.json({
-    id: 'chatcmpl-msw',
-    object: 'chat.completion',
-    created: Math.floor(Date.now() / 1000),
-    model,
-    choices: [{
-      index: 0,
-      message: { role: 'assistant', content },
-      finish_reason: 'stop',
-    }],
-    usage: { prompt_tokens: pt, completion_tokens: ct, total_tokens: pt + ct },
-  }));
+  const delay = opts.delayMs ?? 0;
+  return http.post(url, async () => {
+    if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+    return HttpResponse.json({
+      id: 'chatcmpl-msw',
+      object: 'chat.completion',
+      created: Math.floor(Date.now() / 1000),
+      model,
+      choices: [{
+        index: 0,
+        message: { role: 'assistant', content },
+        finish_reason: 'stop',
+      }],
+      usage: { prompt_tokens: pt, completion_tokens: ct, total_tokens: pt + ct },
+    });
+  });
 }
 
 /**
@@ -110,24 +115,29 @@ export function llamacppNonStreamHandler(opts: {
   content?: string;
   promptTokens?: number;
   completionTokens?: number;
+  delayMs?: number;
 } = {}) {
   const url = opts.url ?? 'http://llamacpp:8080/v1/chat/completions';
   const model = opts.model ?? 'qwen2.5-7b-instruct-q4_K_M';
   const content = opts.content ?? 'Hello from msw (llamacpp)';
   const pt = opts.promptTokens ?? 12;
   const ct = opts.completionTokens ?? 4;
-  return http.post(url, async () => HttpResponse.json({
-    id: 'chatcmpl-msw-llamacpp',
-    object: 'chat.completion',
-    created: Math.floor(Date.now() / 1000),
-    model,
-    choices: [{
-      index: 0,
-      message: { role: 'assistant', content },
-      finish_reason: 'stop',
-    }],
-    usage: { prompt_tokens: pt, completion_tokens: ct, total_tokens: pt + ct },
-  }));
+  const delay = opts.delayMs ?? 0;
+  return http.post(url, async () => {
+    if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+    return HttpResponse.json({
+      id: 'chatcmpl-msw-llamacpp',
+      object: 'chat.completion',
+      created: Math.floor(Date.now() / 1000),
+      model,
+      choices: [{
+        index: 0,
+        message: { role: 'assistant', content },
+        finish_reason: 'stop',
+      }],
+      usage: { prompt_tokens: pt, completion_tokens: ct, total_tokens: pt + ct },
+    });
+  });
 }
 
 /**

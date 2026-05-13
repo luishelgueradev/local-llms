@@ -4,6 +4,7 @@ import { APIConnectionError, APIConnectionTimeoutError, APIUserAbortError } from
 import {
   BearerAuthError,
   RegistryUnknownModelError,
+  BackendSaturatedError,
   NO_ENVELOPE,
   mapToHttpStatus,
   toOpenAIErrorEnvelope,
@@ -84,5 +85,37 @@ describe('toOpenAIErrorEnvelope (D-C1, D-C3)', () => {
     expect(lines).toHaveLength(2);
     expect(lines[0]).toEqual({ event: 'error', data: JSON.stringify(env) });
     expect(lines[1]).toEqual({ event: '', data: '[DONE]' });
+  });
+
+  it('BackendSaturatedError -> 429 / rate_limit_error / backend_saturated (Plan 03-04, ROUTE-07)', () => {
+    const err = new BackendSaturatedError('ollama', 1500);
+    // HTTP status
+    expect(mapToHttpStatus(err)).toBe(429);
+    // Envelope
+    const env = toOpenAIErrorEnvelope(err);
+    expect(env).not.toBe(NO_ENVELOPE);
+    if (env === NO_ENVELOPE) return;
+    expect(env.error.type).toBe('rate_limit_error');
+    expect(env.error.code).toBe('backend_saturated');
+    expect(env.error.param).toBeNull();
+    expect(env.error.message).toContain('ollama');
+    expect(env.error.message).toContain('saturated');
+  });
+
+  it('BackendSaturatedError re-exported from envelope — importable from this module', () => {
+    // Verifies the re-export (Edit A from 03-PATTERNS.md §envelope.ts)
+    const err = new BackendSaturatedError('llamacpp', 100);
+    expect(err).toBeInstanceOf(BackendSaturatedError);
+    expect(err.code).toBe('backend_saturated');
+    expect(err.backend).toBe('llamacpp');
+  });
+
+  // Regression checks: existing mappings must be unaffected by Plan 03-04 changes.
+  it('regression: BearerAuthError still maps to 401', () => {
+    expect(mapToHttpStatus(new BearerAuthError())).toBe(401);
+  });
+
+  it('regression: RegistryUnknownModelError still maps to 404', () => {
+    expect(mapToHttpStatus(new RegistryUnknownModelError('foo', []))).toBe(404);
   });
 });

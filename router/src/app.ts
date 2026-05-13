@@ -16,11 +16,13 @@ import { toOpenAIErrorEnvelope, mapToHttpStatus, NO_ENVELOPE } from './errors/en
 import { makeLivenessScheduler, type LivenessScheduler } from './backends/liveness.js';
 import { makeAdapter as defaultMakeAdapter } from './backends/factory.js';
 import { registerReadyz } from './routes/readyz.js';
+import { BackendSemaphore } from './concurrency/semaphore.js';
 
-// Fastify module augmentation so TypeScript knows about app.liveness (D-D decorator).
+// Fastify module augmentation so TypeScript knows about app.liveness + app.semaphores (decorators).
 declare module 'fastify' {
   interface FastifyInstance {
     liveness: LivenessScheduler;
+    semaphores: { get(backend: string): BackendSemaphore };
   }
 }
 
@@ -40,6 +42,21 @@ export interface BuildAppOpts {
    * spinning up real upstream probes.
    */
   livenessFactory?: (opts: Parameters<typeof makeLivenessScheduler>[0]) => LivenessScheduler;
+  /**
+   * Optional semaphore factory — defaults to new BackendSemaphore(...).
+   * Tests inject a fake here for type-check compliance without exercising rate-limit behavior.
+   * (Revision 1, Warning 5 — test fixtures must pass a fake semaphores opt when
+   * RegisterChatCompletionsOpts requires the field.)
+   */
+  semaphoreFactory?: (name: string, concurrency: number, waitMs: number) => BackendSemaphore;
+  /**
+   * Optional semaphores override — bypasses the registry-derived Map entirely.
+   * Used by concurrency integration tests that need a real BackendSemaphore with
+   * direct access to stats(), and also by the existing chat-completions integration
+   * test fixtures (Revision 1, Warning 5) that pass a fake semaphores opt.
+   * When provided, semaphoreFactory is ignored.
+   */
+  semaphores?: { get(backend: string): BackendSemaphore };
 }
 
 export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
@@ -117,10 +134,49 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
   const distinctUrls = Array.from(new Set(opts.registry.get().models.map((m) => m.backend_url)));
   liveness.start(distinctUrls);
 
+  // -------------------------------------------------------------------------
+  // Per-backend semaphore Map (Plan 03-04, ROUTE-07)
+  // -------------------------------------------------------------------------
+  // Build one BackendSemaphore per distinct backend name. Uses the `backends:` section
+  // from the registry schema (Plan 03-02) for concurrency + queue_max_wait_ms, with
+  // sensible defaults per D-B3 (concurrency: 2, queue_max_wait_ms: 30_000).
+  //
+  // Per 03-02 SUMMARY note: registry.get().backends may be undefined when the `backends:`
+  // section is absent from models.yaml — always use ?? 2 / ?? 30_000 as fallbacks.
+
+  const semaphoreFactory = opts.semaphoreFactory ?? ((n, c, w) => new BackendSemaphore(n, c, w));
+  const semaphoreMap = new Map<string, BackendSemaphore>();
+  {
+    const reg = opts.registry.get();
+    const seenBackends = new Set<string>();
+    for (const m of reg.models) {
+      if (seenBackends.has(m.backend)) continue;
+      seenBackends.add(m.backend);
+      const cfg = reg.backends?.[m.backend];
+      const concurrency = cfg?.concurrency ?? 2;
+      const queueMaxWaitMs = cfg?.queue_max_wait_ms ?? 30_000;
+      semaphoreMap.set(m.backend, semaphoreFactory(m.backend, concurrency, queueMaxWaitMs));
+    }
+  }
+
+  // Use the opts.semaphores override if provided (test injection); else use the registry-derived Map.
+  const semaphores = opts.semaphores ?? {
+    get: (backend: string): BackendSemaphore => {
+      const s = semaphoreMap.get(backend);
+      if (!s) throw new Error(`No semaphore for backend "${backend}"`);
+      return s;
+    },
+  };
+
+  app.decorate('semaphores', semaphores);
+
   // Shutdown hook (D-D7) — clears all timers so process exit is clean.
+  // semaphoreMap.clear() tidies the Map; active timer waiters inside the semaphore
+  // will reject on their own setTimeout fires (process is exiting).
   app.addHook('onClose', async () => {
     liveness.stop();
     probeAdapters.clear();
+    semaphoreMap.clear();
   });
 
   // -------------------------------------------------------------------------
@@ -134,9 +190,11 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
 
   // Chat completions — non-stream branch in plan 02-03; stream branch in plan 02-04
   // (same route file; plan 02-04 replaces the 501 stub).
+  // Plan 03-04: semaphores injected for per-backend concurrency cap (ROUTE-07).
   registerChatCompletionsRoute(app, {
     registry: opts.registry,
     makeAdapter: opts.makeAdapter ?? makeOllamaAdapterFromEntry,
+    semaphores,
   });
 
   // GET /v1/models — bearer-gated; lists all registry models (Plan 03-02, OAI-03).

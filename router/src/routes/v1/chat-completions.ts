@@ -4,6 +4,8 @@ import { z } from 'zod/v4';
 import type { ChatCompletionChunk, ChatCompletionCreateParams } from 'openai/resources/chat/completions';
 import type { RegistryStore } from '../../config/registry.js';
 import type { AdapterFactory, BackendAdapter } from '../../backends/adapter.js';
+import type { BackendSemaphore } from '../../concurrency/semaphore.js';
+import { BackendSaturatedError } from '../../concurrency/semaphore.js';
 import { startHeartbeat } from '../../sse/heartbeat.js';
 import { chunkToSseEvents } from '../../sse/stream.js';
 import { NO_ENVELOPE, mapToHttpStatus, toOpenAIErrorEnvelope } from '../../errors/envelope.js';
@@ -35,6 +37,8 @@ export type ChatCompletionRequest = z.infer<typeof ChatCompletionRequestSchema>;
 export interface RegisterChatCompletionsOpts {
   registry: RegistryStore;
   makeAdapter: AdapterFactory;
+  /** Per-backend semaphore map (Plan 03-04, ROUTE-07). */
+  semaphores: { get(backend: string): BackendSemaphore };
 }
 
 /**
@@ -42,6 +46,10 @@ export interface RegisterChatCompletionsOpts {
  *
  * Plan 02-04: non-stream branch from plan 02-03 is unchanged; stream branch
  * replaces the 501 stub with the full RESEARCH §Pattern 3 wiring.
+ *
+ * Plan 03-04: semaphore wraps the adapter call (D-B5) — acquire BEFORE, release
+ * in finally (idempotent safeRelease). sseCleanup also calls safeRelease so the
+ * slot is released on client-abort mid-stream (Pitfall 1 — T-3-D4 mitigation).
  */
 export function registerChatCompletionsRoute(
   app: FastifyInstance,
@@ -105,7 +113,35 @@ export function registerChatCompletionsRoute(
         );
       }
 
+      // ── Semaphore acquire (Plan 03-04, D-B5) ─────────────────────────────────
+      // Acquire BEFORE the adapter call. If the backend is saturated the acquire
+      // rejects with BackendSaturatedError which is caught in the outer catch below
+      // and forwarded to the centralized error handler as a 429.
+      //
+      // The signal is controller.signal so a client disconnect (onClose → controller.abort())
+      // also aborts the queue-wait (T-3-D6 mitigation).
+      //
+      // IMPORTANT: The acquire is inside the try block so that BackendSaturatedError
+      // is caught by the catch clause that sets the Retry-After header before re-throw.
+      // If acquire were outside the try, the header would never be set.
+      const semaphore = opts.semaphores.get(entry.backend);
+
+      // Idempotent release closure — mirrors heartbeat.stop() pattern.
+      // Called from BOTH the finally block AND sseCleanup (Pitfall 1 / T-3-D4).
+      // Initialized as a no-op until acquire succeeds; ensures finally never panics.
+      let released = false;
+      let release: () => void = () => {};
+      const safeRelease = (): void => {
+        if (released) return;
+        released = true;
+        release();
+      };
+
       try {
+        // Acquire the semaphore slot INSIDE the try block so BackendSaturatedError
+        // is caught below and Retry-After can be set before re-throw.
+        release = await semaphore.acquire(controller.signal);
+        released = false; // reset: the slot is now held
         if (body.stream === true) {
           // ── STREAM BRANCH (RESEARCH §Pattern 3 — load-bearing for SC1 + SC3) ──
           let upstream: AsyncIterable<ChatCompletionChunk>;
@@ -131,9 +167,14 @@ export function registerChatCompletionsRoute(
           const heartbeat = startHeartbeat(reply.raw);
           stopHeartbeat = () => heartbeat.stop();  // wires onClose to also stop heartbeat
 
+          // sseCleanup is called by chunkToSseEvents onCleanup on stream end / abort / error.
+          // CRITICAL (Pitfall 1 / T-3-D4): sseCleanup MUST call safeRelease so the semaphore
+          // slot is released when the SSE stream closes — NOT when the adapter call returns
+          // (which is immediately for streaming). Revision 1 Warning 7 makes this grep-verifiable.
           const sseCleanup = (): void => {
             heartbeat.stop();
             req.raw.socket?.off('close', onClose);
+            safeRelease();  // Pitfall 1 mitigation — slot released on stream end/abort/error
           };
 
           // The SSE plugin sets Content-Type + Cache-Control + Connection on first yield
@@ -174,8 +215,20 @@ export function registerChatCompletionsRoute(
         // Defense in depth — anything thrown synchronously / from the non-stream branch
         // ends up here. setErrorHandler in app.ts will turn it into the OpenAI envelope;
         // re-throw so the centralized handler sees it.
+        //
+        // BackendSaturatedError: set Retry-After header before re-throw (per 03-PATTERNS.md
+        // line 705-707). The centralized error handler in app.ts maps the error to 429 +
+        // rate_limit_error envelope; we set the header here so it's present on the reply.
+        if (err instanceof BackendSaturatedError) {
+          void reply.header('Retry-After', String(Math.ceil(err.waitedMs / 1000)));
+        }
         req.raw.socket?.off('close', onClose);
         throw err;
+      } finally {
+        // Always release the semaphore slot. safeRelease is idempotent — if sseCleanup
+        // already called it (stream end / abort), this is a no-op. For non-stream and
+        // error paths, this is the primary release point.
+        safeRelease();
       }
     },
   );
