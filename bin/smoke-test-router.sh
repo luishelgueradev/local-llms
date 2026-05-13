@@ -579,14 +579,26 @@ else:
   fi
 
   # Assertion B3: BCKND-02 -- llamacpp is using GPU (nvidia-smi shows the process)
+  # Tier 1: nvidia-smi inside the container (works on bare-metal Linux)
   if docker compose --profile llamacpp exec -T llamacpp sh -c "command -v nvidia-smi >/dev/null && nvidia-smi --query-compute-apps=name --format=csv,noheader" 2>/dev/null | grep -qiE 'llama|llamacpp|llama-server'; then
     pass "llamacpp container shows GPU process via nvidia-smi (BCKND-02 -- GPU-resident inference)"
   else
-    # llamacpp image may not have nvidia-smi binary; fall back to host check
+    # Tier 2: host-side nvidia-smi --query-compute-apps (works on bare-metal Linux)
     if command -v nvidia-smi >/dev/null && nvidia-smi --query-compute-apps=name --format=csv,noheader 2>/dev/null | grep -qiE 'llama|llamacpp|llama-server'; then
       pass "llamacpp visible in host nvidia-smi --query-compute-apps (BCKND-02)"
     else
-      fail "could not verify llamacpp GPU residency via nvidia-smi (BCKND-02)"
+      # Tier 3: parse container logs for GPU offload signal.
+      # WSL2 projects CUDA into containers but does NOT expose compute-app enumeration
+      # via nvidia-smi --query-compute-apps, so tiers 1+2 fail even when CUDA is working.
+      # Grepping for 'load_tensors: offloaded N/N layers to GPU' in the startup log is
+      # reliable on all hosts where CUDA initialized successfully (including WSL2).
+      # The \1 backreference enforces that ALL layers were offloaded (N/N), so a partial
+      # CPU fallback like '15/29 layers' correctly fails this check.
+      if docker compose --profile llamacpp logs llamacpp 2>/dev/null | grep -qE 'load_tensors: offloaded ([1-9][0-9]*)/\1 layers to GPU'; then
+        pass "llamacpp logs confirm full GPU offload (load_tensors N/N layers to GPU) -- BCKND-02 via log-parse (WSL2 path)"
+      else
+        fail "could not verify llamacpp GPU residency via nvidia-smi or log-parse (BCKND-02)"
+      fi
     fi
   fi
 

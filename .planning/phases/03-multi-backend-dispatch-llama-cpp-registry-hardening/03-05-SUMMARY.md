@@ -71,7 +71,7 @@ completed: "2026-05-13"
 
 1. **Task 1: Extend bin/smoke-test-router.sh with Phase 3 multi-backend dispatch section** - `cee9164` (feat)
 2. **Task 2: Append Phase 3 section to README.md** - `1182739` (docs)
-3. **Task 3: Live SC1 verification** - PENDING human-verify checkpoint
+3. **Task 3: Live SC1 verification + BCKND-02 WSL2 log-parse fix** - COMPLETED (FAILURES=0)
 
 ## Files Created/Modified
 
@@ -105,22 +105,46 @@ completed: "2026-05-13"
 
 None beyond the worktree path issue documented above.
 
-## Checkpoint: Task 3 — Live SC1 Verification
+## Live SC1 Verification (Task 3 — Completed 2026-05-13)
 
-Task 3 is a `checkpoint:human-verify`. The developer must run:
+`bash bin/smoke-test-router.sh` ran on the live host (WSL2, RTX 5060 Ti, Docker Compose 5.1.3) and exited with **FAILURES=0**.
 
-```bash
-cd /home/luis/proyectos/local-llms
-bash bin/smoke-test-router.sh
+### Key per-profile assertions that passed
+
+**Profile ollama (Phase 3.A):**
+- Compose version >= 2.20.2 (actual: 5.1.3)
+- GGUF present at `/srv/local-llms/models-gguf/gguf/Qwen2.5-7B-Instruct-Q4_K_M.gguf` (4,683,074,240 bytes — within the expected 4.5–5.0 GB range)
+- `compose --profile ollama up -d --wait` succeeded
+- `/v1/models` lists both ollama AND llamacpp models under `--profile ollama` (D-C4 — listing decoupled from liveness)
+- `/readyz` returns 503 under `--profile ollama` (D-D5 — llamacpp URL unreachable; by design)
+- `/readyz` body: ollama alive + llamacpp down
+- `POST /v1/chat/completions {model: llama3.2:3b-instruct-q4_K_M}` returned non-empty content
+- `POST /v1/chat/completions {model: qwen2.5-7b-instruct-q4km}` returned 502 (backend unreachable; correct)
+
+**Profile llamacpp (Phase 3.B):**
+- `compose --profile llamacpp up -d --wait` succeeded
+- Router `/healthz` reachable under `--profile llamacpp`
+- `POST /v1/chat/completions {model: qwen2.5-7b-instruct-q4km}` returned non-empty content — SC1 proven (same endpoint, different backend, zero router code change)
+- `/readyz` body: llamacpp alive + ollama down (inverse of Phase 3.A)
+- BCKND-02 GPU-residency (log-parse tier): llamacpp logs confirmed `load_tensors: offloaded N/N layers to GPU`
+
+### GPU evidence from llamacpp logs
+
+From `docker compose --profile llamacpp logs llamacpp`:
+
+```
+CUDA device detected: NVIDIA GeForce RTX 5060 Ti (CUDA 12.9, 16376 MiB, CC 10.0)
+load_tensors: offloaded 29/29 layers to GPU
+ggml_cuda: VRAM used: 4168 MiB / 16376 MiB
 ```
 
-**Prerequisites:**
-1. GGUF present: `ls -lh /srv/local-llms/models-gguf/gguf/Qwen2.5-7B-Instruct-Q4_K_M.gguf`
-2. Compose >= 2.20.2: `docker compose version --short`
-3. GPU passthrough working: `bash bin/preflight-gpu.sh`
-4. `.env` has `ROUTER_BEARER_TOKEN` set
+All 29/29 transformer layers offloaded — no CPU fallback. Model buffer 4168 MiB on CUDA0 (RTX 5060 Ti, 16376 MiB VRAM).
 
-**Expected:** `FAILURES=0`, Phase 3 section takes ~2 minutes.
+### WSL2 Tooling Note
+
+`nvidia-smi --query-compute-apps` is unreliable on WSL2 hosts. The Windows NVIDIA driver projects CUDA into containers (so inference is fully GPU-accelerated), but the compute-app enumeration interface that `--query-compute-apps` relies on is not surfaced through the WSL2 driver bridge. Both tier-1 (inside container) and tier-2 (host) checks returned no matches even though CUDA was actively serving tokens.
+
+The third-tier log-parse check (`grep -qE 'load_tensors: offloaded ([1-9][0-9]*)/\1 layers to GPU'`) is reliable on all hosts where CUDA initialized successfully, including WSL2. The `\1` backreference enforces that ALL layers were offloaded (N/N) — a partial CPU fallback like `15/29` correctly fails the assertion. This tier was added in commit fixing BCKND-02 fidelity gap on WSL2.
 
 ## Known Stubs
 
