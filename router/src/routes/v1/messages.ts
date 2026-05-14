@@ -8,8 +8,8 @@
  * safeRelease + semaphore + heartbeat + sseCleanup plumbing mirrors
  * chat-completions.ts byte-for-byte; only the translator pipeline differs.
  *
- * Plan 04-02 shipped the non-stream branch + a 501 stub for streaming. Plan 04-03
- * (THIS edit) replaces the 501 stub with the full SSE pipeline:
+ * Plan 04-02 shipped the non-stream branch + a not-implemented stub for streaming.
+ * Plan 04-03 (THIS edit) replaces that stub with the full SSE pipeline:
  *   countTokens(canonical)  → inputTokensHint
  *   adapter.chatCompletionsCanonicalStream(canonical, signal, { inputTokensHint })
  *   reply.sse(canonicalToAnthropicSse(upstream, { signal, onCleanup }))

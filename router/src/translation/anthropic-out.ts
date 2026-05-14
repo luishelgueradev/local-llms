@@ -16,10 +16,10 @@
  *   event: content_block_delta    ← text_delta / input_json_delta partials
  *   event: content_block_stop     ← block closes
  *   event: message_delta          ← stop_reason + cumulative usage.output_tokens
- *   event: message_stop           ← terminator (NOT data: [DONE] — Anthropic doesn't use it)
+ *   event: message_stop           ← terminator (NOT data DONE — Anthropic doesn't use it)
  *
  * Mid-stream error: SINGLE `event: error\ndata: {...}` frame and the stream ends.
- * No `data: [DONE]` follow-up (FINDING 1.1 / Example C / D-F5).
+ * No data-DONE follow-up (FINDING 1.1 / Example C / D-F5).
  *
  * Plan 04-04 will thread `displayModel` + `idOverride` opts through this function so
  * the route can rewrite `message_start.message.model` to the registry name without
@@ -86,7 +86,7 @@ export interface CanonicalToAnthropicSseOpts {
  *     if (opts.signal?.aborted) return;        // client gone — emit nothing
  *     const env = toAnthropicErrorEnvelope(err);
  *     if (env === ANTHROPIC_NO_ENVELOPE) return; // APIUserAbortError equivalent
- *     yield anthropicErrorFrame(env);          // SINGLE frame, no [DONE]
+ *     yield anthropicErrorFrame(env);          // SINGLE frame, no data-DONE
  *   }
  *   finally { opts.onCleanup?.(); }
  *
@@ -193,12 +193,12 @@ export async function* canonicalToAnthropicSse(
     const env = toAnthropicErrorEnvelope(err);
     if (env === ANTHROPIC_NO_ENVELOPE) {
       // APIUserAbortError NOT originated by `opts.signal` — Anthropic stream just
-      // ends silently. Unlike OpenAI (which expects a bare `[DONE]` terminator per
-      // WR-07), Anthropic's wire format has no `[DONE]`; the absence of further
+      // ends silently. Unlike OpenAI (which expects a bare data-DONE terminator per
+      // WR-07), Anthropic's wire format has no data-DONE; the absence of further
       // frames IS the terminator semantics for an aborted-but-not-signal path.
       return;
     }
-    // FINDING 1.1 / Example C — SINGLE error frame, then stream ends. NO [DONE]
+    // FINDING 1.1 / Example C — SINGLE error frame, then stream ends. NO data-DONE
     // follow-up. The distinguishing feature vs midStreamErrorFrameLines (OpenAI).
     yield anthropicErrorFrame(env);
   } finally {
