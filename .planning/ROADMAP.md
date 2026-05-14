@@ -129,7 +129,7 @@ Plans:
 **Plans:** 4 plans
 Plans:
 **Wave 1**
-- [ ] 05-01-PLAN.md — Postgres service + Drizzle schema + boot-time migrator + buffered writer foundation + onClose drain (DATA-01, DATA-02, DATA-03, DATA-04, OBS-05; D-A1..A7, D-B1..B8, D-E1..E4, D-G1)
+- [x] 05-01-PLAN.md — Postgres service + Drizzle schema + boot-time migrator + buffered writer foundation + onClose drain (DATA-01, DATA-02, DATA-03, DATA-04, OBS-05; D-A1..A7, D-B1..B8, D-E1..E4, D-G1)
 
 **Wave 2** *(blocked on Wave 1 — shares router/src/app.ts + index.ts; consumes pool/db/bufferedWriter)*
 - [ ] 05-02-PLAN.md — Metrics registry + recordOutcome helper + agentId preHandler + /metrics route + skip-list extension + safeRecord wiring into both route files (DATA-03, OBS-01, ROUTE-09; D-C1..C7, D-D1..D7, T-5-08..T-5-14)
