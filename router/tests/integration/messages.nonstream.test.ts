@@ -333,24 +333,8 @@ describe('POST /v1/messages — error mapping (Anthropic envelope branch)', () =
     expect(env.error.type).toBe('invalid_request_error');
   });
 
-  it('stream:true returns 501 + Anthropic envelope (Plan 04-03 fills the stream branch)', async () => {
-    // Plan 04-03 will DELETE this assertion when it replaces the 501 stub with the
-    // full SSE pipeline. The presence of this test is a forward-handoff marker.
-    const res = await app.inject({
-      method: 'POST',
-      url: '/v1/messages',
-      headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
-      payload: {
-        model: MODEL_NAME,
-        max_tokens: 100,
-        messages: [{ role: 'user', content: 'hi' }],
-        stream: true,
-      },
-    });
-    expect(res.statusCode).toBe(501);
-    const env = res.json();
-    expect(env.type).toBe('error');
-    expect(env.error.type).toBe('invalid_request_error');
-    expect(env.error.message).toMatch(/Plan 04-03|streaming/i);
-  });
+  // Plan 04-02 had a 12th case here asserting `stream:true returns 501 + Anthropic
+  // envelope` — Plan 04-03 deleted it because the 501 placeholder was replaced with
+  // the full streaming pipeline. End-to-end stream coverage now lives in
+  // tests/integration/messages.stream.test.ts.
 });

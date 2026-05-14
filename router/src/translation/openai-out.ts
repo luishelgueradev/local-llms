@@ -350,6 +350,21 @@ export async function* canonicalToOpenAISse(
 export interface OpenAIChunksToCanonicalOpts {
   /** Registry-facing model name. Used as canonical.message.model on message_start. */
   model: string;
+  /**
+   * Plan 04-03 (Issue #6 resolution): the route's pre-stream `countTokens(canonical)`
+   * pre-count. Used as `message_start.message.usage.input_tokens` so the Anthropic
+   * surface emits a wire-correct, non-zero input_tokens on the very first SSE event.
+   *
+   * - Defaults to 0 (Plan 04-01 behavior) — keeps the Phase 2/3 OpenAI integration
+   *   suite green (the OpenAI surface still uses the upstream `prompt_tokens` carrier
+   *   on `message_delta.usage._upstreamInputTokens` for the final usage chunk).
+   * - The hint is non-authoritative: a future adapter (e.g. Plan 05's Ollama
+   *   `/api/chat` branch) may overwrite at end-of-stream from upstream's
+   *   `prompt_eval_count`. For the OpenAI-compat path, the hint IS the authoritative
+   *   source for the Anthropic surface; the OpenAI surface keeps the `_upstreamInputTokens`
+   *   carrier path so existing wire bytes don't shift.
+   */
+  inputTokensHint?: number;
 }
 
 export async function* openAIChunksToCanonicalEvents(
@@ -371,7 +386,7 @@ export async function* openAIChunksToCanonicalEvents(
         model: opts.model,
         stop_reason: null,
         stop_sequence: null,
-        usage: { input_tokens: 0, output_tokens: 1 },
+        usage: { input_tokens: opts.inputTokensHint ?? 0, output_tokens: 1 },
       };
       Object.defineProperty(startMessage, '_upstreamId', {
         value: chunk.id,

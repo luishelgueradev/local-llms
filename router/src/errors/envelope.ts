@@ -148,6 +148,24 @@ export function midStreamErrorFrameLines(envelope: OpenAIErrorEnvelope): { event
   ];
 }
 
+/**
+ * Plan 04-03 (ANTHR-06, FINDING 1.1): Anthropic mid-stream error frame.
+ *
+ * Anthropic emits a SINGLE `event: error\ndata: {...}` frame on stream error and the
+ * stream ends — there is NO `data: [DONE]` follow-up (Anthropic does not use [DONE]
+ * as a terminator at all; the OpenAI-style terminator is replaced by the typed
+ * `event: message_stop` frame on success and by silence on error).
+ *
+ * The single-frame return shape (NOT an array) is the deliberate distinguishing
+ * feature vs. `midStreamErrorFrameLines` — tests assert `Array.isArray(frame) === false`.
+ */
+export function anthropicErrorFrame(envelope: AnthropicErrorEnvelope): {
+  event: string;
+  data: string;
+} {
+  return { event: 'error', data: JSON.stringify(envelope) };
+}
+
 // ── Anthropic-shape envelope (Plan 04-02 D-C2) ──────────────────────────────────
 //
 // /v1/messages* routes serialize errors as Anthropic's wire envelope. The error

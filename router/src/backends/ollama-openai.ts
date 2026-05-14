@@ -51,10 +51,16 @@ export class OllamaOpenAIAdapter implements BackendAdapter {
    * message_stop). The route layer (canonicalToOpenAISse on /v1/chat/completions or
    * canonicalToAnthropicSse on /v1/messages) re-emits to the protocol-specific wire
    * format.
+   *
+   * Plan 04-03 (Issue #6): `opts.inputTokensHint` is the route's pre-stream
+   * `countTokens(canonical)` pre-count. Forwarded to `openAIChunksToCanonicalEvents`
+   * so `message_start.message.usage.input_tokens` is non-zero on the Anthropic
+   * surface. Plan 05 will mirror this in the native /api/chat branch.
    */
   async chatCompletionsCanonicalStream(
     canonical: CanonicalRequest,
     signal: AbortSignal,
+    opts?: { inputTokensHint?: number },
   ): Promise<AsyncIterable<CanonicalStreamEvent>> {
     const openaiReq = canonicalToOpenAIChatCompletionParams(canonical);
     const upstream = await this.client.chat.completions.create(
@@ -69,7 +75,10 @@ export class OllamaOpenAIAdapter implements BackendAdapter {
       },
       { signal },
     );
-    return openAIChunksToCanonicalEvents(upstream, { model: canonical.model });
+    return openAIChunksToCanonicalEvents(upstream, {
+      model: canonical.model,
+      inputTokensHint: opts?.inputTokensHint,
+    });
   }
 
   /**

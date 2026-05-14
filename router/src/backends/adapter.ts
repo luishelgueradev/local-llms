@@ -34,10 +34,22 @@ export interface BackendAdapter {
    * The route's translator (canonicalToOpenAISse / canonicalToAnthropicSse) checks
    * `signal.aborted` to distinguish client-disconnect (no error frame) from real
    * upstream errors (D-C2 frame).
+   *
+   * Plan 04-03 (Issue #6 resolution): `opts.inputTokensHint` is an optional upstream
+   * prompt-token pre-count supplied by the route (computed via `countTokens(canonical)`
+   * — see `translation/count-tokens.ts`). Adapters that produce a synthetic
+   * `message_start` event (e.g. the OpenAI-compat path that reassembles upstream
+   * chunks via `openAIChunksToCanonicalEvents`) MUST forward the hint into the
+   * translator so `message_start.message.usage.input_tokens` carries a sensible
+   * non-zero value. Adapters that receive `input_tokens` from an upstream native
+   * source MAY ignore the hint (e.g. the Plan 05 Ollama `/api/chat` branch using
+   * upstream's `prompt_eval_count`). Defaults to undefined → translator falls back
+   * to 0 to preserve Plan 04-01 behavior.
    */
   chatCompletionsCanonicalStream(
     canonical: CanonicalRequest,
     signal: AbortSignal,
+    opts?: { inputTokensHint?: number },
   ): Promise<AsyncIterable<CanonicalStreamEvent>>;
 
   /**
