@@ -1,0 +1,23 @@
+{
+  "model": "test-model",
+  "max_tokens": 100,
+  "messages": [{ "role": "user", "content": "weather and time in SF?" }],
+  "tools": [
+    {
+      "name": "get_weather",
+      "input_schema": {
+        "type": "object",
+        "properties": { "location": { "type": "string" } },
+        "required": ["location"]
+      }
+    },
+    {
+      "name": "get_time",
+      "input_schema": {
+        "type": "object",
+        "properties": { "timezone": { "type": "string" } },
+        "required": ["timezone"]
+      }
+    }
+  ]
+}

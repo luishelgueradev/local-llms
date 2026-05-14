@@ -1,0 +1,39 @@
+{
+  "request": {
+    "model": "test-model",
+    "messages": [
+      {
+        "role": "user",
+        "content": [{ "type": "text", "text": "weather in SF?" }]
+      }
+    ],
+    "max_tokens": 100,
+    "tools": [
+      {
+        "name": "get_weather",
+        "input_schema": {
+          "type": "object",
+          "properties": { "location": { "type": "string" } },
+          "required": ["location"]
+        }
+      }
+    ]
+  },
+  "response": {
+    "id": "msg_TESTSCENARIO01TESTSCENARIO",
+    "type": "message",
+    "role": "assistant",
+    "content": [
+      {
+        "type": "tool_use",
+        "id": "toolu_TESTSCENARIO01TESTSCEN",
+        "name": "get_weather",
+        "input": { "location": "San Francisco" }
+      }
+    ],
+    "model": "test-model",
+    "stop_reason": "tool_use",
+    "stop_sequence": null,
+    "usage": { "input_tokens": 25, "output_tokens": 10 }
+  }
+}

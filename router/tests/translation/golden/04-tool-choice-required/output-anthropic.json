@@ -1,0 +1,17 @@
+{
+  "id": "msg_TESTSCENARIO04TESTSCENARIO",
+  "type": "message",
+  "role": "assistant",
+  "content": [
+    {
+      "type": "tool_use",
+      "id": "toolu_TESTSCENARIO04TESTSCEN",
+      "name": "get_weather",
+      "input": { "location": "NYC" }
+    }
+  ],
+  "model": "test-model",
+  "stop_reason": "tool_use",
+  "stop_sequence": null,
+  "usage": { "input_tokens": 22, "output_tokens": 9 }
+}

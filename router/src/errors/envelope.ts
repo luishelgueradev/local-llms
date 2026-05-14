@@ -53,6 +53,69 @@ export class CapabilityNotSupportedError extends Error {
   }
 }
 
+/**
+ * Plan 04-04 T-04-02 mitigation: thrown by openai-in.ts when an OpenAI assistant
+ * `tool_calls[i].function.arguments` string is not valid JSON. Maps to 400 +
+ * invalid_request_error with code:'invalid_tool_arguments' on both wire surfaces.
+ *
+ * The translator is the trust boundary that catches malformed model output (or
+ * client-supplied bad data on a /v1/chat/completions continuation request); adapters
+ * NEVER do JSON.parse on tool args (grep gate S7).
+ */
+export class InvalidToolArgumentsError extends Error {
+  readonly code: 'invalid_tool_arguments' = 'invalid_tool_arguments';
+  constructor(
+    public readonly toolCallId: string,
+    public readonly cause: Error,
+  ) {
+    super(
+      `tool_calls[id="${toolCallId}"].function.arguments is not valid JSON: ${cause.message}`,
+    );
+    this.name = 'InvalidToolArgumentsError';
+  }
+}
+
+/**
+ * Plan 04-04 T-04-01 mitigation (Plan 05 consumer): thrown by ollama-native-out.ts
+ * when an image source's URL is non-https or resolves to a private/loopback address
+ * (SSRF mitigation). Maps to 400 + invalid_request_error with code:'invalid_image_url'.
+ *
+ * Lives here in Plan 04 (not Plan 05) to avoid wave-4 collision on envelope.ts —
+ * Plan 04 owns envelope.ts edits in this wave; Plan 05 owns the throw sites.
+ */
+export class InvalidImageUrlError extends Error {
+  readonly code: 'invalid_image_url' = 'invalid_image_url';
+  constructor(
+    public readonly url: string,
+    public readonly reason: 'http_scheme_blocked' | 'private_address_blocked',
+  ) {
+    super(
+      reason === 'http_scheme_blocked'
+        ? `Image URL must use https:// scheme; got non-https URL: ${url}`
+        : `image URL resolves to a private/loopback address — rejected for SSRF mitigation: ${url}`,
+    );
+    this.name = 'InvalidImageUrlError';
+  }
+}
+
+/**
+ * Plan 04-04 T-04-01 mitigation (Plan 05 consumer): thrown by ollama-native-out.ts
+ * when an image fetch fails (too large, wrong content-type, HTTP error). Maps to 400.
+ * Per-instance `code` field distinguishes the specific failure mode.
+ */
+export class ImageFetchError extends Error {
+  readonly code: 'image_too_large' | 'image_invalid_content_type' | 'http_error';
+  constructor(
+    public readonly url: string,
+    code: 'image_too_large' | 'image_invalid_content_type' | 'http_error',
+    detail: string,
+  ) {
+    super(`failed to fetch image from ${url}: ${detail}`);
+    this.name = 'ImageFetchError';
+    this.code = code;
+  }
+}
+
 /** D-C3 status mapping — single source of truth. */
 export function mapToHttpStatus(err: unknown): number {
   if (err instanceof BearerAuthError) return 401;
@@ -64,6 +127,11 @@ export function mapToHttpStatus(err: unknown): number {
   if (err instanceof RegistryUnknownModelError) return 404;
   // Plan 04-02 D-C2: missing capability for the requested model — pre-adapter 400.
   if (err instanceof CapabilityNotSupportedError) return 400;
+  // Plan 04-04 T-04-02: malformed tool_calls[].function.arguments — 400.
+  if (err instanceof InvalidToolArgumentsError) return 400;
+  // Plan 04-04 T-04-01: image URL or fetch failures — 400 (Plan 05 consumer).
+  if (err instanceof InvalidImageUrlError) return 400;
+  if (err instanceof ImageFetchError) return 400;
   // BackendSaturatedError (Plan 03-04, ROUTE-07) — backend concurrency cap exceeded.
   if (err instanceof BackendSaturatedError) return 429;
   // APIConnectionTimeoutError extends APIConnectionError — check FIRST for 504, before the 502 below
@@ -115,6 +183,40 @@ export function toOpenAIErrorEnvelope(err: unknown): EnvelopeOrSkip {
         type: 'invalid_request_error',
         code: 'model_capability_mismatch',
         param: 'model',
+      },
+    };
+  }
+  // Plan 04-04 T-04-02: malformed tool_calls JSON arguments.
+  if (err instanceof InvalidToolArgumentsError) {
+    return {
+      error: {
+        message: err.message,
+        type: 'invalid_request_error',
+        code: 'invalid_tool_arguments',
+        param: 'tool_calls',
+      },
+    };
+  }
+  // Plan 04-04 T-04-01: image URL invalid (non-https / SSRF) — Plan 05 consumer.
+  if (err instanceof InvalidImageUrlError) {
+    return {
+      error: {
+        message: err.message,
+        type: 'invalid_request_error',
+        code: 'invalid_image_url',
+        param: 'messages[].content[].source.url',
+      },
+    };
+  }
+  // Plan 04-04 T-04-01: image fetch failure — per-instance `code` field carries the
+  // specific reason (image_too_large / image_invalid_content_type / http_error).
+  if (err instanceof ImageFetchError) {
+    return {
+      error: {
+        message: err.message,
+        type: 'invalid_request_error',
+        code: err.code,
+        param: 'messages[].content[].source.url',
       },
     };
   }
@@ -219,6 +321,16 @@ export function toAnthropicErrorEnvelope(err: unknown): AnthropicEnvelopeOrSkip 
     return { type: 'error', error: { type: 'not_found_error', message: err.message } };
   }
   if (err instanceof CapabilityNotSupportedError) {
+    return { type: 'error', error: { type: 'invalid_request_error', message: err.message } };
+  }
+  // Plan 04-04: InvalidToolArgumentsError / InvalidImageUrlError / ImageFetchError
+  // all map to invalid_request_error on the Anthropic surface (parity with
+  // toOpenAIErrorEnvelope where they're invalid_request_error + per-class code).
+  if (
+    err instanceof InvalidToolArgumentsError ||
+    err instanceof InvalidImageUrlError ||
+    err instanceof ImageFetchError
+  ) {
     return { type: 'error', error: { type: 'invalid_request_error', message: err.message } };
   }
   if (err instanceof BackendSaturatedError) {

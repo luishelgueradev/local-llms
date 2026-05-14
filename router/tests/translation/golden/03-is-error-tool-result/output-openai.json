@@ -1,0 +1,23 @@
+{
+  "id": "msg_TESTSCENARIO03TESTSCENARIO",
+  "object": "chat.completion",
+  "created": 0,
+  "model": "test-model",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Sorry, I couldn't fetch the weather.",
+        "refusal": null
+      },
+      "finish_reason": "stop",
+      "logprobs": null
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 40,
+    "completion_tokens": 12,
+    "total_tokens": 52
+  }
+}

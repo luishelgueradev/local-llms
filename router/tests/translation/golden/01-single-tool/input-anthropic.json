@@ -1,0 +1,15 @@
+{
+  "model": "test-model",
+  "max_tokens": 100,
+  "messages": [{ "role": "user", "content": "weather in SF?" }],
+  "tools": [
+    {
+      "name": "get_weather",
+      "input_schema": {
+        "type": "object",
+        "properties": { "location": { "type": "string" } },
+        "required": ["location"]
+      }
+    }
+  ]
+}

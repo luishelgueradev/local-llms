@@ -1,0 +1,10 @@
+{
+  "id": "msg_TESTSCENARIO06TESTSCENARIO",
+  "type": "message",
+  "role": "assistant",
+  "content": [{ "type": "text", "text": "Sure, here's a text-only answer." }],
+  "model": "test-model",
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "usage": { "input_tokens": 26, "output_tokens": 10 }
+}

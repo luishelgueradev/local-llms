@@ -1,0 +1,21 @@
+{
+  "model": "test-model",
+  "max_tokens": 100,
+  "messages": [
+    { "role": "user", "content": "do something" },
+    {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [
+        {
+          "id": "call_malformed",
+          "type": "function",
+          "function": {
+            "name": "foo",
+            "arguments": "{this is not valid JSON}"
+          }
+        }
+      ]
+    }
+  ]
+}

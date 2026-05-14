@@ -1,0 +1,23 @@
+{
+  "id": "msg_TESTSCENARIO02TESTSCENARIO",
+  "type": "message",
+  "role": "assistant",
+  "content": [
+    {
+      "type": "tool_use",
+      "id": "toolu_TESTSCENARIO02ATESTSCEN",
+      "name": "get_weather",
+      "input": { "location": "SF" }
+    },
+    {
+      "type": "tool_use",
+      "id": "toolu_TESTSCENARIO02BTESTSCEN",
+      "name": "get_time",
+      "input": { "timezone": "PST" }
+    }
+  ],
+  "model": "test-model",
+  "stop_reason": "tool_use",
+  "stop_sequence": null,
+  "usage": { "input_tokens": 30, "output_tokens": 18 }
+}

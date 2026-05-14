@@ -1,0 +1,10 @@
+{
+  "id": "msg_TESTSCENARIO03TESTSCENARIO",
+  "type": "message",
+  "role": "assistant",
+  "content": [{ "type": "text", "text": "Sorry, I couldn't fetch the weather." }],
+  "model": "test-model",
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "usage": { "input_tokens": 40, "output_tokens": 12 }
+}

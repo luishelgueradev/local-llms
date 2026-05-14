@@ -1,0 +1,23 @@
+{
+  "id": "msg_TESTSCENARIO06TESTSCENARIO",
+  "object": "chat.completion",
+  "created": 0,
+  "model": "test-model",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Sure, here's a text-only answer.",
+        "refusal": null
+      },
+      "finish_reason": "stop",
+      "logprobs": null
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 26,
+    "completion_tokens": 10,
+    "total_tokens": 36
+  }
+}

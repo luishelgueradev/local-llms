@@ -1,0 +1,6 @@
+{
+  "model": "test-model",
+  "max_tokens": 100,
+  "messages": [{ "role": "user", "content": "tell me a story" }],
+  "stop_sequences": ["END", "HALT"]
+}

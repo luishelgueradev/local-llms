@@ -6,6 +6,9 @@ import {
   RegistryUnknownModelError,
   BackendSaturatedError,
   CapabilityNotSupportedError,
+  InvalidToolArgumentsError,
+  InvalidImageUrlError,
+  ImageFetchError,
   NO_ENVELOPE,
   ANTHROPIC_NO_ENVELOPE,
   mapToHttpStatus,
@@ -209,5 +212,95 @@ describe('toAnthropicErrorEnvelope (Plan 04-02 D-C2)', () => {
     if (env === ANTHROPIC_NO_ENVELOPE) return;
     expect(env.error.type).toBe('api_error');
     expect(env.error.message).toBe('boom');
+  });
+});
+
+// ── Plan 04-04 additions: InvalidToolArgumentsError + InvalidImageUrlError +
+//    ImageFetchError (T-04-02 + T-04-01 mitigations; Plan 05 imports the Image*Error)
+
+describe('InvalidToolArgumentsError (Plan 04-04 T-04-02)', () => {
+  it('maps to 400 + invalid_request_error / invalid_tool_arguments', () => {
+    const cause = new SyntaxError('Unexpected token t in JSON at position 1');
+    const err = new InvalidToolArgumentsError('call_abc', cause);
+    expect(mapToHttpStatus(err)).toBe(400);
+    const env = toOpenAIErrorEnvelope(err);
+    expect(env).not.toBe(NO_ENVELOPE);
+    if (env === NO_ENVELOPE) return;
+    expect(env.error.type).toBe('invalid_request_error');
+    expect(env.error.code).toBe('invalid_tool_arguments');
+    expect(env.error.param).toBe('tool_calls');
+    expect(env.error.message).toContain('call_abc');
+    expect(env.error.message).toContain('Unexpected token');
+  });
+
+  it('preserves the SyntaxError cause', () => {
+    const cause = new SyntaxError('boom');
+    const err = new InvalidToolArgumentsError('call_xyz', cause);
+    expect(err.cause).toBe(cause);
+    expect(err.toolCallId).toBe('call_xyz');
+  });
+
+  it('Anthropic envelope maps to invalid_request_error', () => {
+    const err = new InvalidToolArgumentsError('call_1', new SyntaxError('x'));
+    const env = toAnthropicErrorEnvelope(err);
+    expect(env).not.toBe(ANTHROPIC_NO_ENVELOPE);
+    if (env === ANTHROPIC_NO_ENVELOPE) return;
+    expect(env.type).toBe('error');
+    expect(env.error.type).toBe('invalid_request_error');
+  });
+});
+
+describe('InvalidImageUrlError (Plan 04-04 T-04-01 — Plan 05 consumer)', () => {
+  it('http_scheme_blocked -> 400 + invalid_request_error / invalid_image_url', () => {
+    const err = new InvalidImageUrlError('http://example.com/foo.png', 'http_scheme_blocked');
+    expect(mapToHttpStatus(err)).toBe(400);
+    const env = toOpenAIErrorEnvelope(err);
+    expect(env).not.toBe(NO_ENVELOPE);
+    if (env === NO_ENVELOPE) return;
+    expect(env.error.type).toBe('invalid_request_error');
+    expect(env.error.code).toBe('invalid_image_url');
+    expect(env.error.param).toBe('messages[].content[].source.url');
+    expect(env.error.message).toContain('https://');
+  });
+
+  it('private_address_blocked -> 400 + envelope message mentions private', () => {
+    const err = new InvalidImageUrlError('https://10.0.0.1/x.png', 'private_address_blocked');
+    expect(mapToHttpStatus(err)).toBe(400);
+    const env = toOpenAIErrorEnvelope(err);
+    expect(env).not.toBe(NO_ENVELOPE);
+    if (env === NO_ENVELOPE) return;
+    expect(env.error.code).toBe('invalid_image_url');
+    expect(env.error.message.toLowerCase()).toContain('private');
+  });
+});
+
+describe('ImageFetchError (Plan 04-04 T-04-01 — Plan 05 consumer)', () => {
+  it('image_too_large -> 400 + envelope.code is image_too_large', () => {
+    const err = new ImageFetchError('https://example.com/big.png', 'image_too_large', '12 MB > 5 MB limit');
+    expect(mapToHttpStatus(err)).toBe(400);
+    const env = toOpenAIErrorEnvelope(err);
+    expect(env).not.toBe(NO_ENVELOPE);
+    if (env === NO_ENVELOPE) return;
+    expect(env.error.type).toBe('invalid_request_error');
+    expect(env.error.code).toBe('image_too_large');
+    expect(env.error.param).toBe('messages[].content[].source.url');
+  });
+
+  it('image_invalid_content_type -> 400 + envelope.code is image_invalid_content_type', () => {
+    const err = new ImageFetchError('https://example.com/x.html', 'image_invalid_content_type', 'text/html');
+    expect(mapToHttpStatus(err)).toBe(400);
+    const env = toOpenAIErrorEnvelope(err);
+    expect(env).not.toBe(NO_ENVELOPE);
+    if (env === NO_ENVELOPE) return;
+    expect(env.error.code).toBe('image_invalid_content_type');
+  });
+
+  it('http_error -> 400 + envelope.code is http_error', () => {
+    const err = new ImageFetchError('https://example.com/missing.png', 'http_error', '404 Not Found');
+    expect(mapToHttpStatus(err)).toBe(400);
+    const env = toOpenAIErrorEnvelope(err);
+    expect(env).not.toBe(NO_ENVELOPE);
+    if (env === NO_ENVELOPE) return;
+    expect(env.error.code).toBe('http_error');
   });
 });
