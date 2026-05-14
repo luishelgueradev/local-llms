@@ -110,8 +110,8 @@ Plans:
 - [x] 04-03-PLAN.md — POST /v1/messages stream branch: typed SSE events, ping heartbeat, mid-stream error frame, input_tokens via gpt-tokenizer pre-count (ANTHR-01 stream, ANTHR-06, ANTHR-07)
 
 **Wave 4** *(blocked on Wave 3 — Plan 04 and Plan 05 run in parallel)*
-- [ ] 04-04-PLAN.md — Tool calling round-trip: openai-in/out tool translation, FINDING 3.4 corrections (tool_choice none + disable_parallel_tool_use modifier), stop_sequences, is_error, parallel tool_use, golden fixtures (ANTHR-08, TOOL-01, TOOL-02, TOOL-03, TOOL-04, TOOL-05)
-- [ ] 04-05-PLAN.md — Vision end-to-end: capability gating on both routes, OllamaOpenAIAdapter native /api/chat dispatch, llama3.2-vision model entry, smoke-test + README + human-verify (VISION-01, VISION-02, VISION-03)
+- [x] 04-04-PLAN.md — Tool calling round-trip: openai-in/out tool translation, FINDING 3.4 corrections (tool_choice none + disable_parallel_tool_use modifier), stop_sequences, is_error, parallel tool_use, golden fixtures (ANTHR-08, TOOL-01, TOOL-02, TOOL-03, TOOL-04, TOOL-05)
+- [x] 04-05-PLAN.md — Vision end-to-end: capability gating on both routes, OllamaOpenAIAdapter native /api/chat dispatch, llama3.2-vision model entry, smoke-test + README + human-verify (VISION-01, VISION-02, VISION-03)
 
 **Research flag:** yes — RESEARCH.md `04-RESEARCH.md` produced; FINDING 3.4 corrects D-D3/D-D4 in CONTEXT.md (Anthropic now natively supports tool_choice:{type:'none'} + disable_parallel_tool_use modifier — Plan 04 implements the corrected mapping).
 
