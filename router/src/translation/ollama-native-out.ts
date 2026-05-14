@@ -512,7 +512,18 @@ export async function canonicalToOllamaNativeChat(
     const content = concatText(msg.content);
     const native: OllamaNativeChatMessage = { role: msg.role, content };
     if (images.length > 0) native.images = images;
-    messages.push(native);
+    // WR-03: skip pushing an empty user message that exists ONLY because we
+    // lifted its `tool_result` blocks into separate `{role:'tool', ...}` follow-up
+    // messages. The Anthropic semantic is "tool_results live inside the user turn
+    // that prompts the next assistant turn"; emitting an empty user turn followed
+    // by tool messages would confuse Ollama's chat template ("user said nothing,
+    // then a tool replied"). Only suppress when the message had tool_result
+    // blocks lifted AND no text/image content survives.
+    const shouldEmit =
+      content !== '' ||
+      (native.images && native.images.length > 0) ||
+      toolResultsToEmit.length === 0;
+    if (shouldEmit) messages.push(native);
 
     // Tool results follow as standalone messages (preserves canonical ordering).
     for (const tr of toolResultsToEmit) messages.push(tr);

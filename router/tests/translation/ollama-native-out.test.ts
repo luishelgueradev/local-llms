@@ -159,6 +159,51 @@ describe('canonicalToOllamaNativeChat — canonical → native shape', () => {
     expect(toolMsg).toBeDefined();
     expect(toolMsg!.content).toBe('function returned 42');
   });
+
+  // WR-03 regression: a user message whose content is exclusively `tool_result`
+  // blocks must NOT be emitted as `{role:'user', content:''}` ahead of the
+  // lifted tool message — that splits the Anthropic semantic ("tool_results
+  // live inside the user turn") into an empty user turn + a tool turn, which
+  // confuses Ollama's chat template.
+  it('tool_result-only user message does NOT emit empty user turn', async () => {
+    const native = await canonicalToOllamaNativeChat({
+      model: 'x',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'tool_result', tool_use_id: 'toolu_xyz', content: 'function returned 42' },
+          ],
+        },
+      ],
+    });
+    // The only emitted message should be the lifted tool turn.
+    expect(native.messages).toHaveLength(1);
+    expect(native.messages[0]!.role).toBe('tool');
+    expect(native.messages[0]!.content).toBe('function returned 42');
+  });
+
+  // WR-03 regression — co-existing text survives. A user message with BOTH a
+  // tool_result AND a text block should still emit the user-content (text only)
+  // followed by the lifted tool message.
+  it('tool_result + text in user content → emits user turn (text only) then tool turn', async () => {
+    const native = await canonicalToOllamaNativeChat({
+      model: 'x',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'tool_result', tool_use_id: 'toolu_xyz', content: 'function returned 42' },
+            { type: 'text', text: 'great, now summarize' },
+          ],
+        },
+      ],
+    });
+    expect(native.messages).toHaveLength(2);
+    expect(native.messages[0]!.role).toBe('user');
+    expect(native.messages[0]!.content).toBe('great, now summarize');
+    expect(native.messages[1]!.role).toBe('tool');
+  });
 });
 
 describe('fetchImageAsBase64 — URL guard chain (D-C4 SSRF mitigation)', () => {
