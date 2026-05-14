@@ -30,6 +30,12 @@ import { registerReadyz } from './routes/readyz.js';
 import { BackendSemaphore } from './concurrency/semaphore.js';
 import type { BufferedWriter } from './db/bufferedWriter.js';
 import type { MetricsRegistry } from './metrics/registry.js';
+import {
+  makeRecordRequestOutcome,
+  deriveStatusClass,
+  mapErrorToCode,
+  truncateAndRedact,
+} from './metrics/recordOutcome.js';
 import { agentIdPreHandler as defaultAgentIdPreHandler } from './middleware/agentId.js';
 
 // Fastify module augmentation so TypeScript knows about app.liveness + app.semaphores (decorators).
@@ -133,10 +139,50 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
   // it during the request lifecycle). The fallback uses the OpenAI envelope — same as
   // every pre-04 route — since the OpenAI surface is the dominant one and pre-routing
   // errors don't carry an Anthropic-version expectation.
+  // Plan 05-02 Task 3 — wire recordOutcome here so pre-resolve errors
+  // (e.g., RegistryUnknownModelError thrown by registry.resolve() BEFORE the
+  // route's try block runs; preValidation zod failures; InvalidAgentIdError
+  // from agentIdPreHandler) still produce a request_log row. The route's
+  // safeRecord closure SETS req.__recorded = true after recording so this
+  // path does NOT double-write for errors that the route already handled.
+  //
+  // SKIP routes per D-D4: /healthz, /readyz, /metrics, /v1/models,
+  // /v1/messages/count_tokens. Bearer-auth 401 (BearerAuthError) is also
+  // skipped — D-D4 forbids recording pre-auth bearer failures (attacker
+  // could bloat the table; auth-failure audit lives in pino logs).
+  const recordOutcome = makeRecordRequestOutcome({
+    metrics: opts.metrics,
+    bufferedWriter: opts.bufferedWriter,
+  });
+
   app.setErrorHandler((err, req, reply) => {
     const url = req.url ?? '';
-    const isAnthropicRoute = url.startsWith('/v1/messages');
+    const route = url.split('?')[0] ?? '';
+    const isAnthropicRoute = route.startsWith('/v1/messages');
     const status = mapToHttpStatus(err);
+
+    // D-D4 — coverage policy. Record /v1/chat/completions and /v1/messages
+    // outcomes (but NOT /v1/messages/count_tokens and NOT 401 BearerAuthError).
+    const isRecordedRoute =
+      (route === '/v1/chat/completions' || route === '/v1/messages') && status !== 401;
+    if (isRecordedRoute && req.__recorded !== true) {
+      req.__recorded = true;
+      recordOutcome({
+        protocol: isAnthropicRoute ? 'anthropic' : 'openai',
+        route,
+        backend: 'unknown', // pre-resolve path — no entry bound
+        model: 'unknown',
+        statusClass: deriveStatusClass(status, false),
+        httpStatus: status,
+        durationMs: performance.now() - (req._t0 ?? performance.now()),
+        errorCode: mapErrorToCode(err),
+        errorMessage: truncateAndRedact(err instanceof Error ? err.message : String(err)),
+        agentId: req.agentId,
+        requestId: req.id,
+        timestamp: new Date(),
+      });
+    }
+
     if (isAnthropicRoute) {
       const env = toAnthropicErrorEnvelope(err);
       if (env === ANTHROPIC_NO_ENVELOPE) {
@@ -276,6 +322,7 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
     registry: opts.registry,
     makeAdapter: opts.makeAdapter ?? defaultMakeAdapter,
     semaphores,
+    recordOutcome,
   });
 
   // Plan 04-02 (ANTHR-02, ANTHR-03, ANTHR-04, ANTHR-05):
@@ -286,6 +333,7 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
     registry: opts.registry,
     makeAdapter: opts.makeAdapter ?? defaultMakeAdapter,
     semaphores,
+    recordOutcome,
   });
   registerCountTokensRoute(app, { registry: opts.registry });
 

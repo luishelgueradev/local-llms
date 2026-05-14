@@ -82,7 +82,21 @@ export function canonicalToAnthropicResponse(
 
 export interface CanonicalToAnthropicSseOpts {
   signal?: AbortSignal;
-  onCleanup?: () => void;
+  /**
+   * Plan 05-02 Task 3 — signature widened to expose final {tokensIn, tokensOut,
+   * upstreamMessageId} so the route sseCleanup can write a request_log row
+   * without re-aggregating. Parameter is OPTIONAL so existing callers with
+   * `() => void` still type-check. The values are the LAST captured
+   * input_tokens from message_start.message.usage, the LAST cumulative
+   * output_tokens from message_delta.usage observed in the canonical event
+   * stream, and message_start.message.id (the canonical msg_<ulid>) for the
+   * Anthropic request_log.upstream_message_id column.
+   */
+  onCleanup?: (final?: {
+    tokensIn: number;
+    tokensOut: number;
+    upstreamMessageId?: string;
+  }) => void;
   /**
    * Plan 04-04 seam: when set, the synthetic `message_start.message.model` field
    * is rewritten to this value (so the registry name shows up on the wire instead
@@ -119,10 +133,22 @@ export async function* canonicalToAnthropicSse(
   events: AsyncIterable<CanonicalStreamEvent>,
   opts: CanonicalToAnthropicSseOpts = {},
 ): AsyncGenerator<{ event: string; data: string }, void, void> {
+  // Plan 05-02 Task 3 — track input/output token totals + canonical msg_<ulid>
+  // so onCleanup can pass them back to the route (request_log.tokens_in /
+  // tokens_out / upstream_message_id source).
+  let capturedInputTokens = 0;
+  let capturedOutputTokens = 0;
+  let capturedUpstreamMessageId: string | undefined;
+
   try {
     for await (const ev of events) {
       switch (ev.type) {
         case 'message_start': {
+          capturedInputTokens = ev.message.usage.input_tokens;
+          // Capture the canonical msg_<ulid> BEFORE the optional idOverride
+          // rewrite — request_log.upstream_message_id should reflect the
+          // canonical id produced by the builder, not test-fixture overrides.
+          capturedUpstreamMessageId = ev.message.id;
           // Apply optional Plan 04-04 rewrites (displayModel + idOverride) on the
           // message_start payload. The canonical event is NOT mutated — we build a
           // shallow-clone of `message` so downstream observers (Phase 5 logging,
@@ -173,6 +199,9 @@ export async function* canonicalToAnthropicSse(
           break;
         }
         case 'message_delta': {
+          // Plan 05-02: capture cumulative output_tokens so onCleanup can
+          // surface the final value to the route (request_log.tokens_out).
+          capturedOutputTokens = ev.usage.output_tokens;
           yield {
             event: 'message_delta',
             data: JSON.stringify({
@@ -223,6 +252,12 @@ export async function* canonicalToAnthropicSse(
     // follow-up. The distinguishing feature vs midStreamErrorFrameLines (OpenAI).
     yield anthropicErrorFrame(env);
   } finally {
-    opts.onCleanup?.();
+    // Plan 05-02 Task 3: surface captured final token totals + canonical
+    // msg_<ulid> to the route's sseCleanup so it can populate request_log.
+    opts.onCleanup?.({
+      tokensIn: capturedInputTokens,
+      tokensOut: capturedOutputTokens,
+      upstreamMessageId: capturedUpstreamMessageId,
+    });
   }
 }

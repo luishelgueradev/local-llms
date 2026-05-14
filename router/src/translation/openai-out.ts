@@ -219,7 +219,16 @@ export function openAIChatCompletionToCanonical(result: ChatCompletion): Canonic
 
 export interface CanonicalToOpenAISseOpts {
   signal?: AbortSignal;
-  onCleanup?: () => void;
+  /**
+   * Plan 05-02 Task 3 — signature widened to expose final {tokensIn, tokensOut}
+   * so the route sseCleanup can write a request_log row without re-aggregating.
+   * The parameter is OPTIONAL so existing callers with `() => void` still
+   * type-check (Phase 4 + 05-01 tests). When invoked from the translator's
+   * finally block, the values are the LAST captured input/output token counts
+   * from message_start.message.usage / message_delta.usage. May be 0 if the
+   * stream errored before message_start was received (pre-stream error path).
+   */
+  onCleanup?: (final?: { tokensIn: number; tokensOut: number }) => void;
   /** Plan 04-04 / 04-05 seam: replaces canonical.model on emitted chunks (registry name on the wire). */
   displayModel?: string;
   /** Plan 04-04: replaces the derived `chatcmpl-...` id on emitted chunks. */
@@ -419,7 +428,12 @@ export async function* canonicalToOpenAISse(
       yield line;
     }
   } finally {
-    opts.onCleanup?.();
+    // Plan 05-02 Task 3: expose the captured final token totals so the route's
+    // sseCleanup can populate request_log.tokens_in / tokens_out without
+    // re-aggregating. capturedInputTokens may be 0 if message_start was not
+    // received; capturedOutputTokens is the LAST message_delta.usage.output_tokens
+    // value before stream end.
+    opts.onCleanup?.({ tokensIn: capturedInputTokens, tokensOut: capturedOutputTokens });
   }
 }
 

@@ -43,13 +43,19 @@ import {
   canonicalToAnthropicSse,
 } from '../../translation/anthropic-out.js';
 import { countTokens } from '../../translation/count-tokens.js';
-import type { CanonicalStreamEvent } from '../../translation/canonical.js';
+import type { CanonicalResponse, CanonicalStreamEvent } from '../../translation/canonical.js';
 import {
   ANTHROPIC_NO_ENVELOPE,
   CapabilityNotSupportedError,
   mapToHttpStatus,
   toAnthropicErrorEnvelope,
 } from '../../errors/envelope.js';
+import {
+  deriveStatusClass,
+  mapErrorToCode,
+  type OutcomeContext,
+  type RecordRequestOutcome,
+} from '../../metrics/recordOutcome.js';
 
 /**
  * Permissive body schema. The translator's AnthropicMessagesRequestSchema is the
@@ -77,6 +83,11 @@ export interface RegisterMessagesRouteOpts {
   registry: RegistryStore;
   makeAdapter: AdapterFactory;
   semaphores: { get(backend: string): BackendSemaphore };
+  /**
+   * Plan 05-02 (D-C6) — same helper used by chat-completions.ts. Records
+   * metrics + enqueues request_log row via per-request safeRecord closure.
+   */
+  recordOutcome: RecordRequestOutcome;
 }
 
 /**
@@ -185,6 +196,19 @@ export function registerMessagesRoute(
         release();
       };
 
+      // Plan 05-02 Task 3 — idempotent record closure (Pitfall 8).
+      // Mirrors chat-completions.ts byte-for-byte; only protocol + upstreamMessageId differ.
+      let recorded = false;
+      const safeRecord = (ctx: OutcomeContext): void => {
+        if (recorded) return;
+        recorded = true;
+        req.__recorded = true;
+        opts.recordOutcome(ctx);
+      };
+
+      let caughtErr: Error | undefined;
+      let canonicalResult: CanonicalResponse | undefined;
+
       try {
         const semaphore = opts.semaphores.get(entry.backend);
         release = await semaphore.acquire(controller.signal);
@@ -231,10 +255,34 @@ export function registerMessagesRoute(
           // abort / error. CRITICAL (Pitfall 1 / T-3-D4): MUST call safeRelease so
           // the semaphore slot is released when the SSE stream closes — NOT when
           // the adapter call returns (which is immediately for streaming).
-          const sseCleanup = (): void => {
+          //
+          // Plan 05-02 Task 3: safeRecord with final tokens + msg_<ulid> passed
+          // from canonicalToAnthropicSse's widened onCleanup signature.
+          const sseCleanup = (final?: {
+            tokensIn: number;
+            tokensOut: number;
+            upstreamMessageId?: string;
+          }): void => {
             heartbeat.stop();
             req.raw.socket?.off('close', onClose);
             safeRelease();
+            safeRecord({
+              protocol: 'anthropic',
+              route: req.url.split('?')[0] ?? req.url,
+              backend: entry.backend,
+              model: entry.name,
+              statusClass: deriveStatusClass(reply.statusCode, controller.signal.aborted),
+              httpStatus: reply.statusCode,
+              durationMs: performance.now() - (req._t0 ?? performance.now()),
+              ttftMs: heartbeat.msSinceStart,
+              tokensIn: final?.tokensIn,
+              tokensOut: final?.tokensOut,
+              errorCode: controller.signal.aborted ? 'client_disconnect' : undefined,
+              agentId: req.agentId,
+              requestId: req.id,
+              upstreamMessageId: final?.upstreamMessageId,
+              timestamp: new Date(),
+            });
           };
 
           // WR-04 fix (chat-completions.ts:194-208): wrap reply.sse in try/finally
@@ -271,7 +319,9 @@ export function registerMessagesRoute(
         }
 
         // ── NON-STREAM BRANCH (Plan 04-05 — displayModel seam consumption) ───
-        const canonicalResult = await adapter.chatCompletionsCanonical(canonical, controller.signal);
+        // Plan 05-02 Task 3: capture canonicalResult on the OUTER scope so the
+        // finally block can populate request_log.tokens_in / tokens_out / upstream_message_id.
+        canonicalResult = await adapter.chatCompletionsCanonical(canonical, controller.signal);
 
         // Plan 04-05 Issue #5 resolution: the route hands the canonical result to
         // canonicalToAnthropicResponse with { displayModel: entry.name } so the
@@ -287,9 +337,35 @@ export function registerMessagesRoute(
           void reply.header('Retry-After', String(Math.ceil(err.waitedMs / 1000)));
         }
         req.raw.socket?.off('close', onClose);
+        caughtErr = err instanceof Error ? err : new Error(String(err));
         throw err;
       } finally {
         safeRelease();
+
+        // Plan 05-02 Task 3: record non-stream outcome here. safeRecord is
+        // idempotent — if sseCleanup already ran (stream branch), this is a no-op.
+        if (body.stream !== true) {
+          const httpStatus = caughtErr ? mapToHttpStatus(caughtErr) : reply.statusCode;
+          safeRecord({
+            protocol: 'anthropic',
+            route: req.url.split('?')[0] ?? req.url,
+            backend: entry.backend,
+            model: entry.name,
+            statusClass: caughtErr
+              ? deriveStatusClass(httpStatus, false)
+              : deriveStatusClass(reply.statusCode, false),
+            httpStatus,
+            durationMs: performance.now() - (req._t0 ?? performance.now()),
+            tokensIn: caughtErr ? undefined : canonicalResult?.usage.input_tokens,
+            tokensOut: caughtErr ? undefined : canonicalResult?.usage.output_tokens,
+            errorCode: caughtErr ? mapErrorToCode(caughtErr) : undefined,
+            errorMessage: caughtErr?.message,
+            agentId: req.agentId,
+            requestId: req.id,
+            upstreamMessageId: canonicalResult?.id,
+            timestamp: new Date(),
+          });
+        }
       }
     },
   );

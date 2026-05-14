@@ -8,13 +8,19 @@ import { BackendSaturatedError } from '../../concurrency/semaphore.js';
 import { startHeartbeat } from '../../sse/heartbeat.js';
 import { openAIRequestToCanonical } from '../../translation/openai-in.js';
 import { canonicalToOpenAIResponse, canonicalToOpenAISse } from '../../translation/openai-out.js';
-import type { CanonicalStreamEvent } from '../../translation/canonical.js';
+import type { CanonicalResponse, CanonicalStreamEvent } from '../../translation/canonical.js';
 import {
   CapabilityNotSupportedError,
   NO_ENVELOPE,
   mapToHttpStatus,
   toOpenAIErrorEnvelope,
 } from '../../errors/envelope.js';
+import {
+  deriveStatusClass,
+  mapErrorToCode,
+  type OutcomeContext,
+  type RecordRequestOutcome,
+} from '../../metrics/recordOutcome.js';
 
 /**
  * OpenAI chat-completions request body. Required fields are zod-validated;
@@ -48,6 +54,13 @@ export interface RegisterChatCompletionsOpts {
   makeAdapter: AdapterFactory;
   /** Per-backend semaphore map (Plan 03-04, ROUTE-07). */
   semaphores: { get(backend: string): BackendSemaphore };
+  /**
+   * Plan 05-02 (D-C6) — single helper that records prom-client metrics +
+   * enqueues the request_log row. Called from BOTH sseCleanup (stream) and
+   * the non-stream finally branch via a per-request safeRecord closure
+   * (Pitfall 8 idempotency).
+   */
+  recordOutcome: RecordRequestOutcome;
 }
 
 /**
@@ -161,6 +174,23 @@ export function registerChatCompletionsRoute(
         release();
       };
 
+      // Plan 05-02 Task 3 (Pitfall 8): idempotent record closure mirrors the
+      // safeRelease shape. sseCleanup may fire twice in rare error paths
+      // (stream end + onClose + error handler); without this guard we'd
+      // double-row the request_log AND double-count the metric.
+      let recorded = false;
+      const safeRecord = (ctx: OutcomeContext): void => {
+        if (recorded) return;
+        recorded = true;
+        req.__recorded = true; // suppress app.setErrorHandler from also recording
+        opts.recordOutcome(ctx);
+      };
+
+      // Captured by both catch + finally so safeRecord can know whether to
+      // populate error_code / errorMessage vs tokens.
+      let caughtErr: Error | undefined;
+      let canonicalResult: CanonicalResponse | undefined;
+
       try {
         // Lookup the semaphore for the resolved backend. Inside the try so a missing
         // entry routes through the centralized error handler with proper listener cleanup.
@@ -198,10 +228,30 @@ export function registerChatCompletionsRoute(
           // CRITICAL (Pitfall 1 / T-3-D4): sseCleanup MUST call safeRelease so the semaphore
           // slot is released when the SSE stream closes — NOT when the adapter call returns
           // (which is immediately for streaming). Revision 1 Warning 7 makes this grep-verifiable.
-          const sseCleanup = (): void => {
+          //
+          // Plan 05-02 Task 3: also call safeRecord with the final tokens passed
+          // from canonicalToOpenAISse's widened onCleanup signature. The route is
+          // the structural enforcement point for the request_log row (D-D6).
+          const sseCleanup = (final?: { tokensIn: number; tokensOut: number }): void => {
             heartbeat.stop();
             req.raw.socket?.off('close', onClose);
             safeRelease();  // Pitfall 1 mitigation — slot released on stream end/abort/error
+            safeRecord({
+              protocol: 'openai',
+              route: req.url.split('?')[0] ?? req.url,
+              backend: entry.backend,
+              model: entry.name,
+              statusClass: deriveStatusClass(reply.statusCode, controller.signal.aborted),
+              httpStatus: reply.statusCode,
+              durationMs: performance.now() - (req._t0 ?? performance.now()),
+              ttftMs: heartbeat.msSinceStart,
+              tokensIn: final?.tokensIn,
+              tokensOut: final?.tokensOut,
+              errorCode: controller.signal.aborted ? 'client_disconnect' : undefined,
+              agentId: req.agentId,
+              requestId: req.id,
+              timestamp: new Date(),
+            });
           };
 
           // The SSE plugin sets Content-Type + Cache-Control + Connection on first yield
@@ -241,7 +291,10 @@ export function registerChatCompletionsRoute(
         // back to OpenAI ChatCompletion shape (preserving body.id via _upstreamId).
         // Plan 04-05: pass displayModel so the wire `model` field is the registry
         // name (parity with the Anthropic surface).
-        const canonicalResult = await adapter.chatCompletionsCanonical(canonical, controller.signal);
+        // Plan 05-02 Task 3: capture canonicalResult on the OUTER scope so the
+        // finally block can populate request_log.tokens_in / tokens_out for the
+        // non-stream branch.
+        canonicalResult = await adapter.chatCompletionsCanonical(canonical, controller.signal);
         req.raw.socket?.off('close', onClose);
         return reply.send(canonicalToOpenAIResponse(canonicalResult, { displayModel: entry.name }));
       } catch (err) {
@@ -256,12 +309,42 @@ export function registerChatCompletionsRoute(
           void reply.header('Retry-After', String(Math.ceil(err.waitedMs / 1000)));
         }
         req.raw.socket?.off('close', onClose);
+        caughtErr = err instanceof Error ? err : new Error(String(err));
         throw err;
       } finally {
         // Always release the semaphore slot. safeRelease is idempotent — if sseCleanup
         // already called it (stream end / abort), this is a no-op. For non-stream and
         // error paths, this is the primary release point.
         safeRelease();
+
+        // Plan 05-02 Task 3: record the non-stream outcome here. For the stream
+        // branch, sseCleanup already called safeRecord — recorded=true means this
+        // is a no-op (Pitfall 8 idempotency). For non-stream success/failure, this
+        // is the primary call site. We do NOT record from finally if the stream
+        // branch ran (recorded=true; closures share state correctly).
+        if (body.stream !== true) {
+          // Status / http_status from reply (set by reply.send for success or by
+          // the centralized error handler for re-thrown errors).
+          const httpStatus = caughtErr ? mapToHttpStatus(caughtErr) : reply.statusCode;
+          safeRecord({
+            protocol: 'openai',
+            route: req.url.split('?')[0] ?? req.url,
+            backend: entry.backend,
+            model: entry.name,
+            statusClass: caughtErr
+              ? deriveStatusClass(httpStatus, false)
+              : deriveStatusClass(reply.statusCode, false),
+            httpStatus,
+            durationMs: performance.now() - (req._t0 ?? performance.now()),
+            tokensIn: caughtErr ? undefined : canonicalResult?.usage.input_tokens,
+            tokensOut: caughtErr ? undefined : canonicalResult?.usage.output_tokens,
+            errorCode: caughtErr ? mapErrorToCode(caughtErr) : undefined,
+            errorMessage: caughtErr?.message,
+            agentId: req.agentId,
+            requestId: req.id,
+            timestamp: new Date(),
+          });
+        }
       }
     },
   );

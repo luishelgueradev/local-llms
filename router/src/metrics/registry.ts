@@ -13,9 +13,9 @@
 //   metric only lands on our register.
 //
 // Cardinality discipline (T-5-11 / D-C3 forbidden-label gate):
-// - labelNames arrays MUST NOT contain agent_id, request_id, http_status, or
-//   error_message. Those live in the request_log row (unbounded cardinality
-//   is fine there); they are NOT metric labels.
+// - labelNames arrays MUST NOT contain high-cardinality fields. Those live
+//   in the request_log row (unbounded cardinality is fine there); they are
+//   NOT metric labels. See plan threat register T-5-11 for the explicit set.
 //
 // Histogram bucket boundaries — CONTEXT planner-discretion section:
 // - router_request_duration_seconds: [0.1, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300]
