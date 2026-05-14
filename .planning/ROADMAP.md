@@ -132,10 +132,10 @@ Plans:
 - [x] 05-01-PLAN.md — Postgres service + Drizzle schema + boot-time migrator + buffered writer foundation + onClose drain (DATA-01, DATA-02, DATA-03, DATA-04, OBS-05; D-A1..A7, D-B1..B8, D-E1..E4, D-G1)
 
 **Wave 2** *(blocked on Wave 1 — shares router/src/app.ts + index.ts; consumes pool/db/bufferedWriter)*
-- [ ] 05-02-PLAN.md — Metrics registry + recordOutcome helper + agentId preHandler + /metrics route + skip-list extension + safeRecord wiring into both route files (DATA-03, OBS-01, ROUTE-09; D-C1..C7, D-D1..D7, T-5-08..T-5-14)
+- [x] 05-02-PLAN.md — Metrics registry + recordOutcome helper + agentId preHandler + /metrics route + skip-list extension + safeRecord wiring into both route files (DATA-03, OBS-01, ROUTE-09; D-C1..C7, D-D1..D7, T-5-08..T-5-14)
 
 **Wave 3** *(blocked on Wave 1 — does not touch router source; parallel-safe with Wave 2 in principle but serialized for clean README ordering)*
-- [ ] 05-03-PLAN.md — pg-backup sidecar + bin/restore-drill.sh + README Phase 5 operational section (DATA-05; D-F2, D-F3)
+- [x] 05-03-PLAN.md — pg-backup sidecar + bin/restore-drill.sh + README Phase 5 operational section (DATA-05; D-F2, D-F3)
 
 **Wave 4** *(blocked on Waves 1–2; serializes app.ts + readyz.ts edits with Wave 2; final live verification)*
 - [ ] 05-04-PLAN.md — usage_daily refresh + /readyz postgres probe + bin/smoke-test-router.sh Phase 5 section (5 scenarios) + human-verify checkpoint (DATA-02, DATA-04, OBS-05; D-G2, D-G3, T-5-20..T-5-23)
