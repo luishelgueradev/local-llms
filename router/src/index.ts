@@ -59,6 +59,7 @@ async function main(): Promise<void> {
     bufferedWriter,
     metrics,
     usageDailyScheduler,
+    pool, // Plan 05-04 D-G2 — enables /readyz postgres probe
   });
 
   // RESEARCH A4 / Pitfall 7 — operator opts into polling fallback for WSL2 + Docker
