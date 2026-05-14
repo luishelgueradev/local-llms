@@ -1,16 +1,33 @@
 /**
- * Integration tests for GET /readyz (Plan 03-03, ROUTE-06).
+ * Integration tests for GET /readyz (Plan 03-03, ROUTE-06 + Plan 05-04 D-G2).
  * Uses injectable livenessFactory in buildApp opts for deterministic behavior.
- * 9 cases covering: 200/503 aggregation, stale detection, never-probed, empty
- * registry, public-no-auth, body shape strict, no internal field leakage.
+ * 9 cases (Phase 3) + 4 new cases (Plan 05-04 postgres probe extension):
+ *   200/503 aggregation, stale detection, never-probed, empty registry,
+ *   public-no-auth, body shape strict, no internal field leakage,
+ *   PLUS: postgres alive→200, postgres down→503, postgres never probed→503,
+ *   postgres present + backend down→503.
  */
 
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { buildApp } from '../../src/app.js';
+import type { Pool } from 'pg';
+import { buildApp, POSTGRES_PROBE_URL } from '../../src/app.js';
 import { makeFakeBufferedWriter, makeFakeMetrics } from '../fakes.js';
 import { loadRegistryFromString, makeRegistryStore } from '../../src/config/registry.js';
 import type { LivenessScheduler, ProbeResult } from '../../src/backends/liveness.js';
+
+/**
+ * Fake pg.Pool — not actually invoked when livenessFactory is overridden
+ * (the real probe function in app.ts is bypassed), but BuildAppOpts.pool
+ * needs SOME value when we test the postgres-probe branch end-to-end so
+ * the /readyz route includes the postgres field in its response.
+ */
+function makeFakePool(): Pool {
+  return {
+    query: async () => ({ rows: [{ '?column?': 1 }], rowCount: 1 }),
+    end: async () => {},
+  } as unknown as Pool;
+}
 
 const TOKEN = 'local-llms_readyz_t1t2t3t4t5t6t7t8t9t0aabb';
 
@@ -296,5 +313,136 @@ describe('GET /readyz — D-D4 shape, strict-all aggregation (ROUTE-06)', () => 
     expect(entry).not.toHaveProperty('vram_budget_gb');
     expect(entry).not.toHaveProperty('capabilities');
     expect(entry).not.toHaveProperty('backend');
+  });
+
+  // ---------------------------------------------------------------------------
+  // Plan 05-04 D-G2 — /readyz postgres probe extension (4 new tests)
+  // ---------------------------------------------------------------------------
+  // When `opts.pool` is supplied, the /readyz response gains a `postgres`
+  // field with status/last_probe_at/latency_ms (+ optional error), and the
+  // allAlive computation requires postgres to be alive in addition to all
+  // backends.
+
+  // -------------------------------------------------------------------------
+  // Test 10: postgres alive + all backends alive → 200 + postgres.status alive
+  // -------------------------------------------------------------------------
+  it('10. postgres probe alive + backends alive → 200 + postgres field present + status alive', async () => {
+    const registry = makeRegistryStore(loadRegistryFromString(ONE_URL_YAML));
+    const now = Date.now();
+    const results = new Map<string, ProbeResult | undefined>([
+      ['http://ollama:11434/v1', { status: 'alive', lastProbeAt: new Date(now - 500).toISOString(), latencyMs: 5 }],
+      [POSTGRES_PROBE_URL, { status: 'alive', lastProbeAt: new Date(now - 500).toISOString(), latencyMs: 3 }],
+    ]);
+    app = await buildApp({
+      registry,
+      bearerToken: TOKEN,
+      loggerOpts: false as never,
+      livenessFactory: () => makeFakeScheduler(results),
+      bufferedWriter: makeFakeBufferedWriter(),
+      metrics: makeFakeMetrics(),
+      pool: makeFakePool(),
+    });
+
+    const res = await app.inject({ method: 'GET', url: '/readyz' });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as {
+      status: string;
+      backends: Array<{ status: string }>;
+      postgres: { status: string; latency_ms?: number; last_probe_at?: string };
+    };
+    expect(body.status).toBe('ready');
+    expect(body.postgres).toBeDefined();
+    expect(body.postgres.status).toBe('alive');
+    expect(body.postgres.latency_ms).toBe(3);
+    expect(body.postgres.last_probe_at).toBeDefined();
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 11: postgres down + backends alive → 503 + postgres.status=down + error
+  // -------------------------------------------------------------------------
+  it('11. postgres probe down + backends alive → 503 + postgres.status=down with error', async () => {
+    const registry = makeRegistryStore(loadRegistryFromString(ONE_URL_YAML));
+    const now = Date.now();
+    const results = new Map<string, ProbeResult | undefined>([
+      ['http://ollama:11434/v1', { status: 'alive', lastProbeAt: new Date(now - 500).toISOString(), latencyMs: 5 }],
+      [POSTGRES_PROBE_URL, { status: 'down', lastProbeAt: new Date(now - 500).toISOString(), latencyMs: 1001, error: 'pg-probe-timeout-1s' }],
+    ]);
+    app = await buildApp({
+      registry,
+      bearerToken: TOKEN,
+      loggerOpts: false as never,
+      livenessFactory: () => makeFakeScheduler(results),
+      bufferedWriter: makeFakeBufferedWriter(),
+      metrics: makeFakeMetrics(),
+      pool: makeFakePool(),
+    });
+
+    const res = await app.inject({ method: 'GET', url: '/readyz' });
+    expect(res.statusCode).toBe(503);
+    const body = res.json() as {
+      status: string;
+      postgres: { status: string; error?: string };
+    };
+    expect(body.status).toBe('not_ready');
+    expect(body.postgres.status).toBe('down');
+    expect(body.postgres.error).toContain('pg-probe-timeout');
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 12: postgres alive but one backend down → 503 (existing semantics preserved)
+  // -------------------------------------------------------------------------
+  it('12. postgres alive but a backend down → 503 (allAlive requires both)', async () => {
+    const registry = makeRegistryStore(loadRegistryFromString(TWO_URL_YAML));
+    const now = Date.now();
+    const results = new Map<string, ProbeResult | undefined>([
+      ['http://ollama:11434/v1', { status: 'alive', lastProbeAt: new Date(now - 500).toISOString(), latencyMs: 5 }],
+      ['http://llamacpp:8080/v1', { status: 'down', lastProbeAt: new Date(now - 500).toISOString(), error: 'ECONNREFUSED' }],
+      [POSTGRES_PROBE_URL, { status: 'alive', lastProbeAt: new Date(now - 500).toISOString(), latencyMs: 3 }],
+    ]);
+    app = await buildApp({
+      registry,
+      bearerToken: TOKEN,
+      loggerOpts: false as never,
+      livenessFactory: () => makeFakeScheduler(results),
+      bufferedWriter: makeFakeBufferedWriter(),
+      metrics: makeFakeMetrics(),
+      pool: makeFakePool(),
+    });
+
+    const res = await app.inject({ method: 'GET', url: '/readyz' });
+    expect(res.statusCode).toBe(503);
+    const body = res.json() as {
+      postgres: { status: string };
+      backends: Array<{ status: string }>;
+    };
+    expect(body.postgres.status).toBe('alive');
+    expect(body.backends.some((b) => b.status === 'down')).toBe(true);
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 13: postgres never probed → 503 + postgres.status=down + "never probed"
+  // -------------------------------------------------------------------------
+  it('13. postgres never probed (no cache entry) → 503 + postgres.status=down + error "never probed"', async () => {
+    const registry = makeRegistryStore(loadRegistryFromString(ONE_URL_YAML));
+    const now = Date.now();
+    const results = new Map<string, ProbeResult | undefined>([
+      ['http://ollama:11434/v1', { status: 'alive', lastProbeAt: new Date(now - 500).toISOString(), latencyMs: 5 }],
+      [POSTGRES_PROBE_URL, undefined], // never probed
+    ]);
+    app = await buildApp({
+      registry,
+      bearerToken: TOKEN,
+      loggerOpts: false as never,
+      livenessFactory: () => makeFakeScheduler(results),
+      bufferedWriter: makeFakeBufferedWriter(),
+      metrics: makeFakeMetrics(),
+      pool: makeFakePool(),
+    });
+
+    const res = await app.inject({ method: 'GET', url: '/readyz' });
+    expect(res.statusCode).toBe(503);
+    const body = res.json() as { postgres: { status: string; error?: string } };
+    expect(body.postgres.status).toBe('down');
+    expect(body.postgres.error).toBe('never probed');
   });
 });

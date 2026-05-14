@@ -874,11 +874,232 @@ fi
 echo ""
 echo "[smoke-test-router] === Phase 4 section complete (SKIPS=${SKIPS}) ==="
 
+# ============================================================================
+# Phase 5 — Postgres + Observability seam (Plan 05-04)
+# ============================================================================
+# Closes SC2 (non-blocking buffered writes survive pause-pg-5s) + SC5
+# (X-Agent-Id surfaced + every service healthy) + DATA-04 (usage_daily) +
+# OBS-05 (real healthchecks).
+#
+# Portability note: this section uses `date +%s%3N` (GNU coreutils) for
+# millisecond timestamps. On macOS without coreutils-prefixed gdate, the
+# inter-delta timing in SC-P5-C will return a literal '%3N' string and the
+# arithmetic gap check is best-effort (soft-fallback to delta-count). The
+# stack is Linux-first (single-host Docker Compose on bare metal or WSL2)
+# so this is the right tradeoff.
+# ============================================================================
+
+echo ""
+echo "[smoke-test-router] === Phase 5: Postgres + Observability ==="
+echo "[smoke-test-router] (postgres + pg-backup must be up; ${MODEL} must be loaded in ollama)"
+
+# ── SC-P5-A: GET /metrics unauth returns 200 + 5 custom HELP lines ──────────
+echo ""
+echo "[smoke-test-router] SC-P5-A: GET /metrics unauth returns 200 + 5 custom metrics ..."
+METRICS_TMP=$(mktemp)
+METRICS_CODE=$(curl -s -o "${METRICS_TMP}" -w '%{http_code}' "${ROUTER_URL}/metrics" || echo "000")
+[[ "${METRICS_CODE}" == "200" ]] && pass "GET /metrics unauth -> 200" || fail "GET /metrics unauth -> ${METRICS_CODE} (expected 200)"
+CUSTOM_COUNT=$(grep -cE '^# HELP router_(requests_total|request_duration_seconds|ttft_seconds|tokens_total|log_buffer_dropped_total) ' "${METRICS_TMP}" 2>/dev/null || echo 0)
+[[ "${CUSTOM_COUNT}" -ge 5 ]] && pass "/metrics contains 5 custom router_* HELP lines (${CUSTOM_COUNT})" || fail "/metrics only contains ${CUSTOM_COUNT}/5 custom HELP lines"
+DEFAULT_COUNT=$(grep -cE '^# HELP (process|nodejs)_' "${METRICS_TMP}" 2>/dev/null || echo 0)
+[[ "${DEFAULT_COUNT}" -ge 1 ]] && pass "/metrics contains Node default metrics (${DEFAULT_COUNT} lines)" || fail "/metrics missing Node default metrics"
+rm -f "${METRICS_TMP}"
+
+# ── SC-P5-B: X-Agent-Id round-trip lands in request_log ─────────────────────
+echo ""
+echo "[smoke-test-router] SC-P5-B: X-Agent-Id round-trip → DB row ..."
+AGENT_ID="claude-code:smoke-${RANDOM}"
+AGENT_REQ_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+  -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+  -H "X-Agent-Id: ${AGENT_ID}" \
+  -H 'Content-Type: application/json' \
+  -d "{\"model\":\"${MODEL}\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":10}" \
+  "${ROUTER_URL}/v1/chat/completions" || echo "000")
+if [[ "${AGENT_REQ_CODE}" != "200" ]]; then
+  fail "SC-P5-B: request with X-Agent-Id returned ${AGENT_REQ_CODE} (expected 200)"
+else
+  # Buffered writer flushes every 1s or 200 rows — sleep > 1s before reading
+  sleep 3
+  DB_AGENT=$(docker compose exec -T postgres psql -U app -d router -tAc \
+    "SELECT agent_id FROM request_log WHERE agent_id = '${AGENT_ID}' ORDER BY ts DESC LIMIT 1" 2>/dev/null | tr -d '[:space:]')
+  if [[ "${DB_AGENT}" == "${AGENT_ID}" ]]; then
+    pass "SC-P5-B: X-Agent-Id round-trip — DB row has agent_id='${DB_AGENT}'"
+  else
+    fail "SC-P5-B: DB has agent_id='${DB_AGENT}', expected '${AGENT_ID}'"
+  fi
+fi
+
+# ── SC-P5-C: SC2 regression — pause postgres 5s mid-stream ──────────────────
+# Load-bearing: this proves the bufferedWriter D-A1..D-A7 invariants survive
+# a real Postgres outage. SSE deltas MUST keep arriving (max inter-delta gap
+# < 2000ms) AND log_buffer_dropped_total MUST stay at 0 (10k cap >> 5s × max
+# throughput) AND the row MUST land in request_log within 30s of unpause.
+echo ""
+echo "[smoke-test-router] SC-P5-C: SC2 regression — pause postgres 5s mid-stream ..."
+PRE_DROPPED=$(curl -s "${ROUTER_URL}/metrics" 2>/dev/null | grep -E '^router_log_buffer_dropped_total ' | awk '{print $2}' | head -1)
+PRE_DROPPED=${PRE_DROPPED:-0}
+
+# Pre-count of recent request_log rows so we can verify a fresh one lands
+PRE_RECENT=$(docker compose exec -T postgres psql -U app -d router -tAc \
+  "SELECT count(*) FROM request_log WHERE ts > now() - interval '5 minutes'" 2>/dev/null | tr -d '[:space:]')
+PRE_RECENT=${PRE_RECENT:-0}
+
+# Spawn pause/unpause sequence in background
+( sleep 1 && docker compose pause postgres >/dev/null 2>&1 && sleep 5 && docker compose unpause postgres >/dev/null 2>&1 ) &
+PAUSER_PID=$!
+
+# Start streaming request; capture each `data:` line with a millisecond timestamp.
+# `date +%s%3N` is GNU coreutils; if it returns literal '%3N', the gap check
+# is degraded but the delta-count assertion still passes.
+SSE_OUT=$(mktemp)
+SSE_TS_OUT=$(mktemp)
+curl -sN -m 60 -X POST "${ROUTER_URL}/v1/chat/completions" \
+  -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -d "{\"model\":\"${MODEL}\",\"messages\":[{\"role\":\"user\",\"content\":\"count slowly to 30, one per line\"}],\"stream\":true,\"max_tokens\":200}" \
+  > "${SSE_OUT}" 2>/dev/null &
+CURL_PID=$!
+
+# Tail timestamps in parallel — read each data: line as it arrives.
+( while IFS= read -r line; do
+    if [[ "${line}" =~ ^data: ]]; then
+      echo "$(date +%s%3N) ${line}" >> "${SSE_TS_OUT}"
+    fi
+  done < <(tail -n +1 -F "${SSE_OUT}" 2>/dev/null) ) &
+TAIL_PID=$!
+
+wait "${CURL_PID}" 2>/dev/null || true
+wait "${PAUSER_PID}" 2>/dev/null || true
+sleep 0.5
+kill "${TAIL_PID}" 2>/dev/null || true
+wait "${TAIL_PID}" 2>/dev/null || true
+
+# Assertion 1: at least N SSE deltas arrived
+DELTAS=$(wc -l < "${SSE_TS_OUT}" 2>/dev/null | tr -d '[:space:]')
+DELTAS=${DELTAS:-0}
+if [[ "${DELTAS}" -ge 5 ]]; then
+  pass "SC-P5-C: streamed ${DELTAS} SSE deltas across the pause-unpause window"
+else
+  fail "SC-P5-C: only ${DELTAS} SSE deltas captured (expected >= 5)"
+fi
+
+# Assertion 2: max inter-delta gap < 2000ms (only run if timestamps look numeric)
+FIRST_TS=$(head -1 "${SSE_TS_OUT}" 2>/dev/null | awk '{print $1}')
+if [[ "${FIRST_TS}" =~ ^[0-9]+$ ]] && [[ "${DELTAS}" -ge 2 ]]; then
+  MAX_GAP=$(awk 'NR>1 {gap = $1 - prev; if (gap > max) max = gap} { prev = $1 } END { print max+0 }' "${SSE_TS_OUT}" 2>/dev/null || echo 0)
+  if [[ "${MAX_GAP}" -lt 2000 ]]; then
+    pass "SC-P5-C: max inter-delta gap ${MAX_GAP}ms < 2000ms (stream did not stall on pg pause)"
+  else
+    fail "SC-P5-C: max inter-delta gap ${MAX_GAP}ms exceeds 2000ms threshold (stream likely paused mid-stream)"
+  fi
+else
+  echo "[smoke-test-router] SC-P5-C: skipping gap check — non-numeric timestamps (date +%s%3N unsupported)"
+fi
+
+# Assertion 3: a request_log row landed since the test started (within ~30s of unpause)
+sleep 5
+POST_RECENT=$(docker compose exec -T postgres psql -U app -d router -tAc \
+  "SELECT count(*) FROM request_log WHERE ts > now() - interval '5 minutes'" 2>/dev/null | tr -d '[:space:]')
+POST_RECENT=${POST_RECENT:-0}
+if [[ "${POST_RECENT}" -gt "${PRE_RECENT}" ]]; then
+  pass "SC-P5-C: row(s) landed in request_log after unpause (recent rows: ${PRE_RECENT} -> ${POST_RECENT})"
+else
+  fail "SC-P5-C: no new request_log rows after pause-pg cycle (pre=${PRE_RECENT} post=${POST_RECENT})"
+fi
+
+# Assertion 4: router_log_buffer_dropped_total unchanged (invariant gate)
+POST_DROPPED=$(curl -s "${ROUTER_URL}/metrics" 2>/dev/null | grep -E '^router_log_buffer_dropped_total ' | awk '{print $2}' | head -1)
+POST_DROPPED=${POST_DROPPED:-0}
+if [[ "${POST_DROPPED}" == "${PRE_DROPPED}" ]]; then
+  pass "SC-P5-C: router_log_buffer_dropped_total unchanged (${PRE_DROPPED}) — 10k cap held during pause"
+else
+  fail "SC-P5-C: log buffer dropped rows: pre=${PRE_DROPPED} post=${POST_DROPPED} (buffer overflow during pause-pg)"
+fi
+rm -f "${SSE_OUT}" "${SSE_TS_OUT}"
+
+# ── SC-P5-D: row-count assertion after N=3 requests ─────────────────────────
+echo ""
+echo "[smoke-test-router] SC-P5-D: request_log row-count delta = N=3 ..."
+PRE_ROWS=$(docker compose exec -T postgres psql -U app -d router -tAc "SELECT count(*) FROM request_log" 2>/dev/null | tr -d '[:space:]')
+PRE_ROWS=${PRE_ROWS:-0}
+for i in 1 2 3; do
+  REQ_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+    -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+    -H "X-Agent-Id: rowcount-test" \
+    -H 'Content-Type: application/json' \
+    -d "{\"model\":\"${MODEL}\",\"messages\":[{\"role\":\"user\",\"content\":\"req $i\"}],\"max_tokens\":10}" \
+    "${ROUTER_URL}/v1/chat/completions" || echo "000")
+  [[ "${REQ_CODE}" != "200" ]] && fail "SC-P5-D: request $i returned ${REQ_CODE} (expected 200)"
+done
+sleep 5
+POST_ROWS=$(docker compose exec -T postgres psql -U app -d router -tAc "SELECT count(*) FROM request_log" 2>/dev/null | tr -d '[:space:]')
+POST_ROWS=${POST_ROWS:-0}
+DIFF=$((POST_ROWS - PRE_ROWS))
+if [[ "${DIFF}" == "3" ]]; then
+  pass "SC-P5-D: row-count delta == 3 (pre=${PRE_ROWS} post=${POST_ROWS})"
+else
+  fail "SC-P5-D: row-count delta == ${DIFF} (pre=${PRE_ROWS} post=${POST_ROWS}; expected 3)"
+fi
+
+# ── SC-P5-E: /readyz reflects postgres pause/unpause ────────────────────────
+echo ""
+echo "[smoke-test-router] SC-P5-E: /readyz transitions on postgres pause/unpause ..."
+READYZ_BEFORE=$(curl -s -o /dev/null -w '%{http_code}' "${ROUTER_URL}/readyz")
+[[ "${READYZ_BEFORE}" == "200" ]] && pass "SC-P5-E: /readyz starts at 200 (healthy stack)" || fail "SC-P5-E: /readyz starts at ${READYZ_BEFORE} (expected 200)"
+
+docker compose pause postgres >/dev/null 2>&1
+# Wait up to 25s (≈ 2 × scheduler interval) for the probe to mark postgres down
+READYZ_PAUSED_CODE="000"
+for attempt in $(seq 1 25); do
+  sleep 1
+  READYZ_PAUSED_CODE=$(curl -s -o /dev/null -w '%{http_code}' "${ROUTER_URL}/readyz")
+  [[ "${READYZ_PAUSED_CODE}" == "503" ]] && break
+done
+if [[ "${READYZ_PAUSED_CODE}" == "503" ]]; then
+  pass "SC-P5-E: /readyz -> 503 within ${attempt}s of postgres pause"
+else
+  fail "SC-P5-E: /readyz still ${READYZ_PAUSED_CODE} after 25s of postgres pause"
+fi
+READYZ_PAUSED_BODY=$(curl -s "${ROUTER_URL}/readyz")
+if echo "${READYZ_PAUSED_BODY}" | grep -q '"postgres":'; then
+  pass "SC-P5-E: /readyz response includes \"postgres\" field"
+else
+  fail "SC-P5-E: /readyz response missing postgres field — body: ${READYZ_PAUSED_BODY:0:200}"
+fi
+
+docker compose unpause postgres >/dev/null 2>&1
+READYZ_UNPAUSED_CODE="000"
+for attempt in $(seq 1 25); do
+  sleep 1
+  READYZ_UNPAUSED_CODE=$(curl -s -o /dev/null -w '%{http_code}' "${ROUTER_URL}/readyz")
+  [[ "${READYZ_UNPAUSED_CODE}" == "200" ]] && break
+done
+if [[ "${READYZ_UNPAUSED_CODE}" == "200" ]]; then
+  pass "SC-P5-E: /readyz -> 200 within ${attempt}s of postgres unpause"
+else
+  fail "SC-P5-E: /readyz still ${READYZ_UNPAUSED_CODE} after 25s of postgres unpause"
+fi
+
+# ── OBS-05 final check: every long-running service is healthy ───────────────
+echo ""
+echo "[smoke-test-router] OBS-05: every service has a real healthcheck reporting healthy ..."
+UNHEALTHY_LINES=$(docker compose ps --format '{{.Name}} {{.Health}}' 2>/dev/null | grep -vE 'healthy|gpu-preflight' || true)
+UNHEALTHY_COUNT=$(echo -n "${UNHEALTHY_LINES}" | grep -c . || echo 0)
+if [[ "${UNHEALTHY_COUNT}" == "0" ]]; then
+  pass "OBS-05: all long-running services healthy (gpu-preflight excluded as one-shot)"
+else
+  fail "OBS-05: ${UNHEALTHY_COUNT} service(s) not healthy"
+  docker compose ps --format '{{.Name}} {{.Health}}' 2>&1 | head -20
+fi
+
+echo ""
+echo "[smoke-test-router] === Phase 5 section complete ==="
+
 # Final summary
 echo ""
 echo "[smoke-test-router] ================================================================"
 if [[ "${FAILURES}" -eq 0 ]]; then
-  echo "[smoke-test-router]  Phase 2/3/4 router verification: COMPLETE."
+  echo "[smoke-test-router]  Phase 2/3/4/5 router verification: COMPLETE."
   echo "[smoke-test-router]  Model used : ${MODEL}"
   echo "[smoke-test-router]  Router URL : ${ROUTER_URL}"
   echo "[smoke-test-router]  Skipped    : ${SKIPS:-0} (vision sections require llama3.2-vision pull + outbound HTTPS)"

@@ -3,6 +3,7 @@ import Fastify, {
   type FastifyServerOptions,
   type preHandlerAsyncHookHandler,
 } from 'fastify';
+import type { Pool } from 'pg';
 import { FastifySSEPlugin } from 'fastify-sse-v2';
 import {
   serializerCompiler,
@@ -29,6 +30,7 @@ import { makeAdapter as defaultMakeAdapter } from './backends/factory.js';
 import { registerReadyz } from './routes/readyz.js';
 import { BackendSemaphore } from './concurrency/semaphore.js';
 import type { BufferedWriter } from './db/bufferedWriter.js';
+import type { UsageDailyScheduler } from './db/usageDaily.js';
 import type { MetricsRegistry } from './metrics/registry.js';
 import {
   makeRecordRequestOutcome,
@@ -98,7 +100,33 @@ export interface BuildAppOpts {
    * production agentIdPreHandler; tests override for hook-isolation cases.
    */
   agentIdPreHandler?: preHandlerAsyncHookHandler;
+  /**
+   * Plan 05-04 (DATA-04) — optional usage_daily scheduler. When supplied,
+   * its start() runs after buildApp wires the routes and its stop() runs
+   * in the onClose hook BEFORE the bufferedWriter drain (the drain races
+   * an awaited timeout; the scheduler stop is synchronous). Production
+   * wiring passes a real scheduler from index.ts; tests omit the field
+   * to skip the daily aggregation entirely.
+   */
+  usageDailyScheduler?: UsageDailyScheduler;
+  /**
+   * Plan 05-04 (D-G2) — optional pg.Pool for the /readyz postgres probe.
+   * When supplied, the LivenessScheduler registers a probe URL `postgres://pool`
+   * alongside the backend URLs; its result is included in /readyz response
+   * under `postgres` and gates the 200/503 aggregation. When omitted (most
+   * test fixtures), /readyz behaves exactly as Phase 3 — no postgres field
+   * in the response, no postgres entry in the scheduler. Production wiring
+   * (index.ts) always passes the real pool.
+   */
+  pool?: Pool;
 }
+
+/**
+ * Plan 05-04 (D-G2) — synthetic URL used as the probe key for the postgres
+ * pool reachability check. Distinguishable from any backend HTTP URL.
+ * Exported so tests can seed the fake scheduler's results map under this key.
+ */
+export const POSTGRES_PROBE_URL = 'postgres://pool';
 
 export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
   const app = Fastify({
@@ -220,11 +248,48 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
     return a;
   };
 
+  // Plan 05-04 (D-G2) — postgres pool probe. Implements RESEARCH §"Don't
+  // Hand-Roll" line 491: Promise.race(pool.query('SELECT 1'), 1s timeout).
+  // The signal parameter is unused by the pg probe — Promise.race IS the
+  // cancellation mechanism here (the outer scheduler's timeoutMs is a
+  // second line of defense against a wedged pool). DO NOT add
+  // signal.addEventListener('abort', ...) plumbing — it would race the
+  // Promise.race in subtly wrong ways. The pool's connectionTimeoutMillis
+  // (set to 2_000 in db/index.ts per Pitfall 3) caps the underlying connect.
+  const pool = opts.pool;
+  const pgProbe = pool
+    ? async (
+        _url: string,
+        _signal: AbortSignal,
+      ): Promise<{ ok: boolean; latencyMs: number; error?: string }> => {
+        const t0 = performance.now();
+        try {
+          await Promise.race([
+            pool.query('SELECT 1'),
+            new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error('pg-probe-timeout-1s')), 1_000),
+            ),
+          ]);
+          return { ok: true, latencyMs: performance.now() - t0 };
+        } catch (err) {
+          return {
+            ok: false,
+            latencyMs: performance.now() - t0,
+            error: (err as Error).message,
+          };
+        }
+      }
+    : null;
+
   const schedulerOpts: Parameters<typeof makeLivenessScheduler>[0] = {
     intervalMs: 10_000,
     timeoutMs: 2_000,
     logger: app.log as Parameters<typeof makeLivenessScheduler>[0]['logger'],
     probe: async (url, signal) => {
+      // Dispatch on URL prefix (PATTERNS.md §router/src/backends/liveness.ts
+      // option b — single scheduler, probe function branches on the synthetic
+      // postgres URL). Backend URLs continue to use the adapter probe path.
+      if (pgProbe && url === POSTGRES_PROBE_URL) return pgProbe(url, signal);
       const adapter = probeAdapterFor(url);
       return adapter.probeLiveness(signal);
     },
@@ -239,8 +304,12 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
   app.decorate('liveness', liveness);
 
   // Kick off the first probe set against the current registry snapshot.
-  const distinctUrls = Array.from(new Set(opts.registry.get().models.map((m) => m.backend_url)));
-  liveness.start(distinctUrls);
+  // Plan 05-04 — when a pool is configured, also probe the postgres URL.
+  const distinctBackendUrls = Array.from(
+    new Set(opts.registry.get().models.map((m) => m.backend_url)),
+  );
+  const initialUrls = pool ? [...distinctBackendUrls, POSTGRES_PROBE_URL] : distinctBackendUrls;
+  liveness.start(initialUrls);
 
   // -------------------------------------------------------------------------
   // Per-backend semaphore Map (Plan 03-04, ROUTE-07)
@@ -290,6 +359,10 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
     liveness.stop();
     probeAdapters.clear();
     semaphoreMap.clear();
+    // Plan 05-04 — stop the usage_daily scheduler BEFORE the bufferedWriter
+    // drain. Both are idempotent + synchronous (stop just clears timers).
+    // The drain is awaited LAST because it races a setTimeout(3_000).
+    opts.usageDailyScheduler?.stop();
     await opts.bufferedWriter.drain(3_000);
   });
 
@@ -300,7 +373,9 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
   registerHealthz(app, opts.registry);
 
   // GET /readyz — public, per-backend liveness summary (Plan 03-03, ROUTE-06).
-  registerReadyz(app, opts.registry, liveness);
+  // Plan 05-04 (D-G2): when pool is supplied, /readyz also includes a postgres
+  // probe entry and gates 200/503 on its alive status.
+  registerReadyz(app, opts.registry, liveness, Boolean(pool));
 
   // GET /metrics — Plan 05-02 (D-C3, D-C5, OBS-01). Prometheus text/plain format.
   // Public (skip-list in auth/bearer.ts), loopback-bound until Phase 6 (Pitfall 11).
@@ -339,6 +414,11 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
 
   // GET /v1/models — bearer-gated; lists all registry models (Plan 03-02, OAI-03).
   registerModelsRoute(app, opts.registry);
+
+  // Plan 05-04 — start the usage_daily scheduler last, after all routes are
+  // registered. The first refresh fires at the next UTC midnight; runNow()
+  // is exposed for ops + tests. The onClose hook (above) stops the timers.
+  opts.usageDailyScheduler?.start();
 
   return app;
 }
