@@ -60,7 +60,10 @@ describe('canonicalToAnthropicResponse — identity for canonical shape (Plan 04
       // SDK's wider union.
       content: out.content as unknown as Message['content'],
       model: out.model,
-      stop_reason: out.stop_reason,
+      // Our canonical StopReason includes `model_context_window_exceeded` (FINDING 3.9)
+      // which the SDK type doesn't list yet. Narrowing cast is safe at runtime — the
+      // wire value is still a string the Anthropic surface treats as opaque.
+      stop_reason: out.stop_reason as unknown as Message['stop_reason'],
       stop_sequence: out.stop_sequence,
       usage: out.usage as unknown as Message['usage'],
     };
