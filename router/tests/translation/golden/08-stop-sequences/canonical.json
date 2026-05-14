@@ -1,0 +1,23 @@
+{
+  "request": {
+    "model": "test-model",
+    "messages": [
+      {
+        "role": "user",
+        "content": [{ "type": "text", "text": "tell me a story" }]
+      }
+    ],
+    "max_tokens": 100,
+    "stop_sequences": ["END", "HALT"]
+  },
+  "response": {
+    "id": "msg_TESTSCENARIO08TESTSCENARIO",
+    "type": "message",
+    "role": "assistant",
+    "content": [{ "type": "text", "text": "Once upon a time END" }],
+    "model": "test-model",
+    "stop_reason": "stop_sequence",
+    "stop_sequence": "END",
+    "usage": { "input_tokens": 12, "output_tokens": 6 }
+  }
+}

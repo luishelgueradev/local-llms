@@ -1,0 +1,16 @@
+{
+  "model": "test-model",
+  "max_tokens": 100,
+  "messages": [{ "role": "user", "content": "just answer in text, don't use tools" }],
+  "tools": [
+    {
+      "name": "get_weather",
+      "input_schema": {
+        "type": "object",
+        "properties": { "location": { "type": "string" } },
+        "required": ["location"]
+      }
+    }
+  ],
+  "tool_choice": { "type": "none" }
+}

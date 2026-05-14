@@ -1,0 +1,40 @@
+{
+  "request": {
+    "model": "test-model",
+    "messages": [
+      {
+        "role": "user",
+        "content": [{ "type": "text", "text": "one tool at a time" }]
+      }
+    ],
+    "max_tokens": 100,
+    "tools": [
+      {
+        "name": "get_weather",
+        "input_schema": {
+          "type": "object",
+          "properties": { "location": { "type": "string" } },
+          "required": ["location"]
+        }
+      }
+    ],
+    "tool_choice": { "type": "auto", "disable_parallel_tool_use": true }
+  },
+  "response": {
+    "id": "msg_TESTSCENARIO07TESTSCENARIO",
+    "type": "message",
+    "role": "assistant",
+    "content": [
+      {
+        "type": "tool_use",
+        "id": "toolu_TESTSCENARIO07TESTSCEN",
+        "name": "get_weather",
+        "input": { "location": "LA" }
+      }
+    ],
+    "model": "test-model",
+    "stop_reason": "tool_use",
+    "stop_sequence": null,
+    "usage": { "input_tokens": 24, "output_tokens": 8 }
+  }
+}
