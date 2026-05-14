@@ -2,6 +2,12 @@ import { z } from 'zod/v4';
 
 const EnvSchema = z.object({
   ROUTER_BEARER_TOKEN: z.string().min(8, 'ROUTER_BEARER_TOKEN must be at least 8 characters'),
+  // Phase 5 (D-B6) — Postgres connection for the router DB. No default;
+  // compose.yml constructs the URL from POSTGRES_PASSWORD. Required even
+  // when Postgres is unreachable at boot (D-B5) because the migrator + pool
+  // need a syntactically-valid URL — the lazy connect resolves at flush
+  // time, not env-parse time.
+  ROUTER_DATABASE_URL: z.string().url(),
   OLLAMA_URL: z.string().url().default('http://ollama:11434/v1'),
   PORT: z.coerce.number().int().positive().default(3000),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
