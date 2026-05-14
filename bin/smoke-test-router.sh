@@ -76,12 +76,24 @@ done
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname "${SCRIPT_DIR}")"
 
-# Resolve ROUTER_BEARER_TOKEN — caller env > .env > hard fail (mirror preflight-gpu.sh)
-if [[ -z "${ROUTER_BEARER_TOKEN:-}" ]]; then
-  if [[ -f "${REPO_ROOT}/.env" ]]; then
-    # shellcheck disable=SC1090,SC1091
-    set -a; source "${REPO_ROOT}/.env"; set +a
-  fi
+# Resolve ROUTER_BEARER_TOKEN — caller env > .env > hard fail.
+#
+# WR-05: previously this used `set -a; source .env; set +a` which exports EVERY
+# variable in .env into the script's environment — including secrets unrelated
+# to this test (OLLAMA_API_KEY, future cloud keys, etc.). Those secrets would
+# then inherit into every subprocess the script spawns (docker compose exec,
+# curl, python3). Extract ONLY the variable we actually need.
+if [[ -z "${ROUTER_BEARER_TOKEN:-}" ]] && [[ -f "${REPO_ROOT}/.env" ]]; then
+  # Grep the single VAR=value line (last wins if duplicated), strip the prefix,
+  # and trim a single layer of surrounding double or single quotes. The pipeline
+  # never sources the file so unrelated secrets stay in .env.
+  ROUTER_BEARER_TOKEN=$(
+    grep -E '^ROUTER_BEARER_TOKEN=' "${REPO_ROOT}/.env" \
+      | tail -1 \
+      | cut -d= -f2- \
+      | sed -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'$/\1/"
+  )
+  export ROUTER_BEARER_TOKEN
 fi
 if [[ -z "${ROUTER_BEARER_TOKEN:-}" ]]; then
   echo "[smoke-test-router] ERROR: ROUTER_BEARER_TOKEN is not set." >&2
