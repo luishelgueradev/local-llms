@@ -107,7 +107,7 @@ Plans:
 - [x] 04-02-PLAN.md — POST /v1/messages non-stream + POST /v1/messages/count_tokens + role-alternation + anthropic-version echo + CapabilityNotSupportedError (ANTHR-02, ANTHR-03, ANTHR-04, ANTHR-05)
 
 **Wave 3** *(blocked on Wave 2)*
-- [ ] 04-03-PLAN.md — POST /v1/messages stream branch: typed SSE events, ping heartbeat, mid-stream error frame, input_tokens via gpt-tokenizer pre-count (ANTHR-01 stream, ANTHR-06, ANTHR-07)
+- [x] 04-03-PLAN.md — POST /v1/messages stream branch: typed SSE events, ping heartbeat, mid-stream error frame, input_tokens via gpt-tokenizer pre-count (ANTHR-01 stream, ANTHR-06, ANTHR-07)
 
 **Wave 4** *(blocked on Wave 3 — Plan 04 and Plan 05 run in parallel)*
 - [ ] 04-04-PLAN.md — Tool calling round-trip: openai-in/out tool translation, FINDING 3.4 corrections (tool_choice none + disable_parallel_tool_use modifier), stop_sequences, is_error, parallel tool_use, golden fixtures (ANTHR-08, TOOL-01, TOOL-02, TOOL-03, TOOL-04, TOOL-05)
