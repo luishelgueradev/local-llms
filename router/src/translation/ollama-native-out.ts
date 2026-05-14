@@ -32,6 +32,7 @@
  */
 import { promises as dns } from 'node:dns';
 import { isIP } from 'node:net';
+import { Agent } from 'undici';
 import type {
   CanonicalRequest,
   CanonicalResponse,
@@ -305,13 +306,18 @@ export async function fetchImageAsBase64(
     throw new InvalidImageUrlError(url, 'http_scheme_blocked');
   }
 
-  // Step 2: DNS lookup + private-IP deny.
-  // If the hostname is already a literal IP, skip dns.lookup and check directly.
+  // Step 2: DNS lookup + private-IP deny. The resolved addresses are CAPTURED so
+  // step 3 can pin the TCP connect to the same set — without that pin, fetch's
+  // own internal DNS pipeline performs an INDEPENDENT resolution that may return
+  // a different address (CR-02 / DNS rebinding / TOCTOU). If the hostname is
+  // already a literal IP, skip dns.lookup and check directly.
   const literalFamily = isIP(u.hostname);
+  let pinnedAddresses: { address: string; family: number }[] | null = null;
   if (literalFamily === 4 || literalFamily === 6) {
     if (isDenied(u.hostname, literalFamily)) {
       throw new InvalidImageUrlError(url, 'private_address_blocked');
     }
+    // Literal IP — no pin needed; the URL host *is* the address.
   } else {
     const resolved = await dns.lookup(u.hostname, { all: true, verbatim: true });
     if (resolved.length === 0) {
@@ -322,6 +328,45 @@ export async function fetchImageAsBase64(
         throw new InvalidImageUrlError(url, 'private_address_blocked');
       }
     }
+    pinnedAddresses = resolved.map((r) => ({ address: r.address, family: r.family }));
+  }
+
+  // CR-02 mitigation: build a per-request undici Agent whose `connect.lookup`
+  // hook short-circuits DNS using the addresses we already verified above, and
+  // re-applies the deny check at connect time. This collapses the TOCTOU window
+  // between `dns.lookup` (step 2) and the connection that `fetch` opens (step
+  // 3): the resolver result from step 2 IS the address connected to in step 3,
+  // and any change in the deny set (defense-in-depth) is enforced at connect.
+  //
+  // Notes:
+  //   - SNI/cert validation still uses the URL hostname (undici takes the URL's
+  //     host for TLS); the IP literal goes only to the TCP layer.
+  //   - Literal-IP URLs skip the custom dispatcher because there is no name to
+  //     re-resolve.
+  let dispatcher: Agent | undefined;
+  if (pinnedAddresses !== null) {
+    const pinned = pinnedAddresses;
+    dispatcher = new Agent({
+      connect: {
+        lookup(hostname, _opts, cb) {
+          // Re-apply the deny check against the pinned set (defense in depth —
+          // the set was already validated in step 2 but a future change to
+          // isDenied should not retroactively trust step 2's verdict).
+          for (const { address, family } of pinned) {
+            if (isDenied(address, family)) {
+              cb(new Error('private address blocked at connect'), '', 0);
+              return;
+            }
+          }
+          const first = pinned[0];
+          if (first === undefined) {
+            cb(new Error('no pinned address available'), '', 0);
+            return;
+          }
+          cb(null, first.address, first.family);
+        },
+      },
+    });
   }
 
   // Step 3: fetch with timeout. CR-01: `redirect: 'manual'` disables undici's
@@ -333,10 +378,17 @@ export async function fetchImageAsBase64(
   // implemented (defense-in-depth: simplest correct behavior).
   let res: Response;
   try {
-    res = await fetch(url, {
+    // `dispatcher` is undici's per-request fetch extension — not part of lib.dom's
+    // RequestInit. The `undici` and `undici-types` packages disagree on the precise
+    // Dispatcher generic shape (Node 22 bundles undici-types via @types/node), so
+    // we type-cast through `unknown` to bypass the spurious narrow mismatch. At
+    // runtime Node's global fetch accepts the dispatcher field directly.
+    const init = {
       signal: AbortSignal.timeout(timeoutMs),
-      redirect: 'manual',
-    });
+      redirect: 'manual' as const,
+      ...(dispatcher !== undefined ? { dispatcher } : {}),
+    };
+    res = await fetch(url, init as unknown as RequestInit);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     throw new ImageFetchError(url, 'http_error', `fetch failed: ${msg}`);
