@@ -840,32 +840,37 @@ echo "PASS — restore drill completed without error."
 - **A1:** stick with `drizzle-orm@^0.36` (CLAUDE.md) or upgrade to `^0.45` (current)? Recommendation: stick with ^0.36 — CLAUDE.md is the contract.
 - **A2:** Operator should verify `docker run --rm postgres:17-alpine id postgres` output before plan finalization. Cheap check, high cost if wrong.
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Does the migrator retry automatically after Postgres recovers, or does the operator restart the router?**
    - What we know: D-B5 says router boots without postgres; D-B2 says migrate runs once at boot. The two are consistent only if the operator restarts the router after postgres comes up.
    - What's unclear: Is there a "retry migration on next /readyz transition to alive" hook?
    - Recommendation: Plan a periodic retry (e.g., every 60s while the postgres probe is down, attempt `migrate()` again). OR explicitly document "operator restarts router after postgres recovery" in the README and accept the manual step.
+   - **RESOLVED:** operator restarts router after postgres recovery is the chosen path. `migrate()` in Plan 01 warn-and-continues on connection-class errors (`ECONNREFUSED`/`ETIMEDOUT`/`08*`/`ENOTFOUND`) per Pitfall 4 reconciliation; the README Phase 5 section in Plan 03 documents the manual restart procedure. Periodic retry is explicitly deferred — added complexity is not justified for a single-host single-user stack with `mantenimiento manual aceptable`.
 
 2. **`status_class` for upstream 200 + zero tokens out (model returned empty response).**
    - What we know: CONTEXT D-C4 covers 2xx → `success`, but zero tokens is a degenerate success.
    - What's unclear: Does this go in `success` (literally what HTTP says) or a new `degraded` class?
    - Recommendation: Keep `success`. The `tokens_out=0` row is itself the signal. Adding a class for it is over-engineering.
+   - **RESOLVED:** keep `success`; `tokens_out=0` is the signal. Encoded in Plan 02 Task 2's `status_class` derivation per D-C4 (no new `degraded` class introduced).
 
 3. **`usage_daily` PK includes `agent_id` which is nullable. Does Postgres treat NULL as distinct in a composite PK?**
    - What we know: SUMMARY ¶244-245 specifies `primaryKey({ columns: [day, protocol, backend, model, agent_id] })`. Postgres treats NULL as NOT EQUAL even to itself in unique constraints — meaning two rows with `agent_id=NULL` and otherwise-identical PK columns would coexist as DUPLICATES, breaking the UPSERT idempotency.
    - What's unclear: Is the planner aware of this and planning a `COALESCE(agent_id, '')` strategy?
    - Recommendation: Use `COALESCE(agent_id, '_no_agent_')` in the aggregation INSERT/UPSERT, OR use a partial unique index, OR make `agent_id` NOT NULL with `''` default. Document the choice in PLAN.
+   - **RESOLVED:** `agent_id` NOT NULL with `'_no_agent_'` sentinel default. Encoded in Plan 01 (`usage_daily` schema definition) and Plan 04 (refresh UPSERT uses `COALESCE(agent_id, '_no_agent_')` against the request_log source rows so the PK is unique by construction).
 
 4. **`status_class` for `BackendSaturatedError` (HTTP 429) — `client_error` per D-C4, but it's a server-saturation condition.**
    - What we know: D-C4 says 4xx → `client_error`. 429 is 4xx.
    - What's unclear: Operator monitoring `client_error` rate to detect bad agent behavior may be confused by 429s spiking when the BACKEND is overwhelmed.
    - Recommendation: Add `status_class` value `saturation` for 429, OR keep 4xx → `client_error` and rely on `error_code='backend_saturated'` for the discriminator. Plan picks; recommend the latter (simpler).
+   - **RESOLVED:** keep `status_class='client_error'` for 429; use `error_code='backend_saturated'` as the discriminator. Encoded in Plan 02 Task 2 (`error_code` taxonomy mapping per D-D2). Operator queries `WHERE error_code='backend_saturated'` for saturation signal; PromQL can split `router_requests_total{status_class='client_error'}` by joining via the `request_log` rows if needed.
 
 5. **Should `tokens_total` counter increment by `tokens_in + tokens_out` (one observation per request) or by direction (two observations per request)?**
    - What we know: D-C3 says label `direction ∈ {input, output}` — so two observations per request.
    - What's unclear: Some teams prefer one counter with no direction label for top-line "total token throughput" PromQL. Either works; the labelled version supports both queries via `sum by (direction)`.
    - Recommendation: Two observations, one per direction. PromQL can still do `sum(rate(router_tokens_total[5m]))` for the no-label aggregate.
+   - **RESOLVED:** two observations per request, one per `direction` label. Encoded in Plan 02 Task 1 (`router_tokens_total` Counter labels include `direction` per D-C3). PromQL `sum(rate(router_tokens_total[5m]))` aggregates across directions; `sum by (direction)(rate(...))` splits them.
 
 ## Environment Availability
 

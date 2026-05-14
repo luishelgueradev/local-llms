@@ -126,7 +126,19 @@ Plans:
   3. A `pg_dump` cron job runs daily and a tested restore drill (drop database → restore → re-query) reads back identical data; the restore procedure is documented in the project README.
   4. `GET /metrics` on the router exposes Prometheus-format request rate, time-to-first-token, latency, and per-backend counters (without bearer auth — but only the metrics endpoint is unauthenticated, no other surface is).
   5. `docker compose ps` shows healthy state for every service via real healthchecks (not just process-up), and an `X-Agent-Id` request header is reflected into structured pino logs and the `request_log.agent_id` column.
-**Plans:** TBD
+**Plans:** 4 plans
+Plans:
+**Wave 1**
+- [ ] 05-01-PLAN.md — Postgres service + Drizzle schema + boot-time migrator + buffered writer foundation + onClose drain (DATA-01, DATA-02, DATA-03, DATA-04, OBS-05; D-A1..A7, D-B1..B8, D-E1..E4, D-G1)
+
+**Wave 2** *(blocked on Wave 1 — shares router/src/app.ts + index.ts; consumes pool/db/bufferedWriter)*
+- [ ] 05-02-PLAN.md — Metrics registry + recordOutcome helper + agentId preHandler + /metrics route + skip-list extension + safeRecord wiring into both route files (DATA-03, OBS-01, ROUTE-09; D-C1..C7, D-D1..D7, T-5-08..T-5-14)
+
+**Wave 3** *(blocked on Wave 1 — does not touch router source; parallel-safe with Wave 2 in principle but serialized for clean README ordering)*
+- [ ] 05-03-PLAN.md — pg-backup sidecar + bin/restore-drill.sh + README Phase 5 operational section (DATA-05; D-F2, D-F3)
+
+**Wave 4** *(blocked on Waves 1–2; serializes app.ts + readyz.ts edits with Wave 2; final live verification)*
+- [ ] 05-04-PLAN.md — usage_daily refresh + /readyz postgres probe + bin/smoke-test-router.sh Phase 5 section (5 scenarios) + human-verify checkpoint (DATA-02, DATA-04, OBS-05; D-G2, D-G3, T-5-20..T-5-23)
 
 ### Phase 6: Traefik + TLS + Open WebUI
 **Goal:** Make the router a real HTTPS endpoint with the four-network topology, then bring up Open WebUI on the same proxy so human chats flow through the same router as agents — same logs, same metering, same Anthropic translation.
@@ -142,6 +154,7 @@ Plans:
 **Plans:** TBD
 **Research flag:** yes — needs `/gsd-research-phase` to nail down Traefik's SSE/timeout/forwardingTimeouts knobs, the Open WebUI 0.9 connector behavior with the no-`/v1`-suffix quirk, and the basic-auth middleware pattern; PITFALLS Pitfall 4 has multiple sources whose advice differs in detail.
 **UI hint:** yes
+**Phase 5 carry-forward:** CRITICAL Phase 6 follow-up — Traefik MUST add a path-blacklist middleware returning 404 for external `/metrics` requests (Phase 5 puts /metrics in the bearer skip-list on 127.0.0.1:3000; Phase 6 removes the loopback binding). Source: 05-CONTEXT.md D-C5, 05-RESEARCH.md Pitfall 11, TODO comment in router/src/auth/bearer.ts.
 
 ### Phase 7: Embeddings + vLLM + GPU Telemetry
 **Goal:** Add the embedding endpoint and vLLM (heavy backend with VRAM pre-allocation and JIT compile) to an already-observable stack so vLLM's wins are measurable and the embedding surface lands with full telemetry.
@@ -191,7 +204,7 @@ Plans:
 | 2. MVP Vertical Slice — Router + Ollama + SSE | 0/0 | Not started | - |
 | 3. Multi-Backend Dispatch — llama.cpp + Registry Hardening | 0/5 | Planned (revision 1) | - |
 | 4. Anthropic Surface — `/v1/messages`, Tool Calling, Vision | 0/5 | Planned | - |
-| 5. Postgres + Observability Seam | 0/0 | Not started | - |
+| 5. Postgres + Observability Seam | 0/4 | Planned | - |
 | 6. Traefik + TLS + Open WebUI | 0/0 | Not started | - |
 | 7. Embeddings + vLLM + GPU Telemetry | 0/0 | Not started | - |
 | 8. Ollama Cloud Fallback + Resilience Hardening | 0/0 | Not started | - |
@@ -211,8 +224,10 @@ Plans:
 - Phase 6 is the only phase with a UI surface (Open WebUI); the rest are backend/infra. `/gsd-ui-phase` recommendation belongs to Phase 6.
 - "Mode: mvp" applies to every phase: each phase ships an end-to-end vertical slice that delivers an observable user-facing capability — not a pile of backend tasks waiting on integration.
 - **Phase 3 plans were revised 2026-05-12** in response to `gsd-plan-checker` blockers — see the Wave block above for the new layout (Wave 1: 03-02 owns models.yaml; Waves 2–5 serialize the rest to avoid file-level collisions on `router/models.yaml` and `router/src/app.ts`).
+- **Phase 5 plans added 2026-05-14** — 4 plans across 4 waves; Wave 2 (Plan 02) is the load-bearing observable slice (metrics + recordOutcome + agent-id); Wave 4 (Plan 04) closes SC2 via the pause-postgres-5s smoke regression gate.
 
 ---
 *Roadmap created: 2026-05-10*
 *Phase 3 plans added: 2026-05-12*
 *Phase 3 revision 1 applied: 2026-05-12 — wave reorder + Blocker 4 (D-C3) + Warnings 5/6/7*
+*Phase 5 plans added: 2026-05-14*
