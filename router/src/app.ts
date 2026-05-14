@@ -9,9 +9,17 @@ import { makeBearerHook } from './auth/bearer.js';
 import type { RegistryStore } from './config/registry.js';
 import { registerHealthz } from './routes/healthz.js';
 import { registerChatCompletionsRoute } from './routes/v1/chat-completions.js';
+import { registerMessagesRoute } from './routes/v1/messages.js';
+import { registerCountTokensRoute } from './routes/v1/count-tokens.js';
 import type { AdapterFactory } from './backends/adapter.js';
 import { registerModelsRoute } from './routes/v1/models.js';
-import { toOpenAIErrorEnvelope, mapToHttpStatus, NO_ENVELOPE } from './errors/envelope.js';
+import {
+  toOpenAIErrorEnvelope,
+  toAnthropicErrorEnvelope,
+  mapToHttpStatus,
+  NO_ENVELOPE,
+  ANTHROPIC_NO_ENVELOPE,
+} from './errors/envelope.js';
 import { makeLivenessScheduler, type LivenessScheduler } from './backends/liveness.js';
 import { makeAdapter as defaultMakeAdapter } from './backends/factory.js';
 import { registerReadyz } from './routes/readyz.js';
@@ -81,14 +89,33 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
   // Centralized error handler — D-C1 envelope for ANY uncaught error from a route.
   // The route handlers in plan 02-03 + 02-04 may also handle errors locally; this is the
   // catch-all for "the route threw".
+  //
+  // Plan 04-02 D-F5: split by request URL prefix.
+  //   - /v1/messages*       → Anthropic-shape envelope (toAnthropicErrorEnvelope)
+  //   - everything else     → OpenAI-shape envelope (toOpenAIErrorEnvelope)
+  // req.url may be undefined in pre-routing failures (rare; Fastify typically populates
+  // it during the request lifecycle). The fallback uses the OpenAI envelope — same as
+  // every pre-04 route — since the OpenAI surface is the dominant one and pre-routing
+  // errors don't carry an Anthropic-version expectation.
   app.setErrorHandler((err, req, reply) => {
+    const url = req.url ?? '';
+    const isAnthropicRoute = url.startsWith('/v1/messages');
+    const status = mapToHttpStatus(err);
+    if (isAnthropicRoute) {
+      const env = toAnthropicErrorEnvelope(err);
+      if (env === ANTHROPIC_NO_ENVELOPE) {
+        return;
+      }
+      req.log.warn({ err, url, status }, 'route error -> anthropic envelope');
+      reply.code(status).send(env);
+      return;
+    }
     const env = toOpenAIErrorEnvelope(err);
     if (env === NO_ENVELOPE) {
       // Client disconnected mid-pre-stream — nothing to send.
       return;
     }
-    const status = mapToHttpStatus(err);
-    req.log.warn({ err, url: req.url, status }, 'route error -> envelope');
+    req.log.warn({ err, url, status }, 'route error -> envelope');
     reply.code(status).send(env);
   });
 
@@ -198,6 +225,17 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
     makeAdapter: opts.makeAdapter ?? defaultMakeAdapter,
     semaphores,
   });
+
+  // Plan 04-02 (ANTHR-02, ANTHR-03, ANTHR-04, ANTHR-05):
+  //  - POST /v1/messages — Anthropic Messages API non-stream branch (stream→501 stub,
+  //    replaced by Plan 04-03's SSE pipeline).
+  //  - POST /v1/messages/count_tokens — pure CPU; no backend call, no semaphore (D-F1).
+  registerMessagesRoute(app, {
+    registry: opts.registry,
+    makeAdapter: opts.makeAdapter ?? defaultMakeAdapter,
+    semaphores,
+  });
+  registerCountTokensRoute(app, { registry: opts.registry });
 
   // GET /v1/models — bearer-gated; lists all registry models (Plan 03-02, OAI-03).
   registerModelsRoute(app, opts.registry);
