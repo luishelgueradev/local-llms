@@ -2,21 +2,21 @@
 gsd_state_version: 1.0
 milestone: v0.9.0
 milestone_name: milestone
-status: executing
+status: ready_to_plan
 stopped_at: Phase 4 context gathered
 last_updated: "2026-05-13T19:52:57.266Z"
 progress:
   total_phases: 9
-  completed_phases: 3
+  completed_phases: 4
   total_plans: 21
   completed_plans: 16
-  percent: 76
+  percent: 44
 ---
 
 # Project State: local-llms
 
 **Last Updated:** 2026-05-13
-**Status:** Executing Phase 04
+**Status:** Ready to plan
 
 ## Project Reference
 
@@ -30,7 +30,7 @@ Phase: 04 (anthropic-surface-v1-messages-tool-calling-vision) — EXECUTING
 Plan: 1 of 5
 
 - **Milestone:** v1
-- **Phase:** 4
+- **Phase:** 5
 - **Plan:** Not started
 - **Status:** Awaiting `/gsd-discuss-phase 4` (recommended — Anthropic translation is the single hardest item in the project; research-flagged) or `/gsd-plan-phase --research-phase 4` to investigate canonical-shape translation, tool-call mapping, and vision routing before planning.
 
