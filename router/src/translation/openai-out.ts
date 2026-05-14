@@ -2,20 +2,23 @@
  * openai-out.ts — Translator: CanonicalResponse / CanonicalStreamEvent → OpenAI
  * ChatCompletion / SSE delta chunks.
  *
- * Plan 04-01 covers text-only responses and the text-only delta stream. Plan 04
- * (TOOL-01..04) extends with tool_use → tool_calls + input_json_delta → arguments
- * partials.
+ * Plan 04-01: text-only responses + text-only delta stream.
+ * Plan 04-04 (TOOL-01..04): tool_use → tool_calls with JSON.stringify discipline;
+ *   input_json_delta → tool_calls[i].function.arguments partials;
+ *   stop_reason:'tool_use' → finish_reason:'tool_calls';
+ *   new translator-option seam (displayModel + idOverride) replacing Plan 02's
+ *   route-level canonicalResult.model mutation.
  *
  * Stream discipline (Pattern S1, mirroring sse/stream.ts byte-for-byte):
  * - try { for await … } catch (err) { if signal.aborted: return; else map to envelope
  *   and yield midStreamErrorFrameLines }
  * - finally { opts.onCleanup?.() }
- * - On `message_stop` yield `{data: '[DONE]'}` to terminate the SSE stream — Phase 2/3
- *   wire contract preserved (existing tests in tests/integration/chat-completions.* gate this).
+ * - On `message_stop` yield `{data: '[DONE]'}` to terminate the SSE stream.
  */
 import type {
   ChatCompletion,
   ChatCompletionChunk,
+  ChatCompletionMessage,
 } from 'openai/resources/chat/completions.js';
 import {
   NO_ENVELOPE,
@@ -27,6 +30,7 @@ import {
   type CanonicalResponse,
   type CanonicalStreamEvent,
   type StopReason,
+  type ToolUseBlock,
 } from './canonical.js';
 
 /**
@@ -78,34 +82,64 @@ function readUpstreamId(canonical: CanonicalResponse): string | undefined {
 }
 
 /**
+ * Plan 04-04: translator-option seam for the response builder. The route passes
+ * `{ displayModel: entry.name }` and (in golden fixtures) `{ idOverride }` so the
+ * canonical response stays immutable at the route boundary.
+ */
+export interface CanonicalToOpenAIResponseOpts {
+  /** Registry-facing model name. If set, replaces canonical.model on the wire. */
+  displayModel?: string;
+  /** Deterministic id override. If set, replaces the derived `chatcmpl-...` id. */
+  idOverride?: string;
+}
+
+/**
  * Translate a canonical response into the OpenAI ChatCompletion wire shape.
  * `_upstreamId` (non-enumerable) is preferred when present so the OpenAI surface
  * preserves the upstream id (Phase 2/3 tests assert `body.id === 'chatcmpl-msw'`).
+ *
+ * Plan 04-04: tool_use blocks in canonical.content emit `message.tool_calls` with
+ * JSON.stringify(input); coexists with text content (text → content string).
  */
-export function canonicalToOpenAIResponse(canonical: CanonicalResponse): ChatCompletion {
-  // Collect all text blocks into a single string for choices[0].message.content.
+export function canonicalToOpenAIResponse(
+  canonical: CanonicalResponse,
+  opts: CanonicalToOpenAIResponseOpts = {},
+): ChatCompletion {
   const textParts: string[] = [];
+  const toolUseBlocks: ToolUseBlock[] = [];
   for (const block of canonical.content) {
     if (block.type === 'text') textParts.push(block.text);
-    // Plan 04 maps tool_use blocks → choices[0].message.tool_calls.
+    else if (block.type === 'tool_use') toolUseBlocks.push(block);
   }
 
   const upstreamId = readUpstreamId(canonical);
-  const id = upstreamId ?? canonical.id.replace(/^msg_/, 'chatcmpl-');
+  const id = opts.idOverride ?? upstreamId ?? canonical.id.replace(/^msg_/, 'chatcmpl-');
+  const model = opts.displayModel ?? canonical.model;
+
+  const message: ChatCompletionMessage = {
+    role: 'assistant',
+    content: toolUseBlocks.length > 0 && textParts.length === 0 ? null : textParts.join(''),
+    refusal: null,
+  };
+  if (toolUseBlocks.length > 0) {
+    (message as ChatCompletionMessage & { tool_calls?: unknown[] }).tool_calls = toolUseBlocks.map(
+      (tu) => ({
+        id: tu.id,
+        type: 'function' as const,
+        function: { name: tu.name, arguments: JSON.stringify(tu.input) },
+      }),
+    );
+  }
 
   const out: ChatCompletion = {
     id,
     object: 'chat.completion',
     created: Math.floor(Date.now() / 1000),
-    model: canonical.model,
+    model,
     choices: [
       {
         index: 0,
-        message: {
-          role: 'assistant',
-          content: textParts.join(''),
-          refusal: null,
-        },
+        message,
         finish_reason: canonicalStopToOpenAIFinish(canonical.stop_reason) ?? 'stop',
         logprobs: null,
       },
@@ -176,18 +210,24 @@ export function openAIChatCompletionToCanonical(result: ChatCompletion): Canonic
 export interface CanonicalToOpenAISseOpts {
   signal?: AbortSignal;
   onCleanup?: () => void;
+  /** Plan 04-04: replaces canonical.model on emitted chunks. */
+  displayModel?: string;
+  /** Plan 04-04: replaces the derived `chatcmpl-...` id on emitted chunks. */
+  idOverride?: string;
 }
 
 /**
  * Translate the canonical event stream into OpenAI-shape SSE chunks. Phase 2/3 wire
- * contract preserved byte-for-byte for text-only streams (tool_use streaming lands
- * in Plan 04).
+ * contract preserved byte-for-byte for text-only streams (Plan 04-04 adds tool_use
+ * streaming).
  *
  * State carried across iterations:
  * - id / created / model captured from `message_start` (or from the first content
  *   chunk's enclosing context if message_start is missing).
  * - input_tokens captured from message_start.message.usage.input_tokens — used to
  *   compose the final usage chunk emitted on message_delta.
+ * - For tool_use blocks: maintain `index → toolCallIndex` map so the OpenAI delta
+ *   stream emits `tool_calls[N]` with a sequential `index` per OpenAI spec.
  */
 export async function* canonicalToOpenAISse(
   events: AsyncIterable<CanonicalStreamEvent>,
@@ -206,6 +246,11 @@ export async function* canonicalToOpenAISse(
     | 'function_call'
     | null = null;
 
+  // Plan 04-04: maintain a per-canonical-index → openAI-tool-call-index counter so
+  // chunks reference `tool_calls[N]` with sequential indices.
+  const toolCallIndexByBlockIndex = new Map<number, number>();
+  let nextToolCallIndex = 0;
+
   try {
     for await (const ev of events) {
       switch (ev.type) {
@@ -214,15 +259,42 @@ export async function* canonicalToOpenAISse(
           // If the canonical message carries a non-enumerable _upstreamId, prefer it
           // so the existing OpenAI integration tests stay green.
           const upstreamId = readUpstreamId(ev.message);
-          id = upstreamId ?? ev.message.id.replace(/^msg_/, 'chatcmpl-');
-          model = ev.message.model;
+          id = opts.idOverride ?? upstreamId ?? ev.message.id.replace(/^msg_/, 'chatcmpl-');
+          model = opts.displayModel ?? ev.message.model;
           created = Math.floor(Date.now() / 1000);
           capturedInputTokens = ev.message.usage.input_tokens;
           break;
         }
         case 'content_block_start': {
+          if (ev.content_block.type === 'tool_use') {
+            const tcIndex = nextToolCallIndex++;
+            toolCallIndexByBlockIndex.set(ev.index, tcIndex);
+            const chunk: ChatCompletionChunk = {
+              id,
+              object: 'chat.completion.chunk',
+              created,
+              model,
+              choices: [
+                {
+                  index: 0,
+                  delta: {
+                    tool_calls: [
+                      {
+                        index: tcIndex,
+                        id: ev.content_block.id,
+                        type: 'function',
+                        function: { name: ev.content_block.name, arguments: '' },
+                      },
+                    ],
+                  },
+                  finish_reason: null,
+                },
+              ],
+            };
+            yield { data: JSON.stringify(chunk) };
+          }
           // Text blocks have nothing to emit on start (OpenAI delta stream has no
-          // analog frame). Tool_use blocks land in Plan 04.
+          // analog frame).
           break;
         }
         case 'content_block_delta': {
@@ -241,26 +313,44 @@ export async function* canonicalToOpenAISse(
               ],
             };
             yield { data: JSON.stringify(chunk) };
+          } else if (ev.delta.type === 'input_json_delta') {
+            // FINDING 1.2 — Anthropic emits `input_json_delta` as the args build up;
+            // OpenAI emits the equivalent as `tool_calls[N].function.arguments` frags.
+            const tcIndex = toolCallIndexByBlockIndex.get(ev.index) ?? 0;
+            const chunk: ChatCompletionChunk = {
+              id,
+              object: 'chat.completion.chunk',
+              created,
+              model,
+              choices: [
+                {
+                  index: 0,
+                  delta: {
+                    tool_calls: [
+                      {
+                        index: tcIndex,
+                        function: { arguments: ev.delta.partial_json },
+                      },
+                    ],
+                  },
+                  finish_reason: null,
+                },
+              ],
+            };
+            yield { data: JSON.stringify(chunk) };
           }
-          // input_json_delta → Plan 04 (tool_use arguments partial).
           break;
         }
         case 'content_block_stop': {
-          // No OpenAI analog for the text path.
+          // No OpenAI analog.
           break;
         }
         case 'message_delta': {
           capturedOutputTokens = ev.usage.output_tokens;
           capturedFinishReason = canonicalStopToOpenAIFinish(ev.delta.stop_reason);
-          // Prefer the upstream prompt_tokens carrier (attached non-enumerably by
-          // openAIChunksToCanonicalEvents) when present; falls back to whatever was
-          // captured from message_start (typically 0 in Plan 01 — Plan 03 wires the
-          // route-supplied inputTokensHint so message_start carries the right value).
           const upstreamInputTokens = (ev.usage as { _upstreamInputTokens?: number })._upstreamInputTokens;
           const effectiveInputTokens =
             typeof upstreamInputTokens === 'number' ? upstreamInputTokens : capturedInputTokens;
-          // Emit the final usage chunk (matches Phase 2 wire shape — see
-          // tests/msw/handlers.ts ollamaStreamHandler lines 84-96: choices:[] + usage).
           const usageChunk: ChatCompletionChunk = {
             id,
             object: 'chat.completion.chunk',
@@ -274,9 +364,6 @@ export async function* canonicalToOpenAISse(
             },
           };
           yield { data: JSON.stringify(usageChunk) };
-          // Emit a finish_reason chunk if the stop_reason translated to a non-null
-          // OpenAI finish_reason. Some upstream backends emit this BEFORE the usage
-          // chunk; the order doesn't matter to the OpenAI spec ([DONE] terminates).
           if (capturedFinishReason !== null) {
             const finishChunk: ChatCompletionChunk = {
               id,
@@ -307,14 +394,11 @@ export async function* canonicalToOpenAISse(
       }
     }
   } catch (err) {
-    // Client-disconnect path — emit nothing. Mirrors chunkToSseEvents (sse/stream.ts:36).
     if (opts.signal?.aborted) {
       return;
     }
     const env = toOpenAIErrorEnvelope(err);
     if (env === NO_ENVELOPE) {
-      // Non-controller-driven APIUserAbortError — emit bare [DONE] so strict clients
-      // close cleanly (sse/stream.ts WR-07 contract).
       yield { event: '', data: '[DONE]' };
       return;
     }
@@ -328,41 +412,21 @@ export async function* canonicalToOpenAISse(
 
 /**
  * Translate an upstream OpenAI ChatCompletionChunk stream into a canonical event
- * stream. Used by the adapter (in Task 3) when the OpenAI-compat backend is the
- * source of truth.
+ * stream. Used by the adapter when the OpenAI-compat backend is the source of truth.
  *
- * Strategy — single-pass, emit message_start before the first content delta so the
- * downstream consumer can capture id/model immediately:
- * - First chunk: capture id/model; emit `message_start` with
- *   usage.input_tokens=0 (we don't know the real value until the final usage chunk
- *   — Plan 02 fixes this via a route-supplied inputTokensHint), output_tokens=1
- *   (Anthropic convention — pre-allocated role token).
- * - Subsequent content chunks: emit `content_block_delta {text_delta}` (text-only;
- *   tool_use streaming lands in Plan 04).
- * - Final chunk (choices:[] + usage): emit `content_block_stop`, then `message_delta`
- *   with the cumulative `output_tokens = usage.completion_tokens`.
- * - On stream end: emit `message_stop`.
- *
- * `_upstreamId` is attached non-enumerably on the message_start.message so the
- * downstream openai-out translator can recover the upstream id (Phase 2/3 test
- * compatibility — body.id === 'chatcmpl-msw').
+ * NOTE: tool_use chunk-to-canonical translation is not added here in Plan 04-04 —
+ * the canonical → OpenAI direction (canonicalToOpenAISse) handles tool_use streaming.
+ * Upstream tool_calls in OpenAI chunks would require accumulating arguments fragments
+ * across chunks before emitting input_json_delta canonical events; that's a follow-up
+ * since the current adapters (Ollama, llama.cpp) handle tool_calls via the non-stream
+ * response branch in practice. The text-only stream path is unchanged.
  */
 export interface OpenAIChunksToCanonicalOpts {
   /** Registry-facing model name. Used as canonical.message.model on message_start. */
   model: string;
   /**
    * Plan 04-03 (Issue #6 resolution): the route's pre-stream `countTokens(canonical)`
-   * pre-count. Used as `message_start.message.usage.input_tokens` so the Anthropic
-   * surface emits a wire-correct, non-zero input_tokens on the very first SSE event.
-   *
-   * - Defaults to 0 (Plan 04-01 behavior) — keeps the Phase 2/3 OpenAI integration
-   *   suite green (the OpenAI surface still uses the upstream `prompt_tokens` carrier
-   *   on `message_delta.usage._upstreamInputTokens` for the final usage chunk).
-   * - The hint is non-authoritative: a future adapter (e.g. Plan 05's Ollama
-   *   `/api/chat` branch) may overwrite at end-of-stream from upstream's
-   *   `prompt_eval_count`. For the OpenAI-compat path, the hint IS the authoritative
-   *   source for the Anthropic surface; the OpenAI surface keeps the `_upstreamInputTokens`
-   *   carrier path so existing wire bytes don't shift.
+   * pre-count. Used as `message_start.message.usage.input_tokens`.
    */
   inputTokensHint?: number;
 }
@@ -416,19 +480,11 @@ export async function* openAIChunksToCanonicalEvents(
       };
     }
 
-    // Final usage chunk (Ollama + llama.cpp emit choices:[] + usage; some backends
-    // emit usage alongside the last content chunk — accept either ordering).
     if (chunk.usage) {
       if (textBlockOpen) {
         yield { type: 'content_block_stop', index: 0 };
         textBlockOpen = false;
       }
-      // Attach the upstream prompt_tokens as a NON-ENUMERABLE carrier on the
-      // message_delta event so canonicalToOpenAISse can compose the final wire-format
-      // usage chunk with the correct prompt_tokens (the canonical event union doesn't
-      // expose input_tokens on message_delta — Plan 03 will swap to inputTokensHint).
-      // The non-enumerable property does NOT pollute JSON.stringify of the event
-      // (Phase 5 logging stays clean — same T-04-A2 mitigation as _upstreamId).
       const messageDelta = {
         type: 'message_delta' as const,
         delta: { stop_reason: 'end_turn' as const, stop_sequence: null },
@@ -444,8 +500,6 @@ export async function* openAIChunksToCanonicalEvents(
     }
   }
 
-  // Stream done — emit closing events. Idempotent guard for the case where the
-  // upstream never emitted a usage chunk (some llama.cpp builds).
   if (textBlockOpen) {
     yield { type: 'content_block_stop', index: 0 };
   }

@@ -53,6 +53,69 @@ export class CapabilityNotSupportedError extends Error {
   }
 }
 
+/**
+ * Plan 04-04 T-04-02 mitigation: thrown by openai-in.ts when an OpenAI assistant
+ * `tool_calls[i].function.arguments` string is not valid JSON. Maps to 400 +
+ * invalid_request_error with code:'invalid_tool_arguments' on both wire surfaces.
+ *
+ * The translator is the trust boundary that catches malformed model output (or
+ * client-supplied bad data on a /v1/chat/completions continuation request); adapters
+ * NEVER do JSON.parse on tool args (grep gate S7).
+ */
+export class InvalidToolArgumentsError extends Error {
+  readonly code: 'invalid_tool_arguments' = 'invalid_tool_arguments';
+  constructor(
+    public readonly toolCallId: string,
+    public readonly cause: Error,
+  ) {
+    super(
+      `tool_calls[id="${toolCallId}"].function.arguments is not valid JSON: ${cause.message}`,
+    );
+    this.name = 'InvalidToolArgumentsError';
+  }
+}
+
+/**
+ * Plan 04-04 T-04-01 mitigation (Plan 05 consumer): thrown by ollama-native-out.ts
+ * when an image source's URL is non-https or resolves to a private/loopback address
+ * (SSRF mitigation). Maps to 400 + invalid_request_error with code:'invalid_image_url'.
+ *
+ * Lives here in Plan 04 (not Plan 05) to avoid wave-4 collision on envelope.ts —
+ * Plan 04 owns envelope.ts edits in this wave; Plan 05 owns the throw sites.
+ */
+export class InvalidImageUrlError extends Error {
+  readonly code: 'invalid_image_url' = 'invalid_image_url';
+  constructor(
+    public readonly url: string,
+    public readonly reason: 'http_scheme_blocked' | 'private_address_blocked',
+  ) {
+    super(
+      reason === 'http_scheme_blocked'
+        ? `Image URL must use https:// scheme; got non-https URL: ${url}`
+        : `image URL resolves to a private/loopback address — rejected for SSRF mitigation: ${url}`,
+    );
+    this.name = 'InvalidImageUrlError';
+  }
+}
+
+/**
+ * Plan 04-04 T-04-01 mitigation (Plan 05 consumer): thrown by ollama-native-out.ts
+ * when an image fetch fails (too large, wrong content-type, HTTP error). Maps to 400.
+ * Per-instance `code` field distinguishes the specific failure mode.
+ */
+export class ImageFetchError extends Error {
+  readonly code: 'image_too_large' | 'image_invalid_content_type' | 'http_error';
+  constructor(
+    public readonly url: string,
+    code: 'image_too_large' | 'image_invalid_content_type' | 'http_error',
+    detail: string,
+  ) {
+    super(`failed to fetch image from ${url}: ${detail}`);
+    this.name = 'ImageFetchError';
+    this.code = code;
+  }
+}
+
 /** D-C3 status mapping — single source of truth. */
 export function mapToHttpStatus(err: unknown): number {
   if (err instanceof BearerAuthError) return 401;
