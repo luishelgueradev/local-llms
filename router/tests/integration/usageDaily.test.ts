@@ -163,12 +163,13 @@ describe('makeUsageDailyScheduler — start/stop/runNow idempotency', () => {
 
       sched.start();
       sched.start(); // idempotent — second call is a no-op
-      sched.stop();
-      sched.stop(); // idempotent
 
       // Explicit runNow should fire the refresh exactly once
       await sched.runNow();
       expect(executeMock).toHaveBeenCalledTimes(1);
+
+      sched.stop();
+      sched.stop(); // idempotent — second call is a no-op
     } finally {
       vi.useRealTimers();
     }

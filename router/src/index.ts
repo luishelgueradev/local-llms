@@ -6,6 +6,7 @@ import { makeLoggerOptions } from './log/logger.js';
 import { makeDb, makePool } from './db/index.js';
 import { runMigrations } from './db/migrate.js';
 import { makeBufferedWriter } from './db/bufferedWriter.js';
+import { makeUsageDailyScheduler } from './db/usageDaily.js';
 import { makeMetricsRegistry } from './metrics/registry.js';
 
 async function main(): Promise<void> {
@@ -39,6 +40,13 @@ async function main(): Promise<void> {
     logger: bootLog,
   });
 
+  // Plan 05-04 (DATA-04) — usage_daily refresh scheduler. start() is called
+  // inside buildApp() after route wiring; stop() is called in the onClose
+  // hook BEFORE bufferedWriter.drain. The first refresh fires at the next
+  // UTC midnight; idempotent UPSERT means a missed midnight (router was
+  // offline) is recovered at the next tick.
+  const usageDailyScheduler = makeUsageDailyScheduler({ db, log: bootLog });
+
   // Fail-fast on bad models.yaml (D-C3 startup half — hot-reload's keep-previous semantics
   // land in plan 02-05's watcher).
   const initialRegistry = loadRegistryFromFile(env.MODELS_YAML_PATH);
@@ -50,6 +58,7 @@ async function main(): Promise<void> {
     loggerOpts,
     bufferedWriter,
     metrics,
+    usageDailyScheduler,
   });
 
   // RESEARCH A4 / Pitfall 7 — operator opts into polling fallback for WSL2 + Docker

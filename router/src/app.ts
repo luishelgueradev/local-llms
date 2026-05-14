@@ -29,6 +29,7 @@ import { makeAdapter as defaultMakeAdapter } from './backends/factory.js';
 import { registerReadyz } from './routes/readyz.js';
 import { BackendSemaphore } from './concurrency/semaphore.js';
 import type { BufferedWriter } from './db/bufferedWriter.js';
+import type { UsageDailyScheduler } from './db/usageDaily.js';
 import type { MetricsRegistry } from './metrics/registry.js';
 import {
   makeRecordRequestOutcome,
@@ -98,6 +99,15 @@ export interface BuildAppOpts {
    * production agentIdPreHandler; tests override for hook-isolation cases.
    */
   agentIdPreHandler?: preHandlerAsyncHookHandler;
+  /**
+   * Plan 05-04 (DATA-04) — optional usage_daily scheduler. When supplied,
+   * its start() runs after buildApp wires the routes and its stop() runs
+   * in the onClose hook BEFORE the bufferedWriter drain (the drain races
+   * an awaited timeout; the scheduler stop is synchronous). Production
+   * wiring passes a real scheduler from index.ts; tests omit the field
+   * to skip the daily aggregation entirely.
+   */
+  usageDailyScheduler?: UsageDailyScheduler;
 }
 
 export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
@@ -290,6 +300,10 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
     liveness.stop();
     probeAdapters.clear();
     semaphoreMap.clear();
+    // Plan 05-04 — stop the usage_daily scheduler BEFORE the bufferedWriter
+    // drain. Both are idempotent + synchronous (stop just clears timers).
+    // The drain is awaited LAST because it races a setTimeout(3_000).
+    opts.usageDailyScheduler?.stop();
     await opts.bufferedWriter.drain(3_000);
   });
 
@@ -339,6 +353,11 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
 
   // GET /v1/models — bearer-gated; lists all registry models (Plan 03-02, OAI-03).
   registerModelsRoute(app, opts.registry);
+
+  // Plan 05-04 — start the usage_daily scheduler last, after all routes are
+  // registered. The first refresh fires at the next UTC midnight; runNow()
+  // is exposed for ops + tests. The onClose hook (above) stops the timers.
+  opts.usageDailyScheduler?.start();
 
   return app;
 }
