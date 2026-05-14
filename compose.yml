@@ -360,3 +360,56 @@ services:
       retries: 5
     # No depends_on — postgres has no upstream dependency. No ports — internal
     # network only (D-E1).
+
+  # ── pg-backup sidecar (Phase 5 — D-F2 path A; DATA-05) ─────────────────────
+  # Daily pg_dump in custom format, writing to a bind-mounted host directory.
+  # Containerized + portable + pins the pg_dump client version to the server
+  # version (same image as `postgres:` above — D-F2 reasoning: pg_dump version
+  # must match server version exactly).
+  #
+  # 7-day retention via `find -mtime +7 -delete` on each loop iteration.
+  # Phase 9 (OPS-02) will move backups off-host with a different cadence.
+  #
+  # Network: `data` only (internal=true — no public exposure). No host ports.
+  # Bind mount: ${HOST_DATA_ROOT}/postgres-backups → /backups (the operator
+  # may need to `mkdir -p` and possibly `chown 70:70` this path on first up;
+  # see README §"Daily backups" + RESEARCH Pitfall 7).
+  #
+  # depends_on postgres with `required: false` so the sidecar doesn't block
+  # router-restart cycles. The `while true` loop's `|| echo "..."` short-circuit
+  # logs dump failures (postgres-down at the moment of pg_dump) and continues
+  # to the next iteration — exact mirror of D-A7 + RESEARCH Pitfall 4 spirit on
+  # the bufferedWriter side.
+  pg-backup:
+    image: postgres:17-alpine
+    container_name: ${COMPOSE_PROJECT_NAME:-local-llms}-pg-backup
+    restart: unless-stopped
+    networks:
+      - data
+    volumes:
+      - ${HOST_DATA_ROOT:-/srv/local-llms}/postgres-backups:/backups
+    environment:
+      # pg_dump reads PGPASSWORD when -W is not supplied (no interactive prompt).
+      - PGPASSWORD=${POSTGRES_PASSWORD}
+    entrypoint: ["/bin/sh", "-c"]
+    # YAML + Bash escaping note: `$$` in a Compose-string is interpolated to
+    # a single `$` BEFORE the shell sees it. So `$$(date ...)` becomes
+    # `$(date ...)` in the running shell, and `$$STAMP` becomes `$STAMP`.
+    # Verify the rendered command with `docker compose config`.
+    command:
+      - |
+        while true; do
+          STAMP=$$(date -u +%Y-%m-%dT%H)
+          pg_dump -h postgres -U app -d router --format=custom -f /backups/router-$$STAMP.dump || \
+            echo "[pg-backup] dump failed at $$STAMP"
+          # 7-day retention — runs every iteration AFTER the dump attempt.
+          find /backups -name "router-*.dump" -mtime +7 -delete
+          sleep 86400
+        done
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: false      # D-E4 spirit — sidecar tolerates router-restart cycles
+    # No healthcheck — sidecar is fire-and-forget; the bind-mounted dumps and
+    # `docker compose logs pg-backup` are the verification surface.
+    # No ports — internal-only.
