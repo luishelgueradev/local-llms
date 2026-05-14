@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../../src/app.js';
 import { makeFakeBufferedWriter } from '../fakes.js';
+import { makeMetricsRegistry } from '../../src/metrics/registry.js';
 import { loadRegistryFromString, makeRegistryStore } from '../../src/config/registry.js';
 
 const TOKEN = 'local-llms_t1t2t3t4t5t6t7t8t9t0aabbccddeeff';
@@ -26,7 +27,13 @@ beforeEach(async () => {
   tmpDir = mkdtempSync(join(tmpdir(), 'router-auth-it-'));
   writeFileSync(join(tmpDir, 'models.yaml'), YAML);
   const registry = makeRegistryStore(loadRegistryFromString(YAML));
-  app = await buildApp({ registry, bearerToken: TOKEN, loggerOpts: false as never, bufferedWriter: makeFakeBufferedWriter() });
+  app = await buildApp({
+    registry,
+    bearerToken: TOKEN,
+    loggerOpts: false as never,
+    bufferedWriter: makeFakeBufferedWriter(),
+    metrics: makeMetricsRegistry(),
+  });
 });
 afterEach(async () => {
   await app.close();
@@ -75,6 +82,14 @@ describe('bearer auth + skip-list (SC4 auth half, ROUTE-03, ROUTE-04)', () => {
       headers: { authorization: `Bearer ${'x'.repeat(TOKEN.length)}` },
     });
     expect(res.statusCode).toBe(401);
+  });
+
+  it('GET /metrics unauth returns 200 + text/plain content-type (D-C5 skip-list)', async () => {
+    const res = await app.inject({ method: 'GET', url: '/metrics' });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toMatch(/^text\/plain/);
+    // Body should contain at least one custom metric HELP line.
+    expect(res.body).toContain('router_requests_total');
   });
 
   it('Any /v1/* request returns NOT 401 with correct bearer (route now wired in plan 02-03)', async () => {
