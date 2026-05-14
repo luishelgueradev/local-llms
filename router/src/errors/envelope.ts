@@ -127,6 +127,11 @@ export function mapToHttpStatus(err: unknown): number {
   if (err instanceof RegistryUnknownModelError) return 404;
   // Plan 04-02 D-C2: missing capability for the requested model — pre-adapter 400.
   if (err instanceof CapabilityNotSupportedError) return 400;
+  // Plan 04-04 T-04-02: malformed tool_calls[].function.arguments — 400.
+  if (err instanceof InvalidToolArgumentsError) return 400;
+  // Plan 04-04 T-04-01: image URL or fetch failures — 400 (Plan 05 consumer).
+  if (err instanceof InvalidImageUrlError) return 400;
+  if (err instanceof ImageFetchError) return 400;
   // BackendSaturatedError (Plan 03-04, ROUTE-07) — backend concurrency cap exceeded.
   if (err instanceof BackendSaturatedError) return 429;
   // APIConnectionTimeoutError extends APIConnectionError — check FIRST for 504, before the 502 below
@@ -178,6 +183,40 @@ export function toOpenAIErrorEnvelope(err: unknown): EnvelopeOrSkip {
         type: 'invalid_request_error',
         code: 'model_capability_mismatch',
         param: 'model',
+      },
+    };
+  }
+  // Plan 04-04 T-04-02: malformed tool_calls JSON arguments.
+  if (err instanceof InvalidToolArgumentsError) {
+    return {
+      error: {
+        message: err.message,
+        type: 'invalid_request_error',
+        code: 'invalid_tool_arguments',
+        param: 'tool_calls',
+      },
+    };
+  }
+  // Plan 04-04 T-04-01: image URL invalid (non-https / SSRF) — Plan 05 consumer.
+  if (err instanceof InvalidImageUrlError) {
+    return {
+      error: {
+        message: err.message,
+        type: 'invalid_request_error',
+        code: 'invalid_image_url',
+        param: 'messages[].content[].source.url',
+      },
+    };
+  }
+  // Plan 04-04 T-04-01: image fetch failure — per-instance `code` field carries the
+  // specific reason (image_too_large / image_invalid_content_type / http_error).
+  if (err instanceof ImageFetchError) {
+    return {
+      error: {
+        message: err.message,
+        type: 'invalid_request_error',
+        code: err.code,
+        param: 'messages[].content[].source.url',
       },
     };
   }
@@ -282,6 +321,16 @@ export function toAnthropicErrorEnvelope(err: unknown): AnthropicEnvelopeOrSkip 
     return { type: 'error', error: { type: 'not_found_error', message: err.message } };
   }
   if (err instanceof CapabilityNotSupportedError) {
+    return { type: 'error', error: { type: 'invalid_request_error', message: err.message } };
+  }
+  // Plan 04-04: InvalidToolArgumentsError / InvalidImageUrlError / ImageFetchError
+  // all map to invalid_request_error on the Anthropic surface (parity with
+  // toOpenAIErrorEnvelope where they're invalid_request_error + per-class code).
+  if (
+    err instanceof InvalidToolArgumentsError ||
+    err instanceof InvalidImageUrlError ||
+    err instanceof ImageFetchError
+  ) {
     return { type: 'error', error: { type: 'invalid_request_error', message: err.message } };
   }
   if (err instanceof BackendSaturatedError) {

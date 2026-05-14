@@ -9,6 +9,13 @@
  *   new translator-option seam (displayModel + idOverride) replacing Plan 02's
  *   route-level canonicalResult.model mutation.
  *
+ * Note on the inverse request-direction mapping (`canonicalToOpenAIChatCompletionParams`,
+ * incl. tool_choice + the `disable_parallel_tool_use` ↔ `parallel_tool_calls:false`
+ * modifier per FINDING 3.4 / Pitfall 5): that function lives in `openai-in.ts` as
+ * the co-located inverse helper (Plan 01 layout — "openai-in owns BOTH directions of
+ * the OpenAI ↔ canonical mapping"). See openai-in.ts for the full tool-choice +
+ * disable_parallel_tool_use inverse table.
+ *
  * Stream discipline (Pattern S1, mirroring sse/stream.ts byte-for-byte):
  * - try { for await … } catch (err) { if signal.aborted: return; else map to envelope
  *   and yield midStreamErrorFrameLines }
