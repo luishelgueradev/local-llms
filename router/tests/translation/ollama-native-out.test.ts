@@ -254,6 +254,59 @@ describe('fetchImageAsBase64 — URL guard chain (D-C4 SSRF mitigation)', () => 
     ).rejects.toThrow(InvalidImageUrlError);
   });
 
+  // CR-03 regression: IPv6 deny check must catch IPv4-mapped loopback in non-canonical
+  // textual forms. The original regex only matched `::ffff:127.0.0.1`; hex / expanded /
+  // SIIT variants slipped through and reached the loopback. After the fix all four
+  // shapes below normalize to the same 8-group representation and are rejected.
+  for (const variant of [
+    '::ffff:127.0.0.1', // canonical short
+    '::ffff:7f00:0001', // raw hex
+    '0:0:0:0:0:ffff:127.0.0.1', // fully expanded
+    '0000:0000:0000:0000:0000:ffff:7f00:0001', // padded fully expanded
+  ]) {
+    it(`URL source — IPv4-mapped loopback variant ${variant} rejected`, async () => {
+      vi.spyOn(dns.promises, 'lookup').mockResolvedValueOnce([
+        { address: variant, family: 6 },
+      ] as never);
+      await expect(
+        canonicalToOllamaNativeChat({
+          model: 'llama3.2-vision:11b-instruct-q4_K_M',
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { type: 'image', source: { type: 'url', url: 'https://v6host.example.com/x.png' } },
+              ],
+            },
+          ],
+        }),
+      ).rejects.toThrow(InvalidImageUrlError);
+    });
+  }
+
+  // CR-03 regression: expanded IPv6 loopback (`0:0:0:0:0:0:0:1`) must match the loopback
+  // check. Previously the equality test was textual and only matched the colon-spaced
+  // form; the new expander-based check normalizes both `::1` and the fully-expanded form
+  // to the same 8-group array.
+  it('URL source — expanded loopback 0:0:0:0:0:0:0:1 rejected', async () => {
+    vi.spyOn(dns.promises, 'lookup').mockResolvedValueOnce([
+      { address: '0:0:0:0:0:0:0:1', family: 6 },
+    ] as never);
+    await expect(
+      canonicalToOllamaNativeChat({
+        model: 'llama3.2-vision:11b-instruct-q4_K_M',
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'image', source: { type: 'url', url: 'https://v6host.example.com/x.png' } },
+            ],
+          },
+        ],
+      }),
+    ).rejects.toThrow(InvalidImageUrlError);
+  });
+
   it('URL source — non-image Content-Type rejected with ImageFetchError code:image_invalid_content_type', async () => {
     const url = 'https://example.com/notimage';
     server.use(imageFetchHandler({ url, contentType: 'text/html' }));

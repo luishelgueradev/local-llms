@@ -133,28 +133,144 @@ function isDeniedIPv4(address: string): boolean {
   return false;
 }
 
-/** IPv6: lowercase prefix check; ::ffff:X.X.X.X → reapply IPv4 deny. */
+/**
+ * Expand an IPv6 textual form to a canonical 8-group hex array (16-bit per group).
+ *
+ * Handles:
+ *   - `::` (zero-run compression) at any position
+ *   - Embedded IPv4 in last 32 bits (`::ffff:127.0.0.1`, `0:0:0:0:0:ffff:127.0.0.1`)
+ *   - Mixed case (caller pre-lowercases)
+ *
+ * Returns `null` on a malformed input so the caller can fail closed.
+ *
+ * CR-03 fix: replaces the prior regex-based `::ffff:X.X.X.X` match, which only caught
+ * the canonical short form. Expanded / mixed / hex variants like `::ffff:7f00:0001`,
+ * `0:0:0:0:0:ffff:127.0.0.1`, and `0000:0000:0000:0000:0000:ffff:7f00:0001` all
+ * normalize through this function to the same 8-group representation and reach the
+ * IPv4-mapped + loopback / unspecified checks below.
+ */
+function expandIPv6(address: string): number[] | null {
+  // Split off the IPv4 tail if present (`::ffff:127.0.0.1` form).
+  let v4Tail: number[] | null = null;
+  const lastColon = address.lastIndexOf(':');
+  if (lastColon !== -1 && address.indexOf('.', lastColon) !== -1) {
+    const v4Part = address.slice(lastColon + 1);
+    const octets = v4Part.split('.').map((p) => Number.parseInt(p, 10));
+    if (
+      octets.length !== 4 ||
+      octets.some((n) => !Number.isInteger(n) || n < 0 || n > 255)
+    ) {
+      return null;
+    }
+    // Two 16-bit hex groups derived from the four octets.
+    v4Tail = [
+      ((octets[0] as number) << 8) | (octets[1] as number),
+      ((octets[2] as number) << 8) | (octets[3] as number),
+    ];
+    address = address.slice(0, lastColon);
+  }
+
+  // Split on `::` to find the zero-run.
+  const doubleColon = address.indexOf('::');
+  let head: string[];
+  let tail: string[];
+  if (doubleColon === -1) {
+    head = address.length === 0 ? [] : address.split(':');
+    tail = [];
+  } else {
+    const before = address.slice(0, doubleColon);
+    const after = address.slice(doubleColon + 2);
+    head = before.length === 0 ? [] : before.split(':');
+    tail = after.length === 0 ? [] : after.split(':');
+    // A second `::` is illegal.
+    if (after.includes('::') || before.includes('::')) return null;
+  }
+
+  const groups: number[] = [];
+  for (const g of head) {
+    if (!/^[0-9a-f]{1,4}$/.test(g)) return null;
+    groups.push(Number.parseInt(g, 16));
+  }
+  const tailGroups: number[] = [];
+  for (const g of tail) {
+    if (!/^[0-9a-f]{1,4}$/.test(g)) return null;
+    tailGroups.push(Number.parseInt(g, 16));
+  }
+
+  const explicit = groups.length + tailGroups.length + (v4Tail ? 2 : 0);
+  const totalRequired = 8;
+  if (doubleColon === -1) {
+    if (explicit !== totalRequired) return null;
+    return v4Tail ? [...groups, ...tailGroups, ...v4Tail] : [...groups, ...tailGroups];
+  }
+  // Compressed `::` must represent at least one zero group.
+  if (explicit >= totalRequired) return null;
+  const zeros = new Array(totalRequired - explicit).fill(0);
+  return v4Tail
+    ? [...groups, ...zeros, ...tailGroups, ...v4Tail]
+    : [...groups, ...zeros, ...tailGroups];
+}
+
+/**
+ * IPv6 deny check (CR-03 hardened).
+ *
+ * Strategy: expand to a canonical 8-group hex array, then test deterministic patterns
+ * (loopback / unspecified / link-local / ULA / IPv4-mapped). Textual variants such as
+ * `::ffff:7f00:0001`, `0:0:0:0:0:ffff:127.0.0.1`, `0000:0000:0000:0000:0000:ffff:7f00:0001`,
+ * and the SIIT form `::ffff:0:127.0.0.1` all collapse to the same 8-group representation
+ * and are caught by the same IPv4-mapped detector.
+ *
+ * Fails closed: a textually malformed IPv6 the canonical parser cannot expand returns
+ * `true` (denied) per the same fail-closed philosophy as `isDenied`.
+ */
 function isDeniedIPv6(rawAddress: string): boolean {
   const address = rawAddress.toLowerCase();
+  // SIIT variant `::ffff:0:X.X.X.X` (RFC 6052/6145 IPv4-translated). Two extra hex
+  // groups (`0:` between `ffff` and the IPv4) put the v4 in groups[7], not groups[6:7].
+  // The expander below will produce 8 groups with groups[5] === 0xffff and groups[6] === 0,
+  // making the standard IPv4-mapped detector skip it. Handle that variant first via a
+  // structural check on the expanded form.
+  const groups = expandIPv6(address);
+  if (groups === null) return true; // fail closed on malformed
+
   // Loopback ::1
-  if (address === '::1' || address === '0:0:0:0:0:0:0:1') return true;
-  // Unspecified ::
-  if (address === '::' || address === '0:0:0:0:0:0:0:0') return true;
-  // Link-local fe80::/10 (covers fe80:: through febf::)
   if (
-    address.startsWith('fe8') ||
-    address.startsWith('fe9') ||
-    address.startsWith('fea') ||
-    address.startsWith('feb')
+    groups[0] === 0 && groups[1] === 0 && groups[2] === 0 && groups[3] === 0 &&
+    groups[4] === 0 && groups[5] === 0 && groups[6] === 0 && groups[7] === 1
   ) {
     return true;
   }
-  // ULA fc00::/7 → fc or fd prefix
-  if (address.startsWith('fc') || address.startsWith('fd')) return true;
-  // IPv4-mapped ::ffff:X.X.X.X → re-extract IPv4 portion and reapply.
-  const mappedMatch = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(address);
-  if (mappedMatch) {
-    return isDeniedIPv4(mappedMatch[1]!);
+  // Unspecified ::
+  if (groups.every((g) => g === 0)) return true;
+  // Link-local fe80::/10 — first 10 bits are 1111 1110 10
+  if ((groups[0]! & 0xffc0) === 0xfe80) return true;
+  // ULA fc00::/7 — first 7 bits are 1111 110
+  if ((groups[0]! & 0xfe00) === 0xfc00) return true;
+  // IPv4-mapped ::ffff:X.X.X.X — groups[0..4] are zero, groups[5] is 0xffff,
+  // last 32 bits encode an IPv4.
+  if (
+    groups[0] === 0 && groups[1] === 0 && groups[2] === 0 && groups[3] === 0 &&
+    groups[4] === 0 && groups[5] === 0xffff
+  ) {
+    const hi = groups[6]!;
+    const lo = groups[7]!;
+    const v4 = `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+    return isDeniedIPv4(v4);
+  }
+  // SIIT-style IPv4-translated `::ffff:0:X.X.X.X` (RFC 6145). groups[0..4] zero,
+  // groups[5] === 0xffff, groups[6] === 0, last 16 bits in groups[7] are insufficient
+  // to carry a full v4 — under canonical expansion this shape actually places the v4 in
+  // a different position. We treat any pattern with `0:ffff:0:` prefix as suspicious
+  // and fail closed.
+  if (
+    groups[0] === 0 && groups[1] === 0 && groups[2] === 0 && groups[3] === 0 &&
+    groups[4] === 0xffff && groups[5] === 0
+  ) {
+    // The original SIIT semantic embeds the v4 in groups[6:8]; treat it as IPv4-mapped.
+    const hi = groups[6]!;
+    const lo = groups[7]!;
+    const v4 = `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+    return isDeniedIPv4(v4);
   }
   return false;
 }
