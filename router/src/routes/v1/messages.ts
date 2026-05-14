@@ -82,14 +82,21 @@ export interface RegisterMessagesRouteOpts {
 /**
  * Sanitize the anthropic-version header before echoing it back to the client.
  * - Cap to 64 chars (defense in depth)
- * - Strip CR/LF (header injection mitigation per T-04-05)
+ * - Keep ONLY visible US-ASCII plus tab (RFC 7230 §3.2.6 field-vchar + HTAB) —
+ *   strips CR/LF (header injection — T-04-05) plus other control bytes (NUL,
+ *   vertical tab, form feed, ESC, DEL, high-bit 0x80–0xFF). The CRLF strip is
+ *   the only injection-significant filter; the broader cutoff is defense in
+ *   depth against log-injection vectors and intermediary edge-case behavior
+ *   (WR-06).
  * - First value if Fastify gave us an array
  */
 function sanitizeAnthropicVersion(raw: string | string[] | undefined): string | null {
   if (raw === undefined) return null;
   const first = Array.isArray(raw) ? raw[0] : raw;
   if (typeof first !== 'string' || first.length === 0) return null;
-  return first.slice(0, 64).replace(/[\r\n]/g, '');
+  // \x20-\x7E = printable ASCII (space through tilde). \t = HTAB. Everything
+  // else (including CR/LF and high-bit bytes) is stripped.
+  return first.slice(0, 64).replace(/[^\x20-\x7E\t]/g, '');
 }
 
 /**

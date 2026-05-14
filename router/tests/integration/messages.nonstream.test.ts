@@ -264,6 +264,40 @@ describe('POST /v1/messages — ANTHR-05 anthropic-version echo (T-04-05)', () =
     expect(echoed).not.toMatch(/[\r\n]/);
   });
 
+  // WR-06: the sanitizer must strip the full set of HTTP-disallowed bytes (NUL,
+  // VT, FF, ESC, DEL, high-bit 0x80-0xFF) — not just CR/LF — before echoing.
+  // RFC 7230 §3.2.6 limits header field-vchar to visible US-ASCII + HTAB.
+  it('strips non-printable control bytes from anthropic-version before echoing', async () => {
+    server.use(
+      ollamaNonStreamHandler({
+        url: `${UPSTREAM_BASE}/chat/completions`,
+        model: MODEL_NAME,
+        content: 'ok',
+      }),
+    );
+    // Header with NUL, VT, FF, ESC, DEL, and a high-bit byte interleaved.
+    const probe = `2023-\x00\v\f\x1b\x7f\xff06-01`;
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/messages',
+      headers: {
+        authorization: `Bearer ${TOKEN}`,
+        'content-type': 'application/json',
+        'anthropic-version': probe,
+      },
+      payload: {
+        model: MODEL_NAME,
+        max_tokens: 100,
+        messages: [{ role: 'user', content: 'hi' }],
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    const echoed = res.headers['anthropic-version'];
+    expect(typeof echoed).toBe('string');
+    // All control / high-bit bytes removed; visible ASCII preserved.
+    expect(echoed).toBe('2023-06-01');
+  });
+
   it('does NOT inject anthropic-version when absent from the request', async () => {
     server.use(
       ollamaNonStreamHandler({
