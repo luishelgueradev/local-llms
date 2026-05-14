@@ -517,4 +517,30 @@ describe('ollamaNativeChunksToCanonicalEvents — NDJSON stream parser', () => {
     expect(didThrow).toBe(false);
     expect(events.length).toBeGreaterThan(0);
   });
+
+  // WR-01 regression: an empty upstream body (or a stream that closes before any
+  // NDJSON line arrives) MUST NOT yield orphan `message_delta` + `message_stop`
+  // events — those would violate the Anthropic wire contract requiring
+  // `message_start` to precede every other event. Instead the generator throws
+  // so the route's stream-branch catch wraps it in a single error frame.
+  it('empty upstream stream does NOT emit orphan message_delta/message_stop', async () => {
+    const stream = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.close();
+      },
+    });
+    const events: CanonicalStreamEvent[] = [];
+    let thrown: unknown;
+    try {
+      for await (const ev of ollamaNativeChunksToCanonicalEvents(stream, { model: 'x' })) {
+        events.push(ev);
+      }
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toMatch(/without emitting any NDJSON lines/);
+    // No orphan events emitted.
+    expect(events).toEqual([]);
+  });
 });

@@ -648,15 +648,30 @@ export async function* ollamaNativeChunksToCanonicalEvents(
     }
 
     // Stream ended without a `done:true` terminator — synthesize a closing event.
-    if (started && textBlockOpen) {
-      yield { type: 'content_block_stop', index: 0 };
+    //
+    // WR-01: only emit `message_delta` / `message_stop` if `message_start` has
+    // already been emitted (started === true). The Anthropic wire contract
+    // requires message_start to precede every other event in the sequence
+    // (canonical event invariant D-F4). An empty upstream body, or an abrupt TCP
+    // close before any NDJSON line arrived, would previously yield orphan
+    // `message_delta` + `message_stop` events that the official Anthropic SDK
+    // parser rejects. If started === false, throw so the route's stream-branch
+    // catch wraps the error in a single Anthropic error frame and ends cleanly.
+    if (started) {
+      if (textBlockOpen) {
+        yield { type: 'content_block_stop', index: 0 };
+      }
+      yield {
+        type: 'message_delta',
+        delta: { stop_reason: 'end_turn', stop_sequence: null },
+        usage: { output_tokens: 0 },
+      };
+      yield { type: 'message_stop' };
+    } else {
+      throw new Error(
+        'ollamaNativeChunksToCanonicalEvents: upstream stream ended without emitting any NDJSON lines',
+      );
     }
-    yield {
-      type: 'message_delta',
-      delta: { stop_reason: 'end_turn', stop_sequence: null },
-      usage: { output_tokens: 0 },
-    };
-    yield { type: 'message_stop' };
   } catch (err) {
     if (opts.signal?.aborted) return;
     throw err;
