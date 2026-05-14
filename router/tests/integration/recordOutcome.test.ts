@@ -108,11 +108,15 @@ describe('mapErrorToCode (D-D2 taxonomy)', () => {
     ).toBe('invalid_request');
   });
   it('InvalidImageUrlError → invalid_request', () => {
-    expect(mapErrorToCode(new InvalidImageUrlError('bad'))).toBe('invalid_request');
+    expect(
+      mapErrorToCode(new InvalidImageUrlError('https://example.com/x.png', 'malformed_url')),
+    ).toBe('invalid_request');
   });
   it('ImageFetchError → invalid_request', () => {
     expect(
-      mapErrorToCode(new ImageFetchError('http_error', 'http err')),
+      mapErrorToCode(
+        new ImageFetchError('https://example.com/x.png', 'http_error', 'http err'),
+      ),
     ).toBe('invalid_request');
   });
   it('APIConnectionTimeoutError → upstream_timeout', () => {
