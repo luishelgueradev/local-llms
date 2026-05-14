@@ -39,7 +39,24 @@ export const ImageSourceSchema = z.discriminatedUnion('type', [
   }),
   z.object({
     type: z.literal('url'),
-    url: z.string().url(),
+    // WR-04: `z.string().url()` accepts ANY URL scheme — including `javascript:`,
+    // `file:`, `data:`, `gopher:`, etc. The runtime image-fetch helper enforces
+    // HTTPS-only, but other consumers (`count_tokens`, future translators,
+    // request logging) bypass that helper. Reject non-https URLs at the
+    // canonical boundary so no downstream code sees one.
+    url: z
+      .string()
+      .url()
+      .refine(
+        (u) => {
+          try {
+            return new URL(u).protocol === 'https:';
+          } catch {
+            return false;
+          }
+        },
+        { message: 'image url must use https:// scheme' },
+      ),
   }),
 ]);
 

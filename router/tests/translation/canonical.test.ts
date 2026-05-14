@@ -65,6 +65,48 @@ describe('CanonicalRequestSchema (D-A1, Plan 04-01 Task 1)', () => {
     });
     expect(parsed.system).toBe('be brief');
   });
+
+  // WR-04: image.source.url must be https:// at the canonical boundary so no
+  // downstream consumer (count_tokens, future translators, request logging)
+  // ever sees a `javascript:`, `file:`, `data:`, or `http:` URL. The runtime
+  // image-fetch helper enforces https-only too, but other code paths bypass
+  // that helper.
+  for (const badUrl of [
+    'http://example.com/x.png',
+    'javascript:alert(1)',
+    'file:///etc/passwd',
+    // data: URLs are NOT image-source URLs; the canonical schema has a separate
+    // base64 source variant for that.
+    'data:text/plain;base64,AAAA',
+    'gopher://example.com/x',
+  ]) {
+    it(`rejects image.source.url with non-https scheme: ${badUrl}`, () => {
+      expect(() =>
+        CanonicalRequestSchema.parse({
+          model: 'x',
+          messages: [
+            {
+              role: 'user',
+              content: [{ type: 'image', source: { type: 'url', url: badUrl } }],
+            },
+          ],
+        }),
+      ).toThrow(z.ZodError);
+    });
+  }
+
+  it('accepts image.source.url with https:// scheme', () => {
+    const parsed = CanonicalRequestSchema.parse({
+      model: 'x',
+      messages: [
+        {
+          role: 'user',
+          content: [{ type: 'image', source: { type: 'url', url: 'https://example.com/x.png' } }],
+        },
+      ],
+    });
+    expect(parsed.messages[0]!.content).toHaveLength(1);
+  });
 });
 
 describe('newMessageId / newToolUseId (Pattern S8, D-E3, D-E4)', () => {
