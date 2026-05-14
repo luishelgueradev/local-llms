@@ -1,0 +1,39 @@
+{
+  "model": "test-model",
+  "max_tokens": 100,
+  "messages": [
+    { "role": "user", "content": "weather in SF?" },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "toolu_TESTSCENARIO03TESTSCEN",
+          "name": "get_weather",
+          "input": { "location": "SF" }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "toolu_TESTSCENARIO03TESTSCEN",
+          "content": "API unreachable",
+          "is_error": true
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "name": "get_weather",
+      "input_schema": {
+        "type": "object",
+        "properties": { "location": { "type": "string" } },
+        "required": ["location"]
+      }
+    }
+  ]
+}

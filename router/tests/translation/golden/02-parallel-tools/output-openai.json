@@ -1,0 +1,41 @@
+{
+  "id": "msg_TESTSCENARIO02TESTSCENARIO",
+  "object": "chat.completion",
+  "created": 0,
+  "model": "test-model",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": null,
+        "refusal": null,
+        "tool_calls": [
+          {
+            "id": "toolu_TESTSCENARIO02ATESTSCEN",
+            "type": "function",
+            "function": {
+              "name": "get_weather",
+              "arguments": "{\"location\":\"SF\"}"
+            }
+          },
+          {
+            "id": "toolu_TESTSCENARIO02BTESTSCEN",
+            "type": "function",
+            "function": {
+              "name": "get_time",
+              "arguments": "{\"timezone\":\"PST\"}"
+            }
+          }
+        ]
+      },
+      "finish_reason": "tool_calls",
+      "logprobs": null
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 30,
+    "completion_tokens": 18,
+    "total_tokens": 48
+  }
+}

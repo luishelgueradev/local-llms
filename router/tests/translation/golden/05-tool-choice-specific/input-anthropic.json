@@ -1,0 +1,24 @@
+{
+  "model": "test-model",
+  "max_tokens": 100,
+  "messages": [{ "role": "user", "content": "use the weather tool" }],
+  "tools": [
+    {
+      "name": "get_weather",
+      "input_schema": {
+        "type": "object",
+        "properties": { "location": { "type": "string" } },
+        "required": ["location"]
+      }
+    },
+    {
+      "name": "get_time",
+      "input_schema": {
+        "type": "object",
+        "properties": { "timezone": { "type": "string" } },
+        "required": ["timezone"]
+      }
+    }
+  ],
+  "tool_choice": { "type": "tool", "name": "get_weather" }
+}

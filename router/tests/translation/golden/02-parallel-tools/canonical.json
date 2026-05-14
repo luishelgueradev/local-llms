@@ -1,0 +1,53 @@
+{
+  "request": {
+    "model": "test-model",
+    "messages": [
+      {
+        "role": "user",
+        "content": [{ "type": "text", "text": "weather and time in SF?" }]
+      }
+    ],
+    "max_tokens": 100,
+    "tools": [
+      {
+        "name": "get_weather",
+        "input_schema": {
+          "type": "object",
+          "properties": { "location": { "type": "string" } },
+          "required": ["location"]
+        }
+      },
+      {
+        "name": "get_time",
+        "input_schema": {
+          "type": "object",
+          "properties": { "timezone": { "type": "string" } },
+          "required": ["timezone"]
+        }
+      }
+    ]
+  },
+  "response": {
+    "id": "msg_TESTSCENARIO02TESTSCENARIO",
+    "type": "message",
+    "role": "assistant",
+    "content": [
+      {
+        "type": "tool_use",
+        "id": "toolu_TESTSCENARIO02ATESTSCEN",
+        "name": "get_weather",
+        "input": { "location": "SF" }
+      },
+      {
+        "type": "tool_use",
+        "id": "toolu_TESTSCENARIO02BTESTSCEN",
+        "name": "get_time",
+        "input": { "timezone": "PST" }
+      }
+    ],
+    "model": "test-model",
+    "stop_reason": "tool_use",
+    "stop_sequence": null,
+    "usage": { "input_tokens": 30, "output_tokens": 18 }
+  }
+}
