@@ -223,7 +223,14 @@ function openAIToolMessageToResultBlock(msg: {
   // is_error JSON-wrap detection (FINDING 3.7). Loose regex first so we only attempt
   // JSON.parse on a string that PLAUSIBLY contains the wrapper — minimizes overhead
   // on normal tool results.
-  if (IS_ERROR_WRAP_RE.test(content)) {
+  //
+  // WR-07: cap the inspected slice at 1 KB. The legitimate wrapper protocol uses
+  // short JSON; capping bounds the JSON.parse cost in the pathological case of a
+  // body that opens with `{"is_error":true` and continues with a multi-megabyte
+  // malformed tail (within Fastify's bodyLimit). Cumulative CPU across many
+  // concurrent attacker requests adds up; the cap eliminates that variant
+  // without losing any legitimate detection.
+  if (content.length <= 1024 && IS_ERROR_WRAP_RE.test(content)) {
     try {
       const parsed = JSON.parse(content) as { is_error?: unknown; result?: unknown };
       if (parsed && parsed.is_error === true && typeof parsed.result === 'string') {

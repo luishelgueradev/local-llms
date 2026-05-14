@@ -258,6 +258,35 @@ describe('openAIRequestToCanonical — tool_calls (Plan 04-04 TOOL-01..04)', () 
     expect(block.content).toBe('API unreachable');
   });
 
+  // WR-07: bound the inspected slice. A multi-megabyte tool body that opens with
+  // `{"is_error":true,...` but is otherwise malformed must NOT trigger JSON.parse
+  // — the parse cost would scan the full body before throwing. Bodies > 1 KB
+  // skip the wrap detection and fall through to plain-text content.
+  it('skips is_error wrap detection on tool content larger than 1 KB (WR-07)', () => {
+    const oversize = '{"is_error":true,"result":"' + 'x'.repeat(2000) + '"}';
+    const canonical = openAIRequestToCanonical({
+      model: 'x',
+      messages: [
+        { role: 'user', content: 'go' },
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [
+            { id: 'call_x', type: 'function', function: { name: 'foo', arguments: '{}' } },
+          ],
+        },
+        { role: 'tool', tool_call_id: 'call_x', content: oversize },
+      ],
+    });
+    const toolMsg = canonical.messages[2];
+    const block = toolMsg.content[0];
+    expect(block.type).toBe('tool_result');
+    if (block.type !== 'tool_result') return;
+    // Wrap detection bypassed: is_error is NOT lifted; content is the raw string.
+    expect(block.is_error).toBeUndefined();
+    expect(block.content).toBe(oversize);
+  });
+
   it('combines consecutive tool messages into one user message with multiple tool_result blocks', () => {
     const canonical = openAIRequestToCanonical({
       model: 'x',
