@@ -38,16 +38,16 @@ Un endpoint único, estable y multi-protocolo para que los agentes del usuario c
 
 **Router unificado (Node + Fastify + TypeScript)**
 
-- [ ] Endpoint compatible OpenAI: `/v1/chat/completions`, `/v1/embeddings`
-- [ ] Endpoint compatible Anthropic: `/v1/messages`
-- [ ] Streaming SSE obligatorio en ambos protocolos
-- [ ] Tool calling / function calling estructurado en ambos formatos
-- [ ] Modalidad chat/completions
-- [ ] Modalidad embeddings
-- [ ] Modalidad vision/multimodal (entrada con imágenes)
-- [ ] Selección de modelo explícita por nombre (`model: "<name>"`) — el router resuelve qué backend lo sirve
-- [ ] Auth por bearer token único (configurable vía `.env`)
-- [ ] Configuración declarativa de modelos disponibles y su backend (YAML/JSON)
+- [x] Endpoint compatible OpenAI: `/v1/chat/completions` *(Phase 2 — /v1/embeddings llega en Phase 7)*
+- [x] Endpoint compatible Anthropic: `/v1/messages` *(Phase 4 — non-stream + stream + count_tokens)*
+- [x] Streaming SSE obligatorio en ambos protocolos *(Phase 2 OpenAI + Phase 4 Anthropic)*
+- [x] Tool calling / function calling estructurado en ambos formatos *(Phase 4 — bidirectional with 9 golden round-trip fixtures)*
+- [x] Modalidad chat/completions *(Phase 2)*
+- [ ] Modalidad embeddings *(Phase 7)*
+- [x] Modalidad vision/multimodal (entrada con imágenes) *(Phase 4 — URL + base64, SSRF-guarded, native /api/chat dispatch for Ollama)*
+- [x] Selección de modelo explícita por nombre (`model: "<name>"`) — el router resuelve qué backend lo sirve *(Phase 2/3)*
+- [x] Auth por bearer token único (configurable vía `.env`) *(Phase 2)*
+- [x] Configuración declarativa de modelos disponibles y su backend (YAML/JSON) *(Phase 2/3 — models.yaml)*
 
 **Servicios de plataforma (alcance "plataforma completa")**
 
@@ -126,4 +126,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-05-12 after Phase 2 (MVP Vertical Slice — Router + Ollama + SSE) completion.*
+*Last updated: 2026-05-14 after Phase 4 (Anthropic Surface — `/v1/messages`, Tool Calling, Vision) completion.*
