@@ -616,13 +616,260 @@ fi  # end "if GGUF present"
 echo ""
 echo "[smoke-test-router] === Phase 3 section complete ==="
 
+# =============================================================================
+# Phase 4 section — Anthropic surface + tool calling + vision (Plan 04-05)
+# =============================================================================
+#
+# SC-P4-A: POST /v1/messages stream=false      — non-stream Anthropic Message
+# SC-P4-B: POST /v1/messages stream=true       — SSE event sequence (NO [DONE])
+# SC-P4-C: POST /v1/messages/count_tokens      — input_tokens + header
+# SC-P4-D: POST /v1/messages vision happy path — URL form, llama3.2-vision
+# SC-P4-E: POST /v1/messages vision cap-gate   — non-vision model + image → 400
+#
+# Tracking — SKIPS counter for vision section when model isn't pulled / env
+# disables network. FAILURES is the existing counter from Phase 2.
+
+SKIPS=0
+skip() { echo "[smoke-test-router] SKIP: $*"; SKIPS=$((SKIPS + 1)); }
+
+VISION_MODEL="llama3.2-vision:11b-instruct-q4_K_M"
+
+echo ""
+echo "[smoke-test-router] === Phase 4 section: Anthropic surface + vision (SC-P4-A..E) ==="
+
+# ── SC-P4-A: /v1/messages non-stream ────────────────────────────────────────
+echo ""
+echo "[smoke-test-router] SC-P4-A: POST /v1/messages stream=false ..."
+SCP4A_BODY=$(_SMOKE_MODEL="${MODEL}" python3 -c '
+import json, os
+print(json.dumps({
+  "model": os.environ.get("_SMOKE_MODEL", ""),
+  "max_tokens": 100,
+  "messages": [{"role": "user", "content": "Reply with one short sentence."}],
+}))
+')
+SCP4A_RESP=$(curl -fsS -X POST "${ROUTER_URL}/v1/messages" \
+  -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -H 'anthropic-version: 2023-06-01' \
+  -d "${SCP4A_BODY}" 2>/dev/null || true)
+if [[ -z "${SCP4A_RESP}" ]]; then
+  fail "SC-P4-A: empty response from /v1/messages"
+else
+  SCP4A_CHECK=$(SCP4A_RESP="${SCP4A_RESP}" python3 -c '
+import json, os
+try:
+  d = json.loads(os.environ["SCP4A_RESP"])
+  assert d["id"].startswith("msg_"), f"id does not start with msg_: {d.get(\"id\")}"
+  assert d["type"] == "message", f"type is not message: {d.get(\"type\")}"
+  assert d["usage"]["input_tokens"] > 0, "input_tokens not > 0"
+  assert d["usage"]["output_tokens"] > 0, "output_tokens not > 0"
+  print(f"OK id={d[\"id\"][:14]}... in={d[\"usage\"][\"input_tokens\"]} out={d[\"usage\"][\"output_tokens\"]}")
+except Exception as e:
+  print(f"BAD:{e}")
+')
+  case "${SCP4A_CHECK}" in
+    OK*)   pass "SC-P4-A: /v1/messages non-stream (${SCP4A_CHECK#OK })" ;;
+    BAD:*) fail "SC-P4-A: ${SCP4A_CHECK#BAD:} — raw: ${SCP4A_RESP:0:200}" ;;
+    *)     fail "SC-P4-A: unexpected python output: ${SCP4A_CHECK}" ;;
+  esac
+fi
+
+# ── SC-P4-B: /v1/messages stream ────────────────────────────────────────────
+echo ""
+echo "[smoke-test-router] SC-P4-B: POST /v1/messages stream=true ..."
+SCP4B_BODY=$(_SMOKE_MODEL="${MODEL}" python3 -c '
+import json, os
+print(json.dumps({
+  "model": os.environ.get("_SMOKE_MODEL", ""),
+  "max_tokens": 80,
+  "messages": [{"role": "user", "content": "List 3 fruits."}],
+  "stream": True,
+}))
+')
+SCP4B_OUT=$(mktemp)
+curl -N -fsS -X POST "${ROUTER_URL}/v1/messages" \
+  -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -H 'anthropic-version: 2023-06-01' \
+  -d "${SCP4B_BODY}" \
+  --max-time 60 > "${SCP4B_OUT}" 2>/dev/null || true
+
+if [[ ! -s "${SCP4B_OUT}" ]]; then
+  fail "SC-P4-B: empty stream response"
+else
+  MISSING_EVENTS=()
+  for ev in message_start content_block_delta message_delta message_stop; do
+    grep -q "^event: ${ev}\$" "${SCP4B_OUT}" || MISSING_EVENTS+=("${ev}")
+  done
+  if [[ ${#MISSING_EVENTS[@]} -gt 0 ]]; then
+    fail "SC-P4-B: missing SSE events: ${MISSING_EVENTS[*]}"
+  elif grep -q '\[DONE\]' "${SCP4B_OUT}"; then
+    fail "SC-P4-B: Anthropic SSE must NOT emit [DONE]; found one"
+  else
+    pass "SC-P4-B: /v1/messages stream emits all 4 typed events; no [DONE]"
+  fi
+fi
+rm -f "${SCP4B_OUT}"
+
+# ── SC-P4-C: /v1/messages/count_tokens ──────────────────────────────────────
+echo ""
+echo "[smoke-test-router] SC-P4-C: POST /v1/messages/count_tokens ..."
+SCP4C_BODY=$(_SMOKE_MODEL="${MODEL}" python3 -c '
+import json, os
+print(json.dumps({
+  "model": os.environ.get("_SMOKE_MODEL", ""),
+  "messages": [{"role": "user", "content": "Count my tokens please, friend."}],
+}))
+')
+SCP4C_HEADERS_FILE=$(mktemp)
+SCP4C_BODY_RESP=$(curl -fsS -D "${SCP4C_HEADERS_FILE}" -X POST "${ROUTER_URL}/v1/messages/count_tokens" \
+  -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -H 'anthropic-version: 2023-06-01' \
+  -d "${SCP4C_BODY}" 2>/dev/null || true)
+
+if [[ -z "${SCP4C_BODY_RESP}" ]]; then
+  fail "SC-P4-C: empty count_tokens response"
+else
+  SCP4C_CHECK=$(SCP4C_BODY_RESP="${SCP4C_BODY_RESP}" python3 -c '
+import json, os
+try:
+  d = json.loads(os.environ["SCP4C_BODY_RESP"])
+  assert isinstance(d.get("input_tokens"), int) and d["input_tokens"] > 0, f"bad input_tokens: {d}"
+  print(f"OK input_tokens={d[\"input_tokens\"]}")
+except Exception as e:
+  print(f"BAD:{e}")
+')
+  case "${SCP4C_CHECK}" in
+    OK*)
+      # Header check (case-insensitive)
+      if grep -qi '^X-Token-Count-Method:[[:space:]]*gpt-tokenizer/cl100k_base' "${SCP4C_HEADERS_FILE}"; then
+        pass "SC-P4-C: count_tokens (${SCP4C_CHECK#OK }) + X-Token-Count-Method header present"
+      else
+        fail "SC-P4-C: input_tokens OK but X-Token-Count-Method header missing/incorrect"
+      fi
+      ;;
+    BAD:*) fail "SC-P4-C: ${SCP4C_CHECK#BAD:} — raw: ${SCP4C_BODY_RESP:0:200}" ;;
+    *)     fail "SC-P4-C: unexpected python output: ${SCP4C_CHECK}" ;;
+  esac
+fi
+rm -f "${SCP4C_HEADERS_FILE}"
+
+# ── SC-P4-D: vision happy path via URL ──────────────────────────────────────
+# NOTE: the image URL choice is intentional —
+#   https://raw.githubusercontent.com/ollama/ollama/main/docs/images/ollama.png
+# is a small (~10 KB) public HTTPS image on a stable GitHub raw path. It tests
+# the full D-C4 URL-fetch pipeline (HTTPS scheme → DNS lookup → 10 MB cap →
+# image/* content-type → bare base64 forwarded to /api/chat). If the smoke
+# environment has no outbound network, set SKIP_URL=1 to skip this section.
+echo ""
+echo "[smoke-test-router] SC-P4-D: POST /v1/messages vision URL happy path ..."
+if ! docker compose exec -T ollama ollama list 2>/dev/null | grep -q "${VISION_MODEL}"; then
+  skip "SC-P4-D: vision model not pulled; run: docker compose exec ollama ollama pull ${VISION_MODEL}"
+elif [[ "${SKIP_URL:-}" == "1" ]]; then
+  skip "SC-P4-D: SKIP_URL=1; smoke env has no outbound network for image fetch"
+else
+  SCP4D_BODY=$(python3 -c '
+import json
+print(json.dumps({
+  "model": "llama3.2-vision:11b-instruct-q4_K_M",
+  "max_tokens": 200,
+  "messages": [{
+    "role": "user",
+    "content": [
+      {"type": "image", "source": {"type": "url",
+        "url": "https://raw.githubusercontent.com/ollama/ollama/main/docs/images/ollama.png"}},
+      {"type": "text", "text": "Describe this image in one sentence."}
+    ]
+  }]
+}))
+')
+  SCP4D_RESP=$(curl -fsS -X POST "${ROUTER_URL}/v1/messages" \
+    -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+    -H 'Content-Type: application/json' \
+    -H 'anthropic-version: 2023-06-01' \
+    --max-time 120 \
+    -d "${SCP4D_BODY}" 2>/dev/null || true)
+  if [[ -z "${SCP4D_RESP}" ]]; then
+    fail "SC-P4-D: empty vision response (router or model unreachable)"
+  else
+    SCP4D_CHECK=$(SCP4D_RESP="${SCP4D_RESP}" python3 -c '
+import json, os
+try:
+  d = json.loads(os.environ["SCP4D_RESP"])
+  text = d["content"][0]["text"]
+  assert len(text) > 10, f"response too short: {len(text)} chars"
+  print(f"OK text_len={len(text)}")
+except Exception as e:
+  print(f"BAD:{e}")
+')
+    case "${SCP4D_CHECK}" in
+      OK*)   pass "SC-P4-D: vision URL → /api/chat happy path (${SCP4D_CHECK#OK })" ;;
+      BAD:*) fail "SC-P4-D: ${SCP4D_CHECK#BAD:} — raw: ${SCP4D_RESP:0:200}" ;;
+      *)     fail "SC-P4-D: unexpected python output: ${SCP4D_CHECK}" ;;
+    esac
+  fi
+fi
+
+# ── SC-P4-E: vision capability gate (image + non-vision model → 400) ────────
+echo ""
+echo "[smoke-test-router] SC-P4-E: POST /v1/messages vision capability gate ..."
+SCP4E_BODY=$(_SMOKE_MODEL="${MODEL}" python3 -c '
+import json, os
+# A tiny base64-encoded 1x1 transparent PNG.
+PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+print(json.dumps({
+  "model": os.environ.get("_SMOKE_MODEL", ""),
+  "max_tokens": 100,
+  "messages": [{
+    "role": "user",
+    "content": [
+      {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": PNG}},
+      {"type": "text", "text": "?"}
+    ]
+  }]
+}))
+')
+SCP4E_STATUS=$(curl -s -o /tmp/.scp4e-body -w '%{http_code}' -X POST "${ROUTER_URL}/v1/messages" \
+  -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -H 'anthropic-version: 2023-06-01' \
+  -d "${SCP4E_BODY}" 2>/dev/null || true)
+SCP4E_BODY_RESP=$(cat /tmp/.scp4e-body 2>/dev/null || true)
+rm -f /tmp/.scp4e-body
+if [[ "${SCP4E_STATUS}" != "400" ]]; then
+  fail "SC-P4-E: expected 400 (capability gate), got ${SCP4E_STATUS} — body: ${SCP4E_BODY_RESP:0:200}"
+else
+  SCP4E_CHECK=$(SCP4E_BODY_RESP="${SCP4E_BODY_RESP}" python3 -c '
+import json, os
+try:
+  d = json.loads(os.environ["SCP4E_BODY_RESP"])
+  assert d["type"] == "error", f"envelope type: {d.get(\"type\")}"
+  assert d["error"]["type"] == "invalid_request_error", f"error.type: {d[\"error\"].get(\"type\")}"
+  assert "vision" in d["error"]["message"].lower(), f"message missing vision: {d[\"error\"].get(\"message\")}"
+  print("OK")
+except Exception as e:
+  print(f"BAD:{e}")
+')
+  case "${SCP4E_CHECK}" in
+    OK*)   pass "SC-P4-E: vision-on-non-vision-model → 400 + invalid_request_error envelope (VISION-02)" ;;
+    BAD:*) fail "SC-P4-E: ${SCP4E_CHECK#BAD:} — raw: ${SCP4E_BODY_RESP:0:200}" ;;
+    *)     fail "SC-P4-E: unexpected python output: ${SCP4E_CHECK}" ;;
+  esac
+fi
+
+echo ""
+echo "[smoke-test-router] === Phase 4 section complete (SKIPS=${SKIPS}) ==="
+
 # Final summary
 echo ""
 echo "[smoke-test-router] ================================================================"
 if [[ "${FAILURES}" -eq 0 ]]; then
-  echo "[smoke-test-router]  Phase 2 router verification: COMPLETE."
+  echo "[smoke-test-router]  Phase 2/3/4 router verification: COMPLETE."
   echo "[smoke-test-router]  Model used : ${MODEL}"
   echo "[smoke-test-router]  Router URL : ${ROUTER_URL}"
+  echo "[smoke-test-router]  Skipped    : ${SKIPS:-0} (vision sections require llama3.2-vision pull + outbound HTTPS)"
   echo "[smoke-test-router] ================================================================"
   echo ""
   exit 0

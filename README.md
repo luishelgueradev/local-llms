@@ -317,6 +317,172 @@ This script tears down + brings up each profile, calls
 Expect the full Phase 3 section to take ~2 minutes (cold start of llamacpp
 loading 7B weights into VRAM is the slowest step).
 
+## Phase 4 — Anthropic surface + tool calling + vision
+
+Phase 4 lands the second wire protocol — Anthropic Messages API (`/v1/messages`) — alongside tool calling on both surfaces and vision (image-bearing requests on both `/v1/chat/completions` and `/v1/messages`). The router translates ALL requests through a single canonical internal representation, so the two wire surfaces are exact peers (no second hop, no protocol bridging in code paths).
+
+### One-time setup: pull the vision model
+
+```bash
+docker compose exec -T ollama ollama pull llama3.2-vision:11b-instruct-q4_K_M
+```
+
+Confirm the model is loaded:
+
+```bash
+docker compose exec -T ollama ollama list | grep llama3.2-vision
+```
+
+### Anthropic — text, non-stream
+
+```bash
+curl -sS -X POST http://127.0.0.1:3000/v1/messages \
+  -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -H 'anthropic-version: 2023-06-01' \
+  -d '{
+    "model": "llama3.2:3b-instruct-q4_K_M",
+    "max_tokens": 200,
+    "messages": [{"role": "user", "content": "Say hi in one sentence."}]
+  }'
+```
+
+Response is an Anthropic `Message` object: `{id, type:"message", role:"assistant", content:[{type:"text", text:"..."}], usage:{input_tokens, output_tokens}}`. Note: `anthropic-version` is echoed verbatim on the response (sanitized — length-capped to 64 chars, CR/LF stripped).
+
+### Anthropic — text, stream
+
+```bash
+curl -N -sS -X POST http://127.0.0.1:3000/v1/messages \
+  -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -H 'anthropic-version: 2023-06-01' \
+  -d '{
+    "model": "llama3.2:3b-instruct-q4_K_M",
+    "max_tokens": 200,
+    "messages": [{"role": "user", "content": "List 5 fruits."}],
+    "stream": true
+  }'
+```
+
+The stream emits typed events: `message_start → content_block_start → content_block_delta+ → content_block_stop → message_delta → message_stop`. **There is NO `data: [DONE]`** — the Anthropic SSE protocol uses the typed `message_stop` event as terminator. The router also interleaves `event: ping` heartbeats every 15 s. Mid-stream errors emit a single `event: error` frame (no `[DONE]` afterwards).
+
+### Count tokens
+
+```bash
+curl -sS -X POST http://127.0.0.1:3000/v1/messages/count_tokens \
+  -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -H 'anthropic-version: 2023-06-01' \
+  -d '{
+    "model": "llama3.2:3b-instruct-q4_K_M",
+    "messages": [{"role": "user", "content": "Count these tokens please."}]
+  }'
+```
+
+Returns `{input_tokens: N}` and an `X-Token-Count-Method: gpt-tokenizer/cl100k_base` response header so callers can verify which tokenizer fired (Anthropic's official Claude tokenizer is not publicly distributed; we use the cl100k_base BPE as a stable approximation).
+
+### Vision — base64 input
+
+```bash
+BASE64=$(base64 -w0 path/to/image.jpg)
+curl -sS -X POST http://127.0.0.1:3000/v1/messages \
+  -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -H 'anthropic-version: 2023-06-01' \
+  -d "{
+    \"model\": \"llama3.2-vision:11b-instruct-q4_K_M\",
+    \"max_tokens\": 300,
+    \"messages\": [{\"role\": \"user\", \"content\": [
+      {\"type\": \"image\", \"source\": {\"type\": \"base64\", \"media_type\": \"image/jpeg\", \"data\": \"${BASE64}\"}},
+      {\"type\": \"text\", \"text\": \"Describe this image.\"}
+    ]}]
+  }"
+```
+
+### Vision — URL input (Phase 4 / D-C4)
+
+```bash
+curl -sS -X POST http://127.0.0.1:3000/v1/messages \
+  -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -H 'anthropic-version: 2023-06-01' \
+  -d '{
+    "model": "llama3.2-vision:11b-instruct-q4_K_M",
+    "max_tokens": 300,
+    "messages": [{"role": "user", "content": [
+      {"type": "image", "source": {"type": "url", "url": "https://raw.githubusercontent.com/ollama/ollama/main/docs/images/ollama.png"}},
+      {"type": "text", "text": "What is in this image?"}
+    ]}]
+  }'
+```
+
+The router fetches the URL inside the translator, encodes to bare base64, and forwards to Ollama's native `/api/chat` endpoint. The OpenAI-compat shim is bypassed for vision (Pitfall 8 / VISION-03).
+
+### Tool calling — bidirectional (OpenAI and Anthropic shapes)
+
+Both surfaces accept tools and emit tool-call requests; clients can speak whichever wire format they prefer:
+
+```bash
+# OpenAI surface
+curl -sS -X POST http://127.0.0.1:3000/v1/chat/completions \
+  -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "qwen2.5-7b-instruct-q4km",
+    "messages": [{"role": "user", "content": "What is the weather in SF?"}],
+    "tools": [{
+      "type": "function",
+      "function": {
+        "name": "get_weather",
+        "description": "Get current weather",
+        "parameters": {"type": "object", "properties": {"location": {"type": "string"}}, "required": ["location"]}
+      }
+    }]
+  }'
+
+# Anthropic surface (note the simpler `tools` shape — Anthropic does NOT nest under `function`)
+curl -sS -X POST http://127.0.0.1:3000/v1/messages \
+  -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -H 'anthropic-version: 2023-06-01' \
+  -d '{
+    "model": "qwen2.5-7b-instruct-q4km",
+    "max_tokens": 200,
+    "messages": [{"role": "user", "content": "What is the weather in SF?"}],
+    "tools": [{
+      "name": "get_weather",
+      "description": "Get current weather",
+      "input_schema": {"type": "object", "properties": {"location": {"type": "string"}}, "required": ["location"]}
+    }]
+  }'
+```
+
+### Streaming error frame asymmetry
+
+The two wire formats handle mid-stream errors differently:
+
+- **OpenAI** (`/v1/chat/completions`): emits `event: error\ndata: {envelope}\n\n` followed by `data: [DONE]\n\n`. Strict OpenAI clients (which expect `[DONE]` as the terminator) close cleanly.
+- **Anthropic** (`/v1/messages`): emits a SINGLE `event: error\ndata: {envelope}\n\n` frame and the stream ends. **No `[DONE]`** — Anthropic uses the absence of further events as the error terminator.
+
+### Image input — URLs vs base64
+
+Phase 4 accepts BOTH `source.type: 'base64'` AND `source.type: 'url'`. Base64 sources are forwarded directly to the backend (after the `data:image/...;base64,` prefix is stripped). URL sources are FETCHED by the router with five SSRF mitigation layers, **all enforced before any data reaches the backend**:
+
+1. **HTTPS only.** `http://` URLs are rejected with `400 invalid_image_url` (reason: `http_scheme_blocked`).
+
+2. **10 second timeout.** Slow upstreams return `400 image_too_large` or `400 http_error` once `AbortSignal.timeout(10_000)` fires.
+
+3. **10 MB streaming body cap.** Bytes are counted per chunk; on overflow the reader is cancelled and the request fails with `400 image_too_large`.
+
+4. **Private/loopback/link-local address block (deny-CIDR list).** DNS resolution happens BEFORE the fetch; if ANY resolved address falls inside the deny list, the request fails with `400 invalid_image_url` (reason: `private_address_blocked`). The deny list:
+
+   - IPv4: `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `127.0.0.0/8`, `169.254.0.0/16`, `0.0.0.0/8`, `100.64.0.0/10` (CGNAT — defense in depth).
+   - IPv6: `::1/128` (loopback), `fc00::/7` (ULA), `fe80::/10` (link-local), `::/128` (unspecified), `::ffff:0:0/96` (IPv4-mapped — the IPv4 deny list is reapplied to the embedded IPv4 portion).
+
+5. **Content-Type sniff.** The response's `Content-Type` MUST start with `image/`; HTML / text / binary responses fail with `400 image_invalid_content_type`.
+
+The full implementation lives in `router/src/translation/ollama-native-out.ts` (`fetchImageAsBase64`). If you need to allowlist private addresses (e.g., an internal image cache), edit the deny-CIDR helper directly — future work (Phase 9) tracks turning this into a YAML-driven allow list.
+
 ## Anti-patterns rejected by this stack
 
 - `:latest` image tags anywhere — every image pinned to a specific tag.
