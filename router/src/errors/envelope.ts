@@ -32,6 +32,27 @@ export class RegistryUnknownModelError extends Error {
   }
 }
 
+/**
+ * Plan 04-02 D-C2: thrown by the /v1/messages route when the requested model lacks
+ * a declared capability the body needs (e.g. `vision` for an image-containing message,
+ * or `tools` once Plan 04-04 lands tool calling). Maps to 400 + invalid_request_error
+ * on both wire surfaces (OpenAI envelope: code=`model_capability_mismatch`,
+ * Anthropic envelope: type=`invalid_request_error`).
+ */
+export class CapabilityNotSupportedError extends Error {
+  readonly code = 'model_capability_mismatch';
+  constructor(
+    public readonly modelName: string,
+    public readonly missingCapability: 'vision' | 'tools',
+  ) {
+    super(
+      `Model "${modelName}" does not support capability "${missingCapability}". ` +
+        `Pick a model with "${missingCapability}" in its capabilities list.`,
+    );
+    this.name = 'CapabilityNotSupportedError';
+  }
+}
+
 /** D-C3 status mapping — single source of truth. */
 export function mapToHttpStatus(err: unknown): number {
   if (err instanceof BearerAuthError) return 401;
@@ -41,6 +62,8 @@ export function mapToHttpStatus(err: unknown): number {
   if (hasZodFastifySchemaValidationErrors(err)) return 400;
   if (typeof err === 'object' && err !== null && 'statusCode' in err && (err as { statusCode: number }).statusCode === 400) return 400;
   if (err instanceof RegistryUnknownModelError) return 404;
+  // Plan 04-02 D-C2: missing capability for the requested model — pre-adapter 400.
+  if (err instanceof CapabilityNotSupportedError) return 400;
   // BackendSaturatedError (Plan 03-04, ROUTE-07) — backend concurrency cap exceeded.
   if (err instanceof BackendSaturatedError) return 429;
   // APIConnectionTimeoutError extends APIConnectionError — check FIRST for 504, before the 502 below
@@ -84,6 +107,17 @@ export function toOpenAIErrorEnvelope(err: unknown): EnvelopeOrSkip {
   if (err instanceof RegistryUnknownModelError) {
     return { error: { message: err.message, type: 'not_found_error', code: 'model_not_found', param: 'model' } };
   }
+  // Plan 04-02 D-C2: CapabilityNotSupportedError on /v1/chat/completions surface.
+  if (err instanceof CapabilityNotSupportedError) {
+    return {
+      error: {
+        message: err.message,
+        type: 'invalid_request_error',
+        code: 'model_capability_mismatch',
+        param: 'model',
+      },
+    };
+  }
   // BackendSaturatedError (Plan 03-04, ROUTE-07) — backend concurrency cap exceeded; maps to 429 rate_limit_error.
   if (err instanceof BackendSaturatedError) {
     return {
@@ -112,4 +146,78 @@ export function midStreamErrorFrameLines(envelope: OpenAIErrorEnvelope): { event
     { event: 'error', data: JSON.stringify(envelope) },
     { event: '', data: '[DONE]' },
   ];
+}
+
+// ── Anthropic-shape envelope (Plan 04-02 D-C2) ──────────────────────────────────
+//
+// /v1/messages* routes serialize errors as Anthropic's wire envelope. The error
+// `type` taxonomy is: invalid_request_error | authentication_error | permission_error
+// | not_found_error | rate_limit_error | api_error | overloaded_error.
+//
+// app.ts centralized error handler routes to toAnthropicErrorEnvelope iff
+// req.url.startsWith('/v1/messages'); otherwise it uses toOpenAIErrorEnvelope.
+
+export type AnthropicErrorEnvelope = {
+  type: 'error';
+  error: { type: string; message: string };
+};
+
+/** Sentinel: client gone (APIUserAbortError) — Anthropic surface must not write a body. */
+export const ANTHROPIC_NO_ENVELOPE = Symbol('ANTHROPIC_NO_ENVELOPE');
+export type AnthropicEnvelopeOrSkip =
+  | AnthropicErrorEnvelope
+  | typeof ANTHROPIC_NO_ENVELOPE;
+
+/**
+ * Anthropic-surface error envelope. Mirrors `toOpenAIErrorEnvelope` semantics but
+ * emits Anthropic's wire-shape with the Anthropic error-type taxonomy:
+ *   - BearerAuthError              → authentication_error
+ *   - z.ZodError / Fastify zod val → invalid_request_error
+ *   - RegistryUnknownModelError    → not_found_error
+ *   - CapabilityNotSupportedError  → invalid_request_error
+ *   - BackendSaturatedError        → rate_limit_error
+ *   - APIConnectionTimeoutError    → api_error (Anthropic has no "timeout" type)
+ *   - APIConnectionError           → api_error
+ *   - APIUserAbortError            → ANTHROPIC_NO_ENVELOPE (client gone)
+ *   - default                      → api_error
+ */
+export function toAnthropicErrorEnvelope(err: unknown): AnthropicEnvelopeOrSkip {
+  if (err instanceof APIUserAbortError) return ANTHROPIC_NO_ENVELOPE;
+
+  if (err instanceof BearerAuthError) {
+    return { type: 'error', error: { type: 'authentication_error', message: err.message } };
+  }
+  if (err instanceof z.ZodError) {
+    const message =
+      err.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ') || 'invalid request';
+    return { type: 'error', error: { type: 'invalid_request_error', message } };
+  }
+  if (hasZodFastifySchemaValidationErrors(err)) {
+    const message =
+      err.validation.map((v) => `${v.instancePath}: ${v.message}`).join('; ') || 'invalid request body';
+    return { type: 'error', error: { type: 'invalid_request_error', message } };
+  }
+  if (err instanceof RegistryUnknownModelError) {
+    return { type: 'error', error: { type: 'not_found_error', message: err.message } };
+  }
+  if (err instanceof CapabilityNotSupportedError) {
+    return { type: 'error', error: { type: 'invalid_request_error', message: err.message } };
+  }
+  if (err instanceof BackendSaturatedError) {
+    return { type: 'error', error: { type: 'rate_limit_error', message: err.message } };
+  }
+  // APIConnectionTimeoutError extends APIConnectionError — order matters only on
+  // mapToHttpStatus (different HTTP codes); the Anthropic taxonomy collapses both
+  // into `api_error` (Anthropic has no `timeout_error` enum value).
+  if (err instanceof APIConnectionTimeoutError) {
+    return { type: 'error', error: { type: 'api_error', message: err.message || 'upstream timeout' } };
+  }
+  if (err instanceof APIConnectionError) {
+    return {
+      type: 'error',
+      error: { type: 'api_error', message: err.message || 'upstream connection error' },
+    };
+  }
+  const msg = err instanceof Error ? err.message : 'internal error';
+  return { type: 'error', error: { type: 'api_error', message: msg } };
 }

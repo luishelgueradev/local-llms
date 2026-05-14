@@ -5,9 +5,12 @@ import {
   BearerAuthError,
   RegistryUnknownModelError,
   BackendSaturatedError,
+  CapabilityNotSupportedError,
   NO_ENVELOPE,
+  ANTHROPIC_NO_ENVELOPE,
   mapToHttpStatus,
   toOpenAIErrorEnvelope,
+  toAnthropicErrorEnvelope,
   midStreamErrorFrameLines,
 } from '../../src/errors/envelope.js';
 
@@ -117,5 +120,94 @@ describe('toOpenAIErrorEnvelope (D-C1, D-C3)', () => {
 
   it('regression: RegistryUnknownModelError still maps to 404', () => {
     expect(mapToHttpStatus(new RegistryUnknownModelError('foo', []))).toBe(404);
+  });
+
+  // Plan 04-02 additions: CapabilityNotSupportedError + Anthropic envelope mapping.
+  it('CapabilityNotSupportedError -> 400 / invalid_request_error / model_capability_mismatch (Plan 04-02 D-C2)', () => {
+    const err = new CapabilityNotSupportedError('llama3.2:3b-instruct-q4_K_M', 'vision');
+    expect(mapToHttpStatus(err)).toBe(400);
+    const env = toOpenAIErrorEnvelope(err);
+    expect(env).not.toBe(NO_ENVELOPE);
+    if (env === NO_ENVELOPE) return;
+    expect(env.error.type).toBe('invalid_request_error');
+    expect(env.error.code).toBe('model_capability_mismatch');
+    expect(env.error.param).toBe('model');
+    expect(env.error.message).toContain('llama3.2:3b-instruct-q4_K_M');
+    expect(env.error.message).toContain('vision');
+  });
+});
+
+describe('toAnthropicErrorEnvelope (Plan 04-02 D-C2)', () => {
+  it('CapabilityNotSupportedError -> invalid_request_error envelope', () => {
+    const err = new CapabilityNotSupportedError('llama3.2:3b-instruct-q4_K_M', 'vision');
+    const env = toAnthropicErrorEnvelope(err);
+    expect(env).not.toBe(ANTHROPIC_NO_ENVELOPE);
+    if (env === ANTHROPIC_NO_ENVELOPE) return;
+    expect(env.type).toBe('error');
+    expect(env.error.type).toBe('invalid_request_error');
+    expect(env.error.message).toContain('vision');
+  });
+
+  it('BearerAuthError -> authentication_error envelope', () => {
+    const env = toAnthropicErrorEnvelope(new BearerAuthError('nope'));
+    expect(env).not.toBe(ANTHROPIC_NO_ENVELOPE);
+    if (env === ANTHROPIC_NO_ENVELOPE) return;
+    expect(env.type).toBe('error');
+    expect(env.error.type).toBe('authentication_error');
+    expect(env.error.message).toBe('nope');
+  });
+
+  it('RegistryUnknownModelError -> not_found_error envelope', () => {
+    const err = new RegistryUnknownModelError('foo:1b', ['bar']);
+    const env = toAnthropicErrorEnvelope(err);
+    expect(env).not.toBe(ANTHROPIC_NO_ENVELOPE);
+    if (env === ANTHROPIC_NO_ENVELOPE) return;
+    expect(env.error.type).toBe('not_found_error');
+    expect(env.error.message).toContain('foo:1b');
+  });
+
+  it('ZodError -> invalid_request_error envelope', () => {
+    const r = z.object({ x: z.string() }).safeParse({ x: 1 });
+    if (r.success) throw new Error('expected zod failure');
+    const env = toAnthropicErrorEnvelope(r.error);
+    expect(env).not.toBe(ANTHROPIC_NO_ENVELOPE);
+    if (env === ANTHROPIC_NO_ENVELOPE) return;
+    expect(env.error.type).toBe('invalid_request_error');
+  });
+
+  it('BackendSaturatedError -> rate_limit_error envelope', () => {
+    const env = toAnthropicErrorEnvelope(new BackendSaturatedError('ollama', 1500));
+    expect(env).not.toBe(ANTHROPIC_NO_ENVELOPE);
+    if (env === ANTHROPIC_NO_ENVELOPE) return;
+    expect(env.error.type).toBe('rate_limit_error');
+  });
+
+  it('APIConnectionError -> api_error envelope', () => {
+    const err = new APIConnectionError({ message: 'connect refused', cause: new Error() });
+    const env = toAnthropicErrorEnvelope(err);
+    expect(env).not.toBe(ANTHROPIC_NO_ENVELOPE);
+    if (env === ANTHROPIC_NO_ENVELOPE) return;
+    expect(env.error.type).toBe('api_error');
+  });
+
+  it('APIConnectionTimeoutError -> api_error envelope (mapped to api_error per Anthropic taxonomy)', () => {
+    const err = new APIConnectionTimeoutError({ message: 'timed out' });
+    const env = toAnthropicErrorEnvelope(err);
+    expect(env).not.toBe(ANTHROPIC_NO_ENVELOPE);
+    if (env === ANTHROPIC_NO_ENVELOPE) return;
+    expect(env.error.type).toBe('api_error');
+  });
+
+  it('APIUserAbortError -> ANTHROPIC_NO_ENVELOPE sentinel', () => {
+    const err = new APIUserAbortError({ message: 'aborted' });
+    expect(toAnthropicErrorEnvelope(err)).toBe(ANTHROPIC_NO_ENVELOPE);
+  });
+
+  it('unknown error -> api_error envelope', () => {
+    const env = toAnthropicErrorEnvelope(new Error('boom'));
+    expect(env).not.toBe(ANTHROPIC_NO_ENVELOPE);
+    if (env === ANTHROPIC_NO_ENVELOPE) return;
+    expect(env.error.type).toBe('api_error');
+    expect(env.error.message).toBe('boom');
   });
 });

@@ -1,9 +1,10 @@
 /**
- * anthropic-in.test.ts — Unit tests for the Anthropic → canonical translator (Plan 04-01).
+ * anthropic-in.test.ts — Unit tests for the Anthropic → canonical translator.
  *
- * Plan 02 (ANTHR-03, ANTHR-04, ANTHR-05) expands with strict role-alternation refinement
- * + tool_result-before-text ordering. Plan 04 (TOOL-01..04) extends with tool_use /
- * tool_result block round-trips.
+ * Plan 04-01 shipped the text-only happy path. Plan 04-02 (ANTHR-03 / ANTHR-04)
+ * adds strict role-alternation refinement + tool_result-before-text ordering,
+ * top-level system handling, and role:'system' rejection in messages[].
+ * Plan 04-04 (TOOL-01..04) extends with tool_use / tool_result block round-trips.
  */
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod/v4';
@@ -53,5 +54,144 @@ describe('anthropicRequestToCanonical — text-only (Plan 04-01 Task 2)', () => 
     expect(() =>
       anthropicRequestToCanonical({ model: 'x', messages: [] }),
     ).toThrow(z.ZodError);
+  });
+});
+
+describe('anthropicRequestToCanonical — role-alternation refinement (Plan 04-02, ANTHR-04, RESEARCH FINDING 1.5)', () => {
+  it('accepts the canonical [user, assistant, user] sequence', () => {
+    const canonical = anthropicRequestToCanonical({
+      model: 'x',
+      max_tokens: 100,
+      messages: [
+        { role: 'user', content: 'a' },
+        { role: 'assistant', content: 'b' },
+        { role: 'user', content: 'c' },
+      ],
+    });
+    expect(canonical.messages).toHaveLength(3);
+  });
+
+  it('rejects [user, user] with ZodError mentioning alternate', () => {
+    try {
+      anthropicRequestToCanonical({
+        model: 'x',
+        max_tokens: 100,
+        messages: [
+          { role: 'user', content: 'a' },
+          { role: 'user', content: 'b' },
+        ],
+      });
+      throw new Error('expected throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(z.ZodError);
+      const msg = (err as z.ZodError).issues.map((i) => i.message).join(' ');
+      expect(msg).toMatch(/alternate/i);
+    }
+  });
+
+  it('rejects [assistant, user] (first message must be user)', () => {
+    try {
+      anthropicRequestToCanonical({
+        model: 'x',
+        max_tokens: 100,
+        messages: [
+          { role: 'assistant', content: 'a' },
+          { role: 'user', content: 'b' },
+        ],
+      });
+      throw new Error('expected throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(z.ZodError);
+      const msg = (err as z.ZodError).issues.map((i) => i.message).join(' ');
+      expect(msg).toMatch(/alternate|first message/i);
+    }
+  });
+
+  it("rejects role:'system' inside messages[] (system is top-level only — FINDING 1.4)", () => {
+    expect(() =>
+      anthropicRequestToCanonical({
+        model: 'x',
+        max_tokens: 100,
+        messages: [
+          { role: 'user', content: 'a' },
+          { role: 'system', content: 'b' },
+          { role: 'user', content: 'c' },
+        ],
+      }),
+    ).toThrow(z.ZodError);
+  });
+});
+
+describe('anthropicRequestToCanonical — tool_result ordering (Plan 04-02, RESEARCH FINDING 1.5 Pitfall 2)', () => {
+  it('accepts user content with tool_result BEFORE text', () => {
+    const canonical = anthropicRequestToCanonical({
+      model: 'x',
+      max_tokens: 100,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'tool_result', tool_use_id: 'toolu_xyz', content: 'ok' },
+            { type: 'text', text: 'follow-up' },
+          ],
+        },
+      ],
+    });
+    expect(canonical.messages[0].content).toHaveLength(2);
+    expect(canonical.messages[0].content[0]?.type).toBe('tool_result');
+    expect(canonical.messages[0].content[1]?.type).toBe('text');
+  });
+
+  it('rejects user content with tool_result AFTER text', () => {
+    try {
+      anthropicRequestToCanonical({
+        model: 'x',
+        max_tokens: 100,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'context' },
+              { type: 'tool_result', tool_use_id: 'toolu_xyz', content: 'result' },
+            ],
+          },
+        ],
+      });
+      throw new Error('expected throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(z.ZodError);
+      const msg = (err as z.ZodError).issues.map((i) => i.message).join(' ');
+      expect(msg).toMatch(/tool_result/);
+    }
+  });
+
+  it('allows multiple tool_result blocks before text', () => {
+    const canonical = anthropicRequestToCanonical({
+      model: 'x',
+      max_tokens: 100,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'tool_result', tool_use_id: 'toolu_a', content: 'a' },
+            { type: 'tool_result', tool_use_id: 'toolu_b', content: 'b' },
+            { type: 'text', text: 'go on' },
+          ],
+        },
+      ],
+    });
+    expect(canonical.messages[0].content).toHaveLength(3);
+  });
+});
+
+describe('anthropicRequestToCanonical — passthrough of unknown fields', () => {
+  it('does not reject when body has unknown top-level fields (.passthrough)', () => {
+    const canonical = anthropicRequestToCanonical({
+      model: 'x',
+      max_tokens: 100,
+      messages: [{ role: 'user', content: 'hi' }],
+      metadata: { user_id: 'abc' }, // Anthropic field NOT mapped in Phase 4
+    });
+    expect(canonical.messages).toHaveLength(1);
   });
 });
