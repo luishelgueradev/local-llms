@@ -131,7 +131,9 @@ export class OllamaOpenAIAdapter implements BackendAdapter {
     canonical: CanonicalRequest,
     signal: AbortSignal,
   ): Promise<CanonicalResponse> {
-    const nativeReq = await canonicalToOllamaNativeChat({ ...canonical, stream: false });
+    // WR-02: forward the route's signal so image-URL fetches inside the translator
+    // are aborted on client-disconnect (not just by the 10 s per-image timeout).
+    const nativeReq = await canonicalToOllamaNativeChat({ ...canonical, stream: false }, { signal });
     const res = await fetch(`${this.nativeBase}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -171,7 +173,8 @@ export class OllamaOpenAIAdapter implements BackendAdapter {
     signal: AbortSignal,
     opts?: { inputTokensHint?: number },
   ): Promise<AsyncIterable<CanonicalStreamEvent>> {
-    const nativeReq = await canonicalToOllamaNativeChat({ ...canonical, stream: true });
+    // WR-02: forward the route's signal (same plumbing as nativeChatCompletions).
+    const nativeReq = await canonicalToOllamaNativeChat({ ...canonical, stream: true }, { signal });
     const res = await fetch(`${this.nativeBase}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

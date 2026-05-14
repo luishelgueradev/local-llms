@@ -289,7 +289,7 @@ function isDenied(address: string, family: number): boolean {
 
 export async function fetchImageAsBase64(
   url: string,
-  opts: { timeoutMs?: number; maxBytesMB?: number } = {},
+  opts: { timeoutMs?: number; maxBytesMB?: number; signal?: AbortSignal } = {},
 ): Promise<string> {
   const timeoutMs = opts.timeoutMs ?? 10_000;
   const maxBytesMB = opts.maxBytesMB ?? 10;
@@ -383,8 +383,16 @@ export async function fetchImageAsBase64(
     // Dispatcher generic shape (Node 22 bundles undici-types via @types/node), so
     // we type-cast through `unknown` to bypass the spurious narrow mismatch. At
     // runtime Node's global fetch accepts the dispatcher field directly.
+    //
+    // WR-02: combine the per-request timeout with the route's signal (if provided)
+    // so client disconnects abort the image fetch immediately. Without this, a
+    // pathological client opening many requests with slow image origins would pin
+    // worker resources for up to 10 s per fetch even after disconnect.
+    const fetchSignal = opts.signal
+      ? AbortSignal.any([opts.signal, AbortSignal.timeout(timeoutMs)])
+      : AbortSignal.timeout(timeoutMs);
     const init = {
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: fetchSignal,
       redirect: 'manual' as const,
       ...(dispatcher !== undefined ? { dispatcher } : {}),
     };
@@ -465,6 +473,7 @@ function concatText(blocks: readonly ContentBlock[]): string {
 
 export async function canonicalToOllamaNativeChat(
   canonical: CanonicalRequest,
+  opts: { signal?: AbortSignal } = {},
 ): Promise<OllamaNativeChatRequest> {
   const messages: OllamaNativeChatMessage[] = [];
 
@@ -482,8 +491,10 @@ export async function canonicalToOllamaNativeChat(
         if (block.source.type === 'base64') {
           images.push(stripDataUrlPrefix(block.source.data));
         } else {
-          // URL — fetch with full guard chain.
-          const bare = await fetchImageAsBase64(block.source.url);
+          // URL — fetch with full guard chain. WR-02: forward opts.signal so a
+          // mid-request client disconnect aborts the outbound image fetch
+          // (instead of holding open up to 10 s per pending image).
+          const bare = await fetchImageAsBase64(block.source.url, { signal: opts.signal });
           images.push(bare);
         }
       } else if (block.type === 'tool_result') {
