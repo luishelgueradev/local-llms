@@ -6,6 +6,7 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../../src/app.js';
+import { makeFakeBufferedWriter } from '../fakes.js';
 import { loadRegistryFromString, makeRegistryStore } from '../../src/config/registry.js';
 import type { LivenessScheduler } from '../../src/backends/liveness.js';
 
@@ -62,6 +63,7 @@ describe('liveness scheduler shutdown (D-D7)', () => {
       bearerToken: TOKEN,
       loggerOpts: false as never,
       livenessFactory: () => fakeSched,
+      bufferedWriter: makeFakeBufferedWriter(),
     });
 
     expect(stopCalled).toBe(false);
@@ -78,6 +80,7 @@ describe('liveness scheduler shutdown (D-D7)', () => {
       registry,
       bearerToken: TOKEN,
       loggerOpts: false as never,
+      bufferedWriter: makeFakeBufferedWriter(),
     });
 
     // TypeScript sees liveness via module augmentation
@@ -106,6 +109,7 @@ describe('liveness scheduler shutdown (D-D7)', () => {
       bearerToken: TOKEN,
       loggerOpts: false as never,
       livenessFactory: () => fakeSched,
+      bufferedWriter: makeFakeBufferedWriter(),
     });
 
     // Manually call stop before app.close (simulates another code path calling stop early)

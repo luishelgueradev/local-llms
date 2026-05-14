@@ -8,6 +8,7 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../../src/app.js';
+import { makeFakeBufferedWriter } from '../fakes.js';
 import { loadRegistryFromString, makeRegistryStore } from '../../src/config/registry.js';
 import type { LivenessScheduler, ProbeResult } from '../../src/backends/liveness.js';
 
@@ -84,6 +85,7 @@ describe('GET /readyz — D-D4 shape, strict-all aggregation (ROUTE-06)', () => 
       bearerToken: TOKEN,
       loggerOpts: false as never,
       livenessFactory: () => fakeSched,
+      bufferedWriter: makeFakeBufferedWriter(),
     });
 
     const res = await app.inject({ method: 'GET', url: '/readyz' });
@@ -109,6 +111,7 @@ describe('GET /readyz — D-D4 shape, strict-all aggregation (ROUTE-06)', () => 
       bearerToken: TOKEN,
       loggerOpts: false as never,
       livenessFactory: () => makeFakeScheduler(results),
+      bufferedWriter: makeFakeBufferedWriter(),
     });
 
     const res = await app.inject({ method: 'GET', url: '/readyz' });
@@ -135,6 +138,7 @@ describe('GET /readyz — D-D4 shape, strict-all aggregation (ROUTE-06)', () => 
       bearerToken: TOKEN,
       loggerOpts: false as never,
       livenessFactory: () => makeFakeScheduler(results),
+      bufferedWriter: makeFakeBufferedWriter(),
     });
 
     const res = await app.inject({ method: 'GET', url: '/readyz' });
@@ -157,6 +161,7 @@ describe('GET /readyz — D-D4 shape, strict-all aggregation (ROUTE-06)', () => 
       bearerToken: TOKEN,
       loggerOpts: false as never,
       livenessFactory: () => makeFakeScheduler(results),
+      bufferedWriter: makeFakeBufferedWriter(),
     });
 
     const res = await app.inject({ method: 'GET', url: '/readyz' });
@@ -188,6 +193,7 @@ describe('GET /readyz — D-D4 shape, strict-all aggregation (ROUTE-06)', () => 
       bearerToken: TOKEN,
       loggerOpts: false as never,
       livenessFactory: () => makeFakeScheduler(results),
+      bufferedWriter: makeFakeBufferedWriter(),
     });
 
     const res = await app.inject({ method: 'GET', url: '/readyz' });
@@ -206,6 +212,7 @@ describe('GET /readyz — D-D4 shape, strict-all aggregation (ROUTE-06)', () => 
       bearerToken: TOKEN,
       loggerOpts: false as never,
       livenessFactory: () => fakeSched,
+      bufferedWriter: makeFakeBufferedWriter(),
     });
 
     const res = await app.inject({ method: 'GET', url: '/readyz' }); // no auth header
@@ -224,6 +231,7 @@ describe('GET /readyz — D-D4 shape, strict-all aggregation (ROUTE-06)', () => 
       bearerToken: TOKEN,
       loggerOpts: false as never,
       livenessFactory: () => fakeSched,
+      bufferedWriter: makeFakeBufferedWriter(),
     });
 
     const res = await app.inject({
@@ -247,6 +255,7 @@ describe('GET /readyz — D-D4 shape, strict-all aggregation (ROUTE-06)', () => 
       bearerToken: TOKEN,
       loggerOpts: false as never,
       livenessFactory: () => fakeSched,
+      bufferedWriter: makeFakeBufferedWriter(),
     });
 
     const res = await app.inject({ method: 'GET', url: '/readyz' });
@@ -268,6 +277,7 @@ describe('GET /readyz — D-D4 shape, strict-all aggregation (ROUTE-06)', () => 
       bearerToken: TOKEN,
       loggerOpts: false as never,
       livenessFactory: () => fakeSched,
+      bufferedWriter: makeFakeBufferedWriter(),
     });
 
     const res = await app.inject({ method: 'GET', url: '/readyz' });

@@ -1,6 +1,7 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../../src/app.js';
+import { makeFakeBufferedWriter } from '../fakes.js';
 import { loadRegistryFromString, makeRegistryStore } from '../../src/config/registry.js';
 import { OllamaOpenAIAdapter } from '../../src/backends/ollama-openai.js';
 import type { ModelEntry } from '../../src/config/registry.js';
@@ -52,6 +53,7 @@ function makeApp(yaml: string): Promise<FastifyInstance> {
     loggerOpts: false as never,
     // makeAdapter is required by buildApp for chat-completions but not used by /v1/models
     makeAdapter: (entry: ModelEntry) => new OllamaOpenAIAdapter(entry.backend_url),
+    bufferedWriter: makeFakeBufferedWriter(),
   });
 }
 
@@ -154,6 +156,7 @@ describe('GET /v1/models — D-C1 shape, auth, no-leak, liveness-decoupled, D-C3
       bearerToken: TOKEN,
       loggerOpts: false as never,
       makeAdapter: (entry: ModelEntry) => new OllamaOpenAIAdapter(entry.backend_url),
+      bufferedWriter: makeFakeBufferedWriter(),
     });
 
     try {
@@ -215,6 +218,7 @@ describe('GET /v1/models — D-C1 shape, auth, no-leak, liveness-decoupled, D-C3
       bearerToken: TOKEN,
       loggerOpts: false as never,
       makeAdapter: (entry: ModelEntry) => new OllamaOpenAIAdapter(entry.backend_url),
+      bufferedWriter: makeFakeBufferedWriter(),
     });
 
     try {

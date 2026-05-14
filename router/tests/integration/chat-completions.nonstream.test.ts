@@ -9,6 +9,7 @@ import {
   imageFetchHandler,
 } from '../msw/handlers.js';
 import { buildApp } from '../../src/app.js';
+import { makeFakeBufferedWriter } from '../fakes.js';
 import { loadRegistryFromString, makeRegistryStore } from '../../src/config/registry.js';
 import { OllamaOpenAIAdapter } from '../../src/backends/ollama-openai.js';
 import type { ModelEntry } from '../../src/config/registry.js';
@@ -45,6 +46,7 @@ beforeEach(async () => {
     semaphores: {
       get: () => ({ acquire: async () => () => {}, stats: () => ({ inFlight: 0, queued: 0 }) }) as never,
     },
+    bufferedWriter: makeFakeBufferedWriter(),
   });
 });
 afterEach(async () => {
@@ -157,6 +159,7 @@ describe('POST /v1/chat/completions — Plan 04-05 vision capability gate + URL 
         get: () =>
           ({ acquire: async () => () => {}, stats: () => ({ inFlight: 0, queued: 0 }) }) as never,
       },
+      bufferedWriter: makeFakeBufferedWriter(),
     });
   });
   afterEach(async () => {

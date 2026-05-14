@@ -6,6 +6,7 @@ import type { FastifyInstance } from 'fastify';
 import { server } from '../setup.js';
 import { ollamaNonStreamHandler } from '../msw/handlers.js';
 import { buildApp } from '../../src/app.js';
+import { makeFakeBufferedWriter } from '../fakes.js';
 import {
   loadRegistryFromFile,
   makeRegistryStore,
@@ -42,6 +43,7 @@ beforeEach(async () => {
     bearerToken: TOKEN,
     loggerOpts: false as never,
     makeAdapter: (entry: ModelEntry) => new OllamaOpenAIAdapter(entry.backend_url),
+    bufferedWriter: makeFakeBufferedWriter(),
   });
   watcher = watchRegistry(path, registry, { debounceMs: 100 });
 });

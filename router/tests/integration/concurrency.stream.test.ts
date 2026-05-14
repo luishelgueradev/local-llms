@@ -14,6 +14,7 @@ import type { FastifyInstance } from 'fastify';
 import { server } from '../setup.js';
 import { ollamaStreamHandler } from '../msw/handlers.js';
 import { buildApp } from '../../src/app.js';
+import { makeFakeBufferedWriter } from '../fakes.js';
 import { loadRegistryFromString, makeRegistryStore } from '../../src/config/registry.js';
 import { BackendSemaphore } from '../../src/concurrency/semaphore.js';
 import { makeAdapter } from '../../src/backends/factory.js';
@@ -49,6 +50,7 @@ async function buildStreamTestApp(opts: {
     },
     // Suppress real liveness probe HTTP calls
     livenessFactory: () => makeFakeLiveness(),
+    bufferedWriter: makeFakeBufferedWriter(),
   });
   return app;
 }
