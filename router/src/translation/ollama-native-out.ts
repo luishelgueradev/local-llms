@@ -324,13 +324,29 @@ export async function fetchImageAsBase64(
     }
   }
 
-  // Step 3: fetch with timeout.
+  // Step 3: fetch with timeout. CR-01: `redirect: 'manual'` disables undici's
+  // built-in redirect follower so the SSRF guard chain (HTTPS-only + DNS deny +
+  // content-type + size cap) does not get bypassed by a 3xx Location header
+  // pointing at an internal endpoint or non-https scheme. Any 3xx response is
+  // treated as a hard error — supporting redirects safely would require manually
+  // re-running the full guard chain on each hop, which is intentionally not
+  // implemented (defense-in-depth: simplest correct behavior).
   let res: Response;
   try {
-    res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+    res = await fetch(url, {
+      signal: AbortSignal.timeout(timeoutMs),
+      redirect: 'manual',
+    });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     throw new ImageFetchError(url, 'http_error', `fetch failed: ${msg}`);
+  }
+  if (res.status >= 300 && res.status < 400) {
+    // With `redirect: 'manual'` we receive the redirect response itself rather
+    // than following it. Reject before any further processing so an attacker
+    // cannot redirect to internal addresses or non-https schemes.
+    const loc = res.headers.get('location') ?? '(unknown)';
+    throw new ImageFetchError(url, 'http_error', `redirect to ${loc} blocked`);
   }
   if (!res.ok) {
     throw new ImageFetchError(url, 'http_error', `status ${res.status}`);

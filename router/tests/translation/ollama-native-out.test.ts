@@ -327,6 +327,34 @@ describe('fetchImageAsBase64 — URL guard chain (D-C4 SSRF mitigation)', () => 
     }
   });
 
+  // CR-01 regression: even though the initial DNS lookup resolves to a public IP
+  // and the scheme is https, a 3xx response must NOT be followed — the redirect
+  // target could be an internal endpoint or a non-https scheme that bypasses the
+  // SSRF guard chain. After the fix, fetchImageAsBase64 sets `redirect:'manual'`
+  // and rejects any 3xx status as ImageFetchError.
+  it('URL source — 3xx redirect response rejected with ImageFetchError', async () => {
+    const url = 'https://attacker.example/redir.png';
+    server.use(
+      http.get(url, () =>
+        new HttpResponse(null, {
+          status: 302,
+          headers: { Location: 'http://127.0.0.1:11434/api/tags' },
+        }),
+      ),
+    );
+    vi.spyOn(dns.promises, 'lookup').mockResolvedValueOnce([
+      { address: '93.184.216.34', family: 4 },
+    ] as never);
+    try {
+      await fetchImageAsBase64(url);
+      throw new Error('expected to throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(ImageFetchError);
+      expect((err as ImageFetchError).code).toBe('http_error');
+      expect((err as ImageFetchError).message).toContain('redirect');
+    }
+  });
+
   it('URL source — oversized body rejected with ImageFetchError code:image_too_large (low-cap variant)', async () => {
     // Strategy: use a low cap (maxBytesMB) and a body just over the cap. We call
     // fetchImageAsBase64 directly with a custom maxBytesMB to exercise the streaming
