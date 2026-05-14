@@ -1,18 +1,54 @@
+import pino, { type LoggerOptions } from 'pino';
 import { loadEnv } from './config/env.js';
 import { loadRegistryFromFile, makeRegistryStore, watchRegistry } from './config/registry.js';
 import { buildApp } from './app.js';
 import { makeLoggerOptions } from './log/logger.js';
+import { makeDb, makePool } from './db/index.js';
+import { runMigrations } from './db/migrate.js';
+import { makeBufferedWriter } from './db/bufferedWriter.js';
 
 async function main(): Promise<void> {
   const env = loadEnv();
   const loggerOpts = makeLoggerOptions({ level: env.LOG_LEVEL, isDev: env.NODE_ENV !== 'production' });
+
+  // Phase 5 boot wiring (D-B2 + D-B5 + D-A4): pool → migrate → bufferedWriter
+  // BEFORE buildApp so the writer (a required BuildAppOpts field) is ready.
+  //
+  // The makeBufferedWriter logger param needs a pino instance, but app.log
+  // doesn't exist until after buildApp returns. Resolution per the plan:
+  // construct a standalone pino instance from the same loggerOpts so the
+  // bootLog and app.log share level + redact config. (Fastify v5 takes the
+  // same options shape internally and produces a logger whose root has
+  // identical configuration.)
+  const bootLog = pino(loggerOpts as LoggerOptions);
+
+  const pool = makePool(env.ROUTER_DATABASE_URL);
+  const db = makeDb(pool);
+  await runMigrations(db, bootLog);
+
+  // STUB droppedCounter — Plan 05-02 replaces this with the real
+  // metrics.logBufferDroppedTotal Counter (D-C3 — increments on D-A1
+  // overflow drops). The stub is correct for Plan 05-01 because routes
+  // don't push rows yet (Plan 05-02 lands recordOutcome + the route call
+  // sites that produce rows).
+  const droppedCounterStub = { inc: () => {} }; // TODO 05-02: replace with metrics.logBufferDroppedTotal
+  const bufferedWriter = makeBufferedWriter({
+    db,
+    droppedCounter: droppedCounterStub,
+    logger: bootLog,
+  });
 
   // Fail-fast on bad models.yaml (D-C3 startup half — hot-reload's keep-previous semantics
   // land in plan 02-05's watcher).
   const initialRegistry = loadRegistryFromFile(env.MODELS_YAML_PATH);
   const registry = makeRegistryStore(initialRegistry);
 
-  const app = await buildApp({ registry, bearerToken: env.ROUTER_BEARER_TOKEN, loggerOpts });
+  const app = await buildApp({
+    registry,
+    bearerToken: env.ROUTER_BEARER_TOKEN,
+    loggerOpts,
+    bufferedWriter,
+  });
 
   // RESEARCH A4 / Pitfall 7 — operator opts into polling fallback for WSL2 + Docker
   // Desktop bind-mount flakiness via env. Default false (event-based fs.watch).
@@ -41,6 +77,10 @@ async function main(): Promise<void> {
     try {
       watcher.stop();
       await app.close();
+      // Belt-and-suspenders (Phase 5): release the pg pool's sockets after
+      // app.close() so the process exits cleanly even on networks where
+      // idleTimeoutMillis hasn't elapsed yet.
+      await pool.end();
       process.exit(0);
     } catch (err) {
       app.log.error({ err }, 'error during shutdown');

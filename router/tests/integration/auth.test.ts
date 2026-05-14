@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../../src/app.js';
+import { makeFakeBufferedWriter } from '../fakes.js';
 import { loadRegistryFromString, makeRegistryStore } from '../../src/config/registry.js';
 
 const TOKEN = 'local-llms_t1t2t3t4t5t6t7t8t9t0aabbccddeeff';
@@ -25,7 +26,7 @@ beforeEach(async () => {
   tmpDir = mkdtempSync(join(tmpdir(), 'router-auth-it-'));
   writeFileSync(join(tmpDir, 'models.yaml'), YAML);
   const registry = makeRegistryStore(loadRegistryFromString(YAML));
-  app = await buildApp({ registry, bearerToken: TOKEN, loggerOpts: false as never });
+  app = await buildApp({ registry, bearerToken: TOKEN, loggerOpts: false as never, bufferedWriter: makeFakeBufferedWriter() });
 });
 afterEach(async () => {
   await app.close();

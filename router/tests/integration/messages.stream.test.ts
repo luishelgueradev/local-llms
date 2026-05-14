@@ -23,6 +23,7 @@ import {
   imageFetchHandler,
 } from '../msw/handlers.js';
 import { buildApp } from '../../src/app.js';
+import { makeFakeBufferedWriter } from '../fakes.js';
 import { loadRegistryFromString, makeRegistryStore } from '../../src/config/registry.js';
 import { OllamaOpenAIAdapter } from '../../src/backends/ollama-openai.js';
 import type { ModelEntry } from '../../src/config/registry.js';
@@ -64,6 +65,7 @@ beforeEach(async () => {
       get: () =>
         ({ acquire: async () => () => {}, stats: () => ({ inFlight: 0, queued: 0 }) }) as never,
     },
+    bufferedWriter: makeFakeBufferedWriter(),
   });
 });
 afterEach(async () => {
@@ -395,6 +397,7 @@ describe('POST /v1/messages stream=true — abort propagation (Pitfall 8 + SC3 m
         get: () =>
           ({ acquire: async () => () => {}, stats: () => ({ inFlight: 0, queued: 0 }) }) as never,
       },
+      bufferedWriter: makeFakeBufferedWriter(),
     });
 
     const injectPromise = abortApp.inject({
@@ -474,6 +477,7 @@ describe('POST /v1/messages stream=true — adapter receives inputTokensHint (Is
         get: () =>
           ({ acquire: async () => () => {}, stats: () => ({ inFlight: 0, queued: 0 }) }) as never,
       },
+      bufferedWriter: makeFakeBufferedWriter(),
     });
 
     const res = await hintApp.inject({
@@ -541,6 +545,7 @@ describe('POST /v1/messages stream=true — Plan 04-05 vision (VISION-03)', () =
         get: () =>
           ({ acquire: async () => () => {}, stats: () => ({ inFlight: 0, queued: 0 }) }) as never,
       },
+      bufferedWriter: makeFakeBufferedWriter(),
     });
   });
   afterEach(async () => {

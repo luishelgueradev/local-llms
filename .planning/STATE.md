@@ -4,7 +4,7 @@ milestone: v0.9.0
 milestone_name: milestone
 status: executing
 stopped_at: Phase 5 context gathered
-last_updated: "2026-05-14T17:25:18.023Z"
+last_updated: "2026-05-14T17:29:50.859Z"
 progress:
   total_phases: 9
   completed_phases: 4
@@ -16,18 +16,18 @@ progress:
 # Project State: local-llms
 
 **Last Updated:** 2026-05-13
-**Status:** Ready to execute
+**Status:** Executing Phase 05
 
 ## Project Reference
 
 **Core Value:** Un endpoint único, estable y multi-protocolo para que los agentes del usuario consuman cualquier modelo disponible — local cuando cabe, Ollama Cloud cuando no — sin que el cliente se entere de quién está respondiendo detrás.
 
-**Current Focus:** Phase 04 — anthropic-surface-v1-messages-tool-calling-vision
+**Current Focus:** Phase 05 — postgres-observability-seam
 
 ## Current Position
 
-Phase: 04 (anthropic-surface-v1-messages-tool-calling-vision) — EXECUTING
-Plan: 1 of 5
+Phase: 05 (postgres-observability-seam) — EXECUTING
+Plan: 1 of 4
 
 - **Milestone:** v1
 - **Phase:** 5

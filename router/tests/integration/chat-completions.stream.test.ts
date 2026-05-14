@@ -4,6 +4,7 @@ import type { FastifyInstance } from 'fastify';
 import { server } from '../setup.js';
 import { ollamaStreamHandler } from '../msw/handlers.js';
 import { buildApp } from '../../src/app.js';
+import { makeFakeBufferedWriter } from '../fakes.js';
 import { loadRegistryFromString, makeRegistryStore } from '../../src/config/registry.js';
 import { OllamaOpenAIAdapter } from '../../src/backends/ollama-openai.js';
 import type { ModelEntry } from '../../src/config/registry.js';
@@ -42,6 +43,7 @@ beforeEach(async () => {
     semaphores: {
       get: () => ({ acquire: async () => () => {}, stats: () => ({ inFlight: 0, queued: 0 }) }) as never,
     },
+    bufferedWriter: makeFakeBufferedWriter(),
   });
 });
 afterEach(async () => {
@@ -209,6 +211,7 @@ describe('POST /v1/chat/completions stream=true — abort + error paths (SC3 moc
       semaphores: {
         get: () => ({ acquire: async () => () => {}, stats: () => ({ inFlight: 0, queued: 0 }) }) as never,
       },
+      bufferedWriter: makeFakeBufferedWriter(),
     });
 
     // Start inject (non-blocking — runs the SSE generator in the background)

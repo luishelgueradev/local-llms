@@ -219,12 +219,20 @@ services:
       - PORT=3000
       - LOG_LEVEL=info
       - NODE_ENV=production
+      # Phase 5 (D-B6): Postgres connection strings. A single POSTGRES_PASSWORD
+      # in .env seeds both databases via postgres/initdb/01-init.sql; the router
+      # only reads ROUTER_DATABASE_URL. OPENWEBUI_DATABASE_URL is declared here
+      # so Phase 6's Open WebUI service inherits the same env contract — its
+      # consumer will read it directly from compose at that point.
+      - ROUTER_DATABASE_URL=postgresql://app:${POSTGRES_PASSWORD}@postgres:5432/router
+      - OPENWEBUI_DATABASE_URL=postgresql://app:${POSTGRES_PASSWORD}@postgres:5432/openwebui
     ports:
       # localhost-only — D-A4. Phase 6 (Traefik) removes this.
       - "127.0.0.1:3000:3000"
     networks:
       - app       # later: webui (Phase 6)
       - backend   # talks to ollama (and Phase 3+ runtimes)
+      - data      # Phase 5 (D-E1) — talks to postgres on the internal data plane
     volumes:
       # Bind-mount the registry so fs.watch (plan 02-05) sees host edits —
       # RESEARCH Pitfall 7. Named volumes are unreliable for fs.watch across drivers.
@@ -245,6 +253,9 @@ services:
       llamacpp:
         condition: service_healthy
         required: false      # Compose >= 2.20.2 — allows router to boot without llamacpp
+      postgres:
+        condition: service_healthy
+        required: false      # Phase 5 (D-E4) — router boots without postgres (D-B5)
 
   # ─── router-dev (D-A3) ──────────────────────────────────────────────────────
   # Dev-only sibling of `router:` — same networks + healthcheck + env, but
@@ -268,6 +279,9 @@ services:
       - ROUTER_BEARER_TOKEN=${ROUTER_BEARER_TOKEN}
       - MODELS_YAML_PATH=/app/models.yaml
       - PORT=3000
+      # Phase 5 (D-B6) — same env contract as `router:` so dev mode is also Phase-5-ready.
+      - ROUTER_DATABASE_URL=postgresql://app:${POSTGRES_PASSWORD}@postgres:5432/router
+      - OPENWEBUI_DATABASE_URL=postgresql://app:${POSTGRES_PASSWORD}@postgres:5432/openwebui
     volumes:
       - ./router/src:/app/src:ro
       - ./router/tsconfig.json:/app/tsconfig.json:ro
@@ -275,6 +289,7 @@ services:
     networks:
       - app
       - backend
+      - data      # Phase 5 (D-E1) — talks to postgres on the internal data plane
     depends_on:
       ollama:
         condition: service_healthy
@@ -282,9 +297,66 @@ services:
       llamacpp:
         condition: service_healthy
         required: false
+      postgres:
+        condition: service_healthy
+        required: false      # Phase 5 (D-E4) — router-dev boots without postgres (D-B5)
     healthcheck:
       test: ["CMD-SHELL", "node -e \"fetch('http://localhost:3000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
       interval: 10s
       timeout: 3s
       start_period: 15s
       retries: 5
+
+  # ── Postgres (Phase 5 — D-B3, D-E1..D-E4) ──────────────────────────────────
+  # Single instance hosting two logical databases: `router` (used immediately by
+  # this phase) and `openwebui` (created empty; populated by Phase 6).
+  #
+  # Approach A (per 05-01-PLAN Task 1 §action): the official entrypoint creates
+  # the `app` role from POSTGRES_PASSWORD and the `router` database from
+  # POSTGRES_DB=router. `postgres/initdb/01-init.sql` then creates `openwebui`
+  # (also owned by `app`) and installs pgcrypto into `router` (D-B8). No
+  # passwords are embedded in the SQL file.
+  #
+  # Network: `data` only — `internal: true` (Phase 1 D-13). No host port (D-E1).
+  # Phase 5 stays loopback-only by design; Phase 6 (Traefik) does not expose
+  # postgres externally either.
+  postgres:
+    image: postgres:17-alpine
+    container_name: ${COMPOSE_PROJECT_NAME:-local-llms}-postgres
+    restart: unless-stopped
+    environment:
+      # Approach A: entrypoint creates role `app` + database `router` owned by it.
+      # POSTGRES_DB MUST equal `router` so the healthcheck `pg_isready -d router`
+      # (D-E2) succeeds on first up, before the initdb script has run.
+      - POSTGRES_USER=app
+      - POSTGRES_DB=router
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      # Locale C ensures predictable collation for indexes (no surprises on
+      # case-sensitive sorts in btree indexes on text columns).
+      - POSTGRES_INITDB_ARGS=--encoding=UTF8 --locale=C
+    networks:
+      - data      # D-E1: internal-only; no edge/app/backend membership
+    volumes:
+      # Bind mount the data directory under HOST_DATA_ROOT (Phase 1 D-02 layout).
+      # Bind-mount (not named volume) keeps backup-portability consistent with
+      # Phase 1's discipline. See RESEARCH Pitfall 7 for uid notes; if first-up
+      # fails with permission errors, the smoke test slice (Plan 05-04) will
+      # document the chown resolution.
+      - ${HOST_DATA_ROOT:-/srv/local-llms}/postgres-data:/var/lib/postgresql/data
+      # Bind mount the init SQL directory READ-ONLY. The postgres entrypoint
+      # runs every *.sql / *.sh in this directory ONCE on first init only
+      # (RESEARCH Pitfall 6 — schema evolution lives in Drizzle migrations
+      # post-deploy, not here).
+      - ./postgres/initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      # D-E2 verbatim. `-h 127.0.0.1` forces TCP (vs. local socket) so the
+      # probe exercises the same listener the router will use across the
+      # `data` network. `-U app -d router` matches the entrypoint-created
+      # role + DB so the probe succeeds even before 01-init.sql runs.
+      test: ["CMD-SHELL", "pg_isready -U app -d router -h 127.0.0.1 || exit 1"]
+      interval: 10s
+      timeout: 3s
+      start_period: 30s
+      retries: 5
+    # No depends_on — postgres has no upstream dependency. No ports — internal
+    # network only (D-E1).

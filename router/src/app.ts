@@ -24,6 +24,7 @@ import { makeLivenessScheduler, type LivenessScheduler } from './backends/livene
 import { makeAdapter as defaultMakeAdapter } from './backends/factory.js';
 import { registerReadyz } from './routes/readyz.js';
 import { BackendSemaphore } from './concurrency/semaphore.js';
+import type { BufferedWriter } from './db/bufferedWriter.js';
 
 // Fastify module augmentation so TypeScript knows about app.liveness + app.semaphores (decorators).
 declare module 'fastify' {
@@ -64,6 +65,14 @@ export interface BuildAppOpts {
    * When provided, semaphoreFactory is ignored.
    */
   semaphores?: { get(backend: string): BackendSemaphore };
+  /**
+   * Phase 5 (D-A4) — required for production wiring; in test fixtures pass a
+   * fake `{ push: () => {}, drain: async () => {} }` (PATTERNS.md §"Fake
+   * injection pattern"). The drain step is wired into the onClose hook so
+   * SIGTERM gets a 3s grace period before in-process buffered rows are
+   * dropped.
+   */
+  bufferedWriter: BufferedWriter;
 }
 
 export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
@@ -199,10 +208,16 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
   // Shutdown hook (D-D7) — clears all timers so process exit is clean.
   // semaphoreMap.clear() tidies the Map; active timer waiters inside the semaphore
   // will reject on their own setTimeout fires (process is exiting).
+  //
+  // Phase 5 (D-A4): drain the bufferedWriter LAST — after the semaphore map
+  // is cleared, in-flight requests have stopped. The 3 s race lets a final
+  // flush land before SIGTERM hardstops. Compose's default stop_grace_period
+  // is 10s, so 3s fits comfortably.
   app.addHook('onClose', async () => {
     liveness.stop();
     probeAdapters.clear();
     semaphoreMap.clear();
+    await opts.bufferedWriter.drain(3_000);
   });
 
   // -------------------------------------------------------------------------
