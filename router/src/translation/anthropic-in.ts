@@ -129,8 +129,16 @@ export function anthropicRequestToCanonical(body: unknown): CanonicalRequest {
   if (parsed.top_k !== undefined) built.top_k = parsed.top_k;
   if (parsed.stop_sequences !== undefined) built.stop_sequences = parsed.stop_sequences;
   if (parsed.stream !== undefined) built.stream = parsed.stream;
-  // tools / tool_choice land in Plan 04-04 — left undefined here so downstream
-  // consumers don't crash on Phase 4 wave-2 builds.
+  // Plan 04-02: tools/tool_choice pass through as unknown[] — the final
+  // CanonicalRequestSchema.parse below validates them against CanonicalToolSchema +
+  // CanonicalToolChoiceSchema. Anthropic's tool wire format is the canonical wire
+  // format by design (D-A1), so this is an identity transform. The PROD adapter call
+  // to upstream isn't wired yet (Plan 04-04 lands that mapping in openai-in.ts), but
+  // the canonical request must already carry tools so /v1/messages/count_tokens can
+  // see them and apply the +340 overhead (FINDING 2.3) without an extra route-level
+  // detour into the raw body.
+  if (parsed.tools !== undefined) built.tools = parsed.tools as never;
+  if (parsed.tool_choice !== undefined) built.tool_choice = parsed.tool_choice as never;
 
   return CanonicalRequestSchema.parse(built);
 }
