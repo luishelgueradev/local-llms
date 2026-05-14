@@ -58,10 +58,16 @@ export class LlamacppOpenAIAdapter implements BackendAdapter {
   /**
    * Plan 04 streaming entry point. Identical to Ollama modulo the SDK client.
    * No vision branch (D-B4); all requests flow through openAIChunksToCanonicalEvents.
+   *
+   * Plan 04-03 (Issue #6): `opts.inputTokensHint` is the route's pre-stream
+   * `countTokens(canonical)` pre-count. Forwarded to `openAIChunksToCanonicalEvents`
+   * so the Anthropic surface emits a wire-correct non-zero input_tokens on the
+   * synthetic message_start event.
    */
   async chatCompletionsCanonicalStream(
     canonical: CanonicalRequest,
     signal: AbortSignal,
+    opts?: { inputTokensHint?: number },
   ): Promise<AsyncIterable<CanonicalStreamEvent>> {
     const openaiReq = canonicalToOpenAIChatCompletionParams(canonical);
     const upstream = await this.client.chat.completions.create(
@@ -72,7 +78,10 @@ export class LlamacppOpenAIAdapter implements BackendAdapter {
       },
       { signal },
     );
-    return openAIChunksToCanonicalEvents(upstream, { model: canonical.model });
+    return openAIChunksToCanonicalEvents(upstream, {
+      model: canonical.model,
+      inputTokensHint: opts?.inputTokensHint,
+    });
   }
 
   /**
