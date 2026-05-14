@@ -18,6 +18,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { makeBufferedWriter } from '../../src/db/bufferedWriter.js';
+import type { RequestLogInsert } from '../../src/db/schema/index.js';
 
 // --------------------------------------------------------------------------
 // Test helpers
@@ -62,7 +63,7 @@ function makeDeps() {
 
 // Minimal row shape that satisfies the bufferedWriter's push() contract.
 // We don't validate column types in the mock — Drizzle would in a real run.
-function row(i: number): Record<string, unknown> {
+function row(i: number): RequestLogInsert {
   return {
     protocol: 'openai',
     route: '/v1/chat/completions',
