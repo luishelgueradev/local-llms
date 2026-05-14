@@ -483,6 +483,146 @@ Phase 4 accepts BOTH `source.type: 'base64'` AND `source.type: 'url'`. Base64 so
 
 The full implementation lives in `router/src/translation/ollama-native-out.ts` (`fetchImageAsBase64`). If you need to allowlist private addresses (e.g., an internal image cache), edit the deny-CIDR helper directly — future work (Phase 9) tracks turning this into a YAML-driven allow list.
 
+## Phase 5: Postgres + Observability
+
+Phase 5 adds:
+
+- A `postgres:17-alpine` service running on the internal `data` network (no host port).
+- Two logical databases: `router` (request log + daily usage aggregation) and `openwebui` (empty in Phase 5, populated by Phase 6).
+- Buffered async writes to `request_log` (every 1 s OR 200 rows, whichever first) that **never block** the request path — pausing Postgres for 5 s does not stall in-flight SSE streams.
+- A `pg-backup` sidecar that runs `pg_dump --format=custom` daily under `${HOST_DATA_ROOT}/postgres-backups/`, with 7-day retention.
+- `bin/restore-drill.sh` — a tested, destructive restore script (drop → create → `pg_restore` → sanity SELECT).
+- `GET /metrics` Prometheus endpoint on the router (port 3000, unauthenticated, loopback-only — Phase 6 firewalls external access).
+- `X-Agent-Id` request header surfaced into structured logs and the `request_log.agent_id` column.
+
+### Bring it up
+
+```bash
+# First-time setup: create the host directories (idempotent).
+mkdir -p "${HOST_DATA_ROOT:-/srv/local-llms}/postgres-data"
+mkdir -p "${HOST_DATA_ROOT:-/srv/local-llms}/postgres-backups"
+
+# Start postgres (must be healthy before the router connects).
+docker compose up -d postgres
+
+# Bring up the rest of the Phase 5 surface (router, ollama for traffic, pg-backup).
+docker compose --profile ollama up -d ollama router pg-backup
+```
+
+Verify both databases were created and the schema migrated:
+
+```bash
+docker compose exec postgres psql -U app -l | grep -E '^\s*(router|openwebui)\s'
+docker compose exec postgres psql -U app -d router -c '\dt'
+```
+
+> **First-up uid note (RESEARCH Pitfall 7):** If `docker compose up postgres` fails with a permission error on `${HOST_DATA_ROOT}/postgres-data`, the in-container postgres uid does not match the host bind-mount owner. Resolve once with `sudo chown -R 70:70 ${HOST_DATA_ROOT}/postgres-data` (the postgres:17-alpine uid is 70; verify with `docker run --rm postgres:17-alpine id postgres`). The pg-backup sidecar's `${HOST_DATA_ROOT}/postgres-backups` bind needs the same treatment if the first dump fails to write.
+
+### Sending requests with X-Agent-Id
+
+```bash
+curl -N \
+  -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+  -H "X-Agent-Id: claude-code:luis" \
+  -d '{"model":"llama3.2:3b-instruct-q4_K_M","messages":[{"role":"user","content":"hi"}],"stream":true}' \
+  http://127.0.0.1:3000/v1/chat/completions
+
+# Verify the row landed (buffered writes flush every 1 s OR 200 rows):
+docker compose exec postgres psql -U app -d router -c \
+  "SELECT id, ts, protocol, route, backend, model, status_class, http_status, tokens_in, tokens_out, ttft_ms, latency_ms, agent_id FROM request_log ORDER BY ts DESC LIMIT 1;"
+```
+
+Valid `X-Agent-Id` values match `^[A-Za-z0-9._:-]{1,128}$`. Spaces, `@`, `/`, and other characters are rejected with `HTTP 400 invalid_agent_id`. The header is optional — absent means `request_log.agent_id` is `NULL`.
+
+### Querying request_log
+
+```bash
+# Recent requests by an agent
+docker compose exec postgres psql -U app -d router -c \
+  "SELECT ts, route, status_class, http_status, tokens_out FROM request_log WHERE agent_id = 'claude-code:luis' ORDER BY ts DESC LIMIT 20;"
+
+# Error rate by backend over the last 24 h
+docker compose exec postgres psql -U app -d router -c \
+  "SELECT backend, status_class, count(*) FROM request_log WHERE ts > now() - interval '24 hours' GROUP BY backend, status_class ORDER BY backend;"
+```
+
+### Prometheus /metrics
+
+```bash
+# /metrics is unauthenticated on 127.0.0.1:3000 in Phase 5.
+# Phase 6 (Traefik) MUST block external access via a 404 middleware on the public entrypoint.
+curl -s http://127.0.0.1:3000/metrics | head -40
+```
+
+Custom metrics exposed:
+
+- `router_requests_total` (Counter; labels: `protocol`, `backend`, `model`, `status_class`)
+- `router_request_duration_seconds` (Histogram; labels: `protocol`, `backend`, `model`)
+- `router_ttft_seconds` (Histogram; labels: `protocol`, `backend`, `model`)
+- `router_tokens_total` (Counter; labels: `protocol`, `backend`, `model`, `direction`)
+- `router_log_buffer_dropped_total` (Counter; no labels)
+
+Plus Node.js process defaults (`process_*` — CPU, memory, GC, event-loop lag, fd count).
+
+**Forbidden labels (cardinality discipline):** `agent_id`, `request_id`, raw HTTP `status_code`, `error_message`. These live in `request_log` rows where unbounded cardinality is acceptable. Do not add high-cardinality labels in future phases.
+
+### Daily backups
+
+The `pg-backup` sidecar runs `pg_dump --format=custom` once per 24 h, writing to `${HOST_DATA_ROOT}/postgres-backups/router-YYYY-MM-DDTHH.dump`. The sidecar prunes dumps older than 7 days on each iteration. **Phase 9 (OPS-02) will add an off-host backup destination** — until then, the dumps live on the same host as the database (acceptable for a single-host, single-user deployment per `.planning/PROJECT.md`).
+
+```bash
+# Inspect dump files
+ls -lh "${HOST_DATA_ROOT:-/srv/local-llms}/postgres-backups/"
+
+# Tail the sidecar log (shows dump cadence + any failures)
+docker compose logs pg-backup --tail=20
+```
+
+### Restore drill
+
+The restore drill is **destructive** — it drops and recreates the `router` database. Only run it when you have a recent dump.
+
+```bash
+# Interactive (prompts: type 'RESTORE' to proceed):
+bin/restore-drill.sh router-2026-05-14T12.dump
+
+# Non-interactive (still destructive):
+bin/restore-drill.sh --yes router-2026-05-14T12.dump
+```
+
+The script:
+
+1. Validates the dump file exists under `${HOST_DATA_ROOT}/postgres-backups/`.
+2. Waits for postgres `pg_isready` (up to 30 s).
+3. Terminates any active connections to the `router` database.
+4. `DROP DATABASE IF EXISTS router` → `CREATE DATABASE router OWNER app`.
+5. `CREATE EXTENSION IF NOT EXISTS pgcrypto` (belt-and-suspenders alongside `pg_restore`'s extension restore).
+6. Runs `pg_restore --dbname=router --username=app` from the dump file, executed inside the `pg-backup` sidecar (which has both `/backups` mounted and reachability to `postgres`).
+7. Asserts `SELECT COUNT(*) FROM request_log` returns a numeric value.
+
+Exits 0 on success with a `PASS — restore drill completed without error.` line.
+
+### Schema evolution
+
+The `postgres/initdb/01-init.sql` script runs **once on first init only** (when the Postgres data volume is empty). Editing this file after the stack is up has **no effect** — to change schema, use Drizzle migrations:
+
+```bash
+cd router
+# Edit src/db/schema/*.ts, then:
+npx drizzle-kit generate
+# Review the generated SQL in db/migrations/, commit, then redeploy the router.
+# The router applies new migrations at boot via drizzle-orm's migrate().
+```
+
+To re-run `01-init.sql` from scratch (DESTRUCTIVE — wipes ALL data): `docker compose down -v` deletes the postgres-data volume. Take a `pg_dump` first if you want to keep the rows.
+
+### Known limitations
+
+- **`request_log` is unbounded in v1.** No automated retention or partitioning yet. Monitor disk usage on `${HOST_DATA_ROOT}/postgres-data` (Phase 9 OPS-03 adds an alert). Partitioning + TTL land when actual row volume warrants — not before.
+- **`usage_daily` refresh** runs on the router's Node `setInterval` once per UTC midnight (CONTEXT D-F2 path B). If the router is offline at midnight, the day's aggregation lands on the next boot.
+- **`/metrics` is unauth on loopback.** Phase 6 (Traefik) MUST add a path-matcher middleware returning 404 for external `/metrics` requests — flagged as a Phase 6 CRITICAL follow-up in `.planning/phases/05-postgres-observability-seam/05-CONTEXT.md` §Deferred.
+- **Backups are on-host.** Phase 9 (OPS-02) adds an off-host backup destination. Until then, a host disk failure loses both the live data and the backups.
+
 ## Anti-patterns rejected by this stack
 
 - `:latest` image tags anywhere — every image pinned to a specific tag.
