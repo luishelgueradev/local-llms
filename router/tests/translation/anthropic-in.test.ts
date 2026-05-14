@@ -195,3 +195,74 @@ describe('anthropicRequestToCanonical — passthrough of unknown fields', () => 
     expect(canonical.messages).toHaveLength(1);
   });
 });
+
+// ── Plan 04-04 Task 2: tool def + tool_choice + parallel tool_use pass-through ─
+
+describe('anthropicRequestToCanonical — tool definitions (Plan 04-04 TOOL-02 / FINDING 3.3)', () => {
+  it('accepts native Anthropic tool definition (input_schema, no function wrapper)', () => {
+    const canonical = anthropicRequestToCanonical({
+      model: 'x',
+      max_tokens: 100,
+      messages: [{ role: 'user', content: 'weather?' }],
+      tools: [
+        {
+          name: 'get_weather',
+          description: 'fetch weather',
+          input_schema: { type: 'object', properties: { loc: { type: 'string' } } },
+        },
+      ],
+    });
+    expect(canonical.tools).toEqual([
+      {
+        name: 'get_weather',
+        description: 'fetch weather',
+        input_schema: { type: 'object', properties: { loc: { type: 'string' } } },
+      },
+    ]);
+  });
+
+  it("accepts tool_choice {type:'none'} verbatim (FINDING 3.4)", () => {
+    const canonical = anthropicRequestToCanonical({
+      model: 'x',
+      max_tokens: 100,
+      messages: [{ role: 'user', content: 'hi' }],
+      tools: [{ name: 'f', input_schema: {} }],
+      tool_choice: { type: 'none' },
+    });
+    expect(canonical.tool_choice).toEqual({ type: 'none' });
+    expect(canonical.tools).toHaveLength(1);
+  });
+
+  it('accepts tool_choice with disable_parallel_tool_use:true modifier (FINDING 3.4)', () => {
+    const canonical = anthropicRequestToCanonical({
+      model: 'x',
+      max_tokens: 100,
+      messages: [{ role: 'user', content: 'hi' }],
+      tools: [{ name: 'f', input_schema: {} }],
+      tool_choice: { type: 'auto', disable_parallel_tool_use: true },
+    });
+    expect(canonical.tool_choice).toEqual({ type: 'auto', disable_parallel_tool_use: true });
+  });
+
+  it('preserves parallel tool_use blocks in the same assistant message (FINDING 3.6)', () => {
+    const canonical = anthropicRequestToCanonical({
+      model: 'x',
+      max_tokens: 100,
+      messages: [
+        { role: 'user', content: 'go' },
+        {
+          role: 'assistant',
+          content: [
+            { type: 'tool_use', id: 'toolu_a', name: 'a', input: { x: 1 } },
+            { type: 'tool_use', id: 'toolu_b', name: 'b', input: { y: 2 } },
+          ],
+        },
+      ],
+    });
+    const assistant = canonical.messages[1];
+    expect(assistant.role).toBe('assistant');
+    expect(assistant.content).toHaveLength(2);
+    expect(assistant.content[0]?.type).toBe('tool_use');
+    expect(assistant.content[1]?.type).toBe('tool_use');
+  });
+});

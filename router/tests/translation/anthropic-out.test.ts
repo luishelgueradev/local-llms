@@ -288,3 +288,147 @@ describe('canonicalToAnthropicSse — typed SSE event serialization (Plan 04-03 
     expect(JSON.parse(frame.data)).toEqual(env);
   });
 });
+
+// ── Plan 04-04 Task 2: tool_use blocks + translator-option seam (displayModel + idOverride)
+
+describe('canonicalToAnthropicResponse — tool_use blocks + opts seam (Plan 04-04)', () => {
+  it('emits tool_use blocks verbatim with toolu_<ulid> ids', () => {
+    const canonical: CanonicalResponse = {
+      id: 'msg_TESTSCENARIO01TESTSCENARIO',
+      type: 'message',
+      role: 'assistant',
+      content: [
+        {
+          type: 'tool_use',
+          id: 'toolu_TESTSCENARIO01TESTSCEN',
+          name: 'get_weather',
+          input: { location: 'SF' },
+        },
+      ],
+      model: 'x',
+      stop_reason: 'tool_use',
+      stop_sequence: null,
+      usage: { input_tokens: 25, output_tokens: 10 },
+    };
+    const out = canonicalToAnthropicResponse(canonical);
+    expect(out.content).toEqual([
+      {
+        type: 'tool_use',
+        id: 'toolu_TESTSCENARIO01TESTSCEN',
+        name: 'get_weather',
+        input: { location: 'SF' },
+      },
+    ]);
+    expect(out.stop_reason).toBe('tool_use');
+  });
+
+  it('honors opts.displayModel — response.model uses opt when set', () => {
+    const canonical: CanonicalResponse = {
+      id: 'msg_x',
+      type: 'message',
+      role: 'assistant',
+      content: [{ type: 'text', text: 'hi' }],
+      model: 'backend-internal-id',
+      stop_reason: 'end_turn',
+      stop_sequence: null,
+      usage: { input_tokens: 1, output_tokens: 1 },
+    };
+    const out = canonicalToAnthropicResponse(canonical, { displayModel: 'registry-name' });
+    expect(out.model).toBe('registry-name');
+  });
+
+  it('honors opts.idOverride — response.id uses opt when set', () => {
+    const canonical: CanonicalResponse = {
+      id: 'msg_original',
+      type: 'message',
+      role: 'assistant',
+      content: [{ type: 'text', text: 'hi' }],
+      model: 'x',
+      stop_reason: 'end_turn',
+      stop_sequence: null,
+      usage: { input_tokens: 1, output_tokens: 1 },
+    };
+    const out = canonicalToAnthropicResponse(canonical, { idOverride: 'msg_OVERRIDE' });
+    expect(out.id).toBe('msg_OVERRIDE');
+  });
+
+  it('canonicalToAnthropicSse with displayModel rewrites message_start.message.model', async () => {
+    const events: CanonicalStreamEvent[] = [
+      {
+        type: 'message_start',
+        message: {
+          id: 'msg_orig',
+          type: 'message',
+          role: 'assistant',
+          content: [],
+          model: 'backend-internal',
+          stop_reason: null,
+          stop_sequence: null,
+          usage: { input_tokens: 5, output_tokens: 1 },
+        },
+      },
+      { type: 'message_stop' },
+    ];
+    const out = await collect(
+      canonicalToAnthropicSse(asyncIterableFrom(events), { displayModel: 'registry-X' }),
+    );
+    const start = out.find((e) => e.event === 'message_start');
+    expect(start).toBeDefined();
+    if (!start) return;
+    const parsed = JSON.parse(start.data) as { message: { model: string } };
+    expect(parsed.message.model).toBe('registry-X');
+  });
+
+  it('canonicalToAnthropicSse content_block_start emits tool_use block verbatim', async () => {
+    const events: CanonicalStreamEvent[] = [
+      {
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'tool_use', id: 'toolu_a', name: 'get_weather', input: {} },
+      },
+      {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'input_json_delta', partial_json: '{"loc":"SF"}' },
+      },
+      { type: 'content_block_stop', index: 0 },
+    ];
+    const out = await collect(canonicalToAnthropicSse(asyncIterableFrom(events)));
+    expect(out).toHaveLength(3);
+    const startParsed = JSON.parse(out[0]!.data) as {
+      type: string;
+      content_block: { type: string; id: string; name: string };
+    };
+    expect(startParsed.type).toBe('content_block_start');
+    expect(startParsed.content_block.type).toBe('tool_use');
+    expect(startParsed.content_block.id).toBe('toolu_a');
+    expect(startParsed.content_block.name).toBe('get_weather');
+    const deltaParsed = JSON.parse(out[1]!.data) as {
+      delta: { type: string; partial_json: string };
+    };
+    expect(deltaParsed.delta.type).toBe('input_json_delta');
+    expect(deltaParsed.delta.partial_json).toBe('{"loc":"SF"}');
+  });
+
+  it('canonicalToAnthropicSse emits parallel tool_use blocks sequentially', async () => {
+    const events: CanonicalStreamEvent[] = [
+      {
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'tool_use', id: 'toolu_a', name: 'a', input: {} },
+      },
+      { type: 'content_block_stop', index: 0 },
+      {
+        type: 'content_block_start',
+        index: 1,
+        content_block: { type: 'tool_use', id: 'toolu_b', name: 'b', input: {} },
+      },
+      { type: 'content_block_stop', index: 1 },
+    ];
+    const out = await collect(canonicalToAnthropicSse(asyncIterableFrom(events)));
+    const starts = out.filter((e) => e.event === 'content_block_start');
+    expect(starts).toHaveLength(2);
+    const ids = starts.map((s) => (JSON.parse(s.data) as { content_block: { id: string } }).content_block.id);
+    expect(ids).toEqual(['toolu_a', 'toolu_b']);
+  });
+});
