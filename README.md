@@ -546,6 +546,38 @@ docker compose exec postgres psql -U app -d router -c \
   "SELECT backend, status_class, count(*) FROM request_log WHERE ts > now() - interval '24 hours' GROUP BY backend, status_class ORDER BY backend;"
 ```
 
+### Querying usage_daily aggregations
+
+The router refreshes `usage_daily` once per UTC midnight (covering the previous UTC day). The UPSERT is keyed on `(day, protocol, backend, model, agent_id)` — re-running the refresh for the same day is idempotent, so it is safe to manually trigger from a debugging session.
+
+```bash
+# Daily totals per agent for the last 7 days
+docker compose exec postgres psql -U app -d router -c "
+  SELECT day, agent_id, sum(request_count) AS reqs, sum(tokens_in_sum + tokens_out_sum) AS tokens
+  FROM usage_daily
+  WHERE day >= current_date - interval '7 days'
+  GROUP BY day, agent_id
+  ORDER BY day DESC, reqs DESC;"
+
+# Error rate per backend per day (last 14 days)
+docker compose exec postgres psql -U app -d router -c "
+  SELECT day, backend, sum(error_count) AS errs, sum(request_count) AS reqs,
+         round(100.0 * sum(error_count)::numeric / NULLIF(sum(request_count), 0), 2) AS error_pct
+  FROM usage_daily
+  WHERE day >= current_date - interval '14 days'
+  GROUP BY day, backend
+  ORDER BY day DESC, backend;"
+
+# p95 latency trend per model (last 7 days)
+docker compose exec postgres psql -U app -d router -c "
+  SELECT day, model, p95_latency_ms
+  FROM usage_daily
+  WHERE day >= current_date - interval '7 days'
+  ORDER BY day DESC, p95_latency_ms DESC;"
+```
+
+The `agent_id = '_no_agent_'` sentinel represents requests that did NOT include an `X-Agent-Id` header. The `usage_daily.agent_id` column is `NOT NULL` because Postgres treats `NULL` as distinct from `NULL` in unique constraints — a NULL-in-PK design would let two "no-agent" rows for the same `(day, protocol, backend, model)` accumulate instead of UPSERTing into one bucket. The sentinel preserves the single-row-per-bucket invariant.
+
 ### Prometheus /metrics
 
 ```bash
