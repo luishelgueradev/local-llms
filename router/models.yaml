@@ -28,3 +28,13 @@ models:
     concurrency: 2
     max_model_len: 8192
     profile: llamacpp
+
+  - name: llama3.2-vision:11b-instruct-q4_K_M
+    backend: ollama
+    backend_url: http://ollama:11434/v1
+    backend_model: llama3.2-vision:11b-instruct-q4_K_M
+    capabilities: [chat, vision]
+    vram_budget_gb: 8
+    concurrency: 2
+    max_model_len: 8192
+    profile: ollama

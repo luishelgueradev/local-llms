@@ -4,6 +4,10 @@ import { hasZodFastifySchemaValidationErrors } from '@bram-dc/fastify-type-provi
 // Re-export BackendSaturatedError so callers can import from this file (same pattern as RegistryUnknownModelError).
 export { BackendSaturatedError } from '../concurrency/semaphore.js';
 import { BackendSaturatedError } from '../concurrency/semaphore.js';
+import {
+  InvalidImageUrlError,
+  ImageFetchError,
+} from '../translation/ollama-native-out.js';
 
 export type OpenAIErrorEnvelope = {
   error: { message: string; type: string; code: string; param: string | null };
@@ -64,6 +68,9 @@ export function mapToHttpStatus(err: unknown): number {
   if (err instanceof RegistryUnknownModelError) return 404;
   // Plan 04-02 D-C2: missing capability for the requested model — pre-adapter 400.
   if (err instanceof CapabilityNotSupportedError) return 400;
+  // Plan 04-05 D-C4: SSRF guard violations on URL-source image fetches.
+  if (err instanceof InvalidImageUrlError) return 400;
+  if (err instanceof ImageFetchError) return 400;
   // BackendSaturatedError (Plan 03-04, ROUTE-07) — backend concurrency cap exceeded.
   if (err instanceof BackendSaturatedError) return 429;
   // APIConnectionTimeoutError extends APIConnectionError — check FIRST for 504, before the 502 below
@@ -115,6 +122,28 @@ export function toOpenAIErrorEnvelope(err: unknown): EnvelopeOrSkip {
         type: 'invalid_request_error',
         code: 'model_capability_mismatch',
         param: 'model',
+      },
+    };
+  }
+  // Plan 04-05 D-C4: image URL SSRF guard violations. param points at the source.url
+  // path so clients can map the failure to the offending block.
+  if (err instanceof InvalidImageUrlError) {
+    return {
+      error: {
+        message: err.message,
+        type: 'invalid_request_error',
+        code: 'invalid_image_url',
+        param: 'messages[].content[].source.url',
+      },
+    };
+  }
+  if (err instanceof ImageFetchError) {
+    return {
+      error: {
+        message: err.message,
+        type: 'invalid_request_error',
+        code: err.code,
+        param: 'messages[].content[].source.url',
       },
     };
   }
@@ -219,6 +248,14 @@ export function toAnthropicErrorEnvelope(err: unknown): AnthropicEnvelopeOrSkip 
     return { type: 'error', error: { type: 'not_found_error', message: err.message } };
   }
   if (err instanceof CapabilityNotSupportedError) {
+    return { type: 'error', error: { type: 'invalid_request_error', message: err.message } };
+  }
+  // Plan 04-05 D-C4: image URL SSRF guard violations → invalid_request_error on
+  // the Anthropic surface (taxonomy has no specific image_url type).
+  if (err instanceof InvalidImageUrlError) {
+    return { type: 'error', error: { type: 'invalid_request_error', message: err.message } };
+  }
+  if (err instanceof ImageFetchError) {
     return { type: 'error', error: { type: 'invalid_request_error', message: err.message } };
   }
   if (err instanceof BackendSaturatedError) {
