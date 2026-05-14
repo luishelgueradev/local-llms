@@ -239,7 +239,9 @@ export function registerMessagesRoute(
               canonicalToAnthropicSse(upstream, {
                 signal: controller.signal,
                 onCleanup: sseCleanup,
-                // Plan 04-04 will add displayModel: entry.name + idOverride here.
+                // Plan 04-05: displayModel rewrites message_start.message.model to
+                // the registry name so backend model ids don't leak through.
+                displayModel: entry.name,
               }),
             );
           } finally {
@@ -261,19 +263,18 @@ export function registerMessagesRoute(
           return;
         }
 
-        // ── NON-STREAM BRANCH (Plan 04-02 — byte-identical to before) ─────────
+        // ── NON-STREAM BRANCH (Plan 04-05 — displayModel seam consumption) ───
         const canonicalResult = await adapter.chatCompletionsCanonical(canonical, controller.signal);
 
-        // TEMPORARY (Plan 04-02 Task 2 step 6): the adapter returns canonical.model
-        // set to the upstream backend_model (e.g. "llama3.2:3b-instruct-q4_K_M" as
-        // Ollama reports it). The wire response must echo the REGISTRY name (entry.name)
-        // so clients don't see backend ids leak through. Plan 04-04 Task 2 introduces
-        // canonicalToAnthropicResponse(..., { displayModel: entry.name }) which removes
-        // this mutation; until then, integration tests verify the wire shape directly.
-        canonicalResult.model = entry.name;
-
+        // Plan 04-05 Issue #5 resolution: the route hands the canonical result to
+        // canonicalToAnthropicResponse with { displayModel: entry.name } so the
+        // wire `model` field is the REGISTRY name (not the upstream backend id).
+        // The canonical object is NOT mutated — downstream observers (Phase 5
+        // logging, tests) still see canonical.model verbatim.
         req.raw.socket?.off('close', onClose);
-        return reply.send(canonicalToAnthropicResponse(canonicalResult));
+        return reply.send(
+          canonicalToAnthropicResponse(canonicalResult, { displayModel: entry.name }),
+        );
       } catch (err) {
         if (err instanceof BackendSaturatedError) {
           void reply.header('Retry-After', String(Math.ceil(err.waitedMs / 1000)));

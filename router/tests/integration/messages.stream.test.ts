@@ -12,11 +12,16 @@
  *   Heartbeat (Anthropic ping payload) every 15s
  *   Regression gate: /v1/chat/completions stream still terminates with data: [DONE]
  */
-import { describe, expect, it, beforeEach, afterEach } from 'vitest';
+import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
+import * as dns from 'node:dns';
 import { http, HttpResponse } from 'msw';
 import type { FastifyInstance } from 'fastify';
 import { server } from '../setup.js';
-import { ollamaStreamHandler } from '../msw/handlers.js';
+import {
+  ollamaStreamHandler,
+  ollamaNativeChatHandler,
+  imageFetchHandler,
+} from '../msw/handlers.js';
 import { buildApp } from '../../src/app.js';
 import { loadRegistryFromString, makeRegistryStore } from '../../src/config/registry.js';
 import { OllamaOpenAIAdapter } from '../../src/backends/ollama-openai.js';
@@ -27,6 +32,9 @@ import type {
   CanonicalResponse,
   CanonicalStreamEvent,
 } from '../../src/translation/canonical.js';
+
+const PNG_1x1_BASE64 =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
 
 const TOKEN = 'local-llms_t1t2t3t4t5t6t7t8t9t0aabbccddeeff';
 const MODEL_NAME = 'llama3.2:3b-instruct-q4_K_M';
@@ -492,6 +500,155 @@ describe('POST /v1/messages stream=true — adapter receives inputTokensHint (Is
       message: { usage: { input_tokens: number } };
     };
     expect(parsed.message.usage.input_tokens).toBe(capturedOpts!.inputTokensHint);
+  });
+});
+
+// ── Plan 04-05 vision-stream tests ────────────────────────────────────────────
+//
+// Asserts that vision-stream requests dispatch through Ollama's native /api/chat
+// endpoint (VISION-03 / Pitfall 8). A negative handler registered on the OpenAI-
+// compat URL `/v1/chat/completions` throws if the dispatch path is wrong.
+
+const VISION_MODEL = 'llama3.2-vision:11b-instruct-q4_K_M';
+const YAML_VISION = `
+models:
+  - name: ${MODEL_NAME}
+    backend: ollama
+    backend_url: ${UPSTREAM_BASE}
+    backend_model: ${MODEL_NAME}
+    capabilities: [chat]
+    vram_budget_gb: 4
+
+  - name: ${VISION_MODEL}
+    backend: ollama
+    backend_url: ${UPSTREAM_BASE}
+    backend_model: ${VISION_MODEL}
+    capabilities: [chat, vision]
+    vram_budget_gb: 8
+`;
+
+describe('POST /v1/messages stream=true — Plan 04-05 vision (VISION-03)', () => {
+  let visionApp: FastifyInstance;
+
+  beforeEach(async () => {
+    const registry = makeRegistryStore(loadRegistryFromString(YAML_VISION));
+    visionApp = await buildApp({
+      registry,
+      bearerToken: TOKEN,
+      loggerOpts: false as never,
+      makeAdapter: (entry: ModelEntry) => new OllamaOpenAIAdapter(entry.backend_url),
+      semaphores: {
+        get: () =>
+          ({ acquire: async () => () => {}, stats: () => ({ inFlight: 0, queued: 0 }) }) as never,
+      },
+    });
+  });
+  afterEach(async () => {
+    await visionApp.close();
+    vi.restoreAllMocks();
+  });
+
+  it('VISION-03 base64: vision stream dispatches through native /api/chat (NOT /v1/chat/completions)', async () => {
+    let nativeHit = false;
+    let openaiCompatHit = false;
+    server.use(
+      ollamaNativeChatHandler({
+        url: 'http://upstream-mock:11434/api/chat',
+        model: VISION_MODEL,
+        stream: true,
+        tokens: ['I ', 'see ', 'a ', 'cat'],
+        onRequest: () => {
+          nativeHit = true;
+        },
+      }),
+      // Negative handler: if the OpenAI-compat shim is hit with vision content,
+      // mark and return error so the integration test fails loudly.
+      http.post(`${UPSTREAM_BASE}/chat/completions`, () => {
+        openaiCompatHit = true;
+        return HttpResponse.json({ error: 'VISION-03 violation' }, { status: 500 });
+      }),
+    );
+
+    const res = await visionApp.inject({
+      method: 'POST',
+      url: '/v1/messages',
+      headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
+      payload: {
+        model: VISION_MODEL,
+        max_tokens: 100,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'image',
+                source: { type: 'base64', media_type: 'image/png', data: PNG_1x1_BASE64 },
+              },
+              { type: 'text', text: 'what is in this image?' },
+            ],
+          },
+        ],
+        stream: true,
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toContain('text/event-stream');
+    expect(nativeHit).toBe(true);
+    expect(openaiCompatHit).toBe(false);
+
+    // Events flow through unchanged: message_start → content_block_* → message_stop.
+    expect(res.payload).toContain('event: message_start');
+    expect(res.payload).toContain('event: content_block_delta');
+    expect(res.payload).toContain('event: message_stop');
+    expect(res.payload).not.toContain('[DONE]');
+  });
+
+  it('VISION-03 URL form: vision stream URL-fetch → native /api/chat with bare base64', async () => {
+    const imageUrl = 'https://example.com/cat.png';
+    vi.spyOn(dns.promises, 'lookup').mockResolvedValue([
+      { address: '93.184.216.34', family: 4 },
+    ] as never);
+
+    let capturedNativeBody: { messages?: Array<{ images?: string[] }> } | null = null;
+    server.use(
+      imageFetchHandler({ url: imageUrl, contentType: 'image/png' }),
+      ollamaNativeChatHandler({
+        url: 'http://upstream-mock:11434/api/chat',
+        model: VISION_MODEL,
+        stream: true,
+        tokens: ['ok'],
+        onRequest: (body) => {
+          capturedNativeBody = body as never;
+        },
+      }),
+    );
+
+    const res = await visionApp.inject({
+      method: 'POST',
+      url: '/v1/messages',
+      headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
+      payload: {
+        model: VISION_MODEL,
+        max_tokens: 100,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'image', source: { type: 'url', url: imageUrl } },
+              { type: 'text', text: '?' },
+            ],
+          },
+        ],
+        stream: true,
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(capturedNativeBody).not.toBeNull();
+    const images = capturedNativeBody!.messages?.[0]?.images;
+    expect(images).toBeDefined();
+    expect(images![0]).toBeTruthy();
+    expect(images![0]).not.toMatch(/^data:/);
+    expect(res.payload).toContain('event: message_stop');
   });
 });
 

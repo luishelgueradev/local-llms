@@ -91,7 +91,10 @@ function readUpstreamId(canonical: CanonicalResponse): string | undefined {
 /**
  * Plan 04-04: translator-option seam for the response builder. The route passes
  * `{ displayModel: entry.name }` and (in golden fixtures) `{ idOverride }` so the
- * canonical response stays immutable at the route boundary.
+ * canonical response stays immutable at the route boundary. Plan 04-05 consumes
+ * `displayModel` at the route call-sites so the registry name surfaces on the wire
+ * (including vision dispatched via Ollama native /api/chat where the upstream
+ * `model` echo can drift from the registry name).
  */
 export interface CanonicalToOpenAIResponseOpts {
   /** Registry-facing model name. If set, replaces canonical.model on the wire. */
@@ -217,7 +220,7 @@ export function openAIChatCompletionToCanonical(result: ChatCompletion): Canonic
 export interface CanonicalToOpenAISseOpts {
   signal?: AbortSignal;
   onCleanup?: () => void;
-  /** Plan 04-04: replaces canonical.model on emitted chunks. */
+  /** Plan 04-04 / 04-05 seam: replaces canonical.model on emitted chunks (registry name on the wire). */
   displayModel?: string;
   /** Plan 04-04: replaces the derived `chatcmpl-...` id on emitted chunks. */
   idOverride?: string;
@@ -266,6 +269,9 @@ export async function* canonicalToOpenAISse(
           // If the canonical message carries a non-enumerable _upstreamId, prefer it
           // so the existing OpenAI integration tests stay green.
           const upstreamId = readUpstreamId(ev.message);
+          // Plan 04-04 idOverride (golden fixtures) wins over upstream id; Plan 04-05
+          // displayModel rewrites the wire `model` field so the registry name surfaces
+          // instead of the upstream backend id.
           id = opts.idOverride ?? upstreamId ?? ev.message.id.replace(/^msg_/, 'chatcmpl-');
           model = opts.displayModel ?? ev.message.model;
           created = Math.floor(Date.now() / 1000);

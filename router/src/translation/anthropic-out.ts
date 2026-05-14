@@ -44,9 +44,8 @@ export type AnthropicMessage = CanonicalResponse;
  * Plan 04-04 translator-option seam (resolves Issue #5 — route-level canonical mutation):
  * the route passes `{ displayModel: entry.name }` so the wire response carries the
  * registry name instead of the backend's internal model id, WITHOUT mutating the
- * canonical response. The Plan 02 `canonicalResult.model = entry.name` mutation
- * is removed by Plan 05 Task 2 (which owns the route call-site update — wave-4
- * collision-free).
+ * canonical response. Plan 04-05 consumes the `displayModel` seam at the route
+ * call-site, removing the prior `canonicalResult.model = entry.name` mutation.
  */
 export interface CanonicalToAnthropicResponseOpts {
   /** Replaces canonical.model on the wire when set. */
@@ -60,6 +59,10 @@ export interface CanonicalToAnthropicResponseOpts {
  * For Phase 4 the canonical IS Anthropic — this is an identity mapping with one
  * defensive guard: strip the non-enumerable `_upstreamId` from the JSON serialization
  * (T-04-A2 — already non-enumerable, but explicit drop here for clarity in code review).
+ *
+ * Plan 04-05: opts.displayModel rewrites the wire `model` field (route consumes
+ * the seam so the registry name surfaces instead of the upstream backend id —
+ * replaces the prior `canonicalResult.model = entry.name` mutation).
  */
 export function canonicalToAnthropicResponse(
   canonical: CanonicalResponse,

@@ -9,7 +9,12 @@ import { startHeartbeat } from '../../sse/heartbeat.js';
 import { openAIRequestToCanonical } from '../../translation/openai-in.js';
 import { canonicalToOpenAIResponse, canonicalToOpenAISse } from '../../translation/openai-out.js';
 import type { CanonicalStreamEvent } from '../../translation/canonical.js';
-import { NO_ENVELOPE, mapToHttpStatus, toOpenAIErrorEnvelope } from '../../errors/envelope.js';
+import {
+  CapabilityNotSupportedError,
+  NO_ENVELOPE,
+  mapToHttpStatus,
+  toOpenAIErrorEnvelope,
+} from '../../errors/envelope.js';
 
 /**
  * OpenAI chat-completions request body. Required fields are zod-validated;
@@ -76,6 +81,17 @@ export function registerChatCompletionsRoute(
       // openAIRequestToCanonical throws ZodError on shape violations — the centralized
       // error handler maps to 400 + invalid_request envelope (envelope.ts:60-69).
       const canonical = openAIRequestToCanonical({ ...body, model: entry.backend_model });
+
+      // Plan 04-05 D-C2 / VISION-02: capability gating on the OpenAI surface too.
+      // Fire BEFORE semaphore acquire / adapter call so non-vision-model image
+      // requests get a clean 400 without consuming a slot. CapabilityNotSupportedError
+      // → 400 + OpenAI envelope (model_capability_mismatch) per envelope.ts.
+      const hasImage = canonical.messages.some(
+        (m) => Array.isArray(m.content) && m.content.some((b) => b.type === 'image'),
+      );
+      if (hasImage && !entry.capabilities.includes('vision')) {
+        throw new CapabilityNotSupportedError(entry.name, 'vision');
+      }
 
       // ── AbortController: load-bearing for SC3 ──────────────────────────────
       // The signal is forwarded to undici by the openai SDK, which closes the
@@ -202,6 +218,8 @@ export function registerChatCompletionsRoute(
             await reply.sse(canonicalToOpenAISse(upstream, {
               signal: controller.signal,
               onCleanup: sseCleanup,
+              // Plan 04-05: registry name on the wire (parity with Anthropic surface).
+              displayModel: entry.name,
             }));
           } finally {
             heartbeat.stop();
@@ -221,9 +239,11 @@ export function registerChatCompletionsRoute(
         // ── NON-STREAM BRANCH (Plan 04-01 D-A3 / D-F3) ───────────────────────
         // adapter.chatCompletionsCanonical returns a CanonicalResponse; we map it
         // back to OpenAI ChatCompletion shape (preserving body.id via _upstreamId).
+        // Plan 04-05: pass displayModel so the wire `model` field is the registry
+        // name (parity with the Anthropic surface).
         const canonicalResult = await adapter.chatCompletionsCanonical(canonical, controller.signal);
         req.raw.socket?.off('close', onClose);
-        return reply.send(canonicalToOpenAIResponse(canonicalResult));
+        return reply.send(canonicalToOpenAIResponse(canonicalResult, { displayModel: entry.name }));
       } catch (err) {
         // Defense in depth — anything thrown synchronously / from the non-stream branch
         // ends up here. setErrorHandler in app.ts will turn it into the OpenAI envelope;

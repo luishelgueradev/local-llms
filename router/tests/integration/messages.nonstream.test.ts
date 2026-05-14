@@ -8,15 +8,24 @@
  *   ANTHR-05 — anthropic-version request header echoed (sanitized)
  *   Capability gate placeholder for Plan 04-05 vision routing
  */
-import { describe, expect, it, beforeEach, afterEach } from 'vitest';
+import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
+import * as dns from 'node:dns';
 import type { FastifyInstance } from 'fastify';
 import { http, HttpResponse } from 'msw';
 import { server } from '../setup.js';
-import { ollamaNonStreamHandler } from '../msw/handlers.js';
+import {
+  ollamaNonStreamHandler,
+  ollamaNativeChatHandler,
+  imageFetchHandler,
+} from '../msw/handlers.js';
 import { buildApp } from '../../src/app.js';
 import { loadRegistryFromString, makeRegistryStore } from '../../src/config/registry.js';
 import { OllamaOpenAIAdapter } from '../../src/backends/ollama-openai.js';
 import type { ModelEntry } from '../../src/config/registry.js';
+
+// Tiny 1x1 transparent PNG (shared with count-tokens / translator tests).
+const PNG_1x1_BASE64 =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
 
 const TOKEN = 'local-llms_t1t2t3t4t5t6t7t8t9t0aabbccddeeff';
 const MODEL_NAME = 'llama3.2:3b-instruct-q4_K_M';
@@ -337,4 +346,299 @@ describe('POST /v1/messages — error mapping (Anthropic envelope branch)', () =
   // envelope` — Plan 04-03 deleted it because the 501 placeholder was replaced with
   // the full streaming pipeline. End-to-end stream coverage now lives in
   // tests/integration/messages.stream.test.ts.
+});
+
+// ── Plan 04-05 vision tests ──────────────────────────────────────────────────
+//
+// Uses a SECOND app instance with a YAML that declares BOTH a text-only model AND
+// a vision-capable model so capability-gate + happy-path coverage can coexist.
+// The vision model dispatches through Ollama's native /api/chat (VISION-03).
+
+const VISION_MODEL = 'llama3.2-vision:11b-instruct-q4_K_M';
+const YAML_VISION = `
+models:
+  - name: ${MODEL_NAME}
+    backend: ollama
+    backend_url: ${UPSTREAM_BASE}
+    backend_model: ${MODEL_NAME}
+    capabilities: [chat]
+    vram_budget_gb: 4
+
+  - name: ${VISION_MODEL}
+    backend: ollama
+    backend_url: ${UPSTREAM_BASE}
+    backend_model: ${VISION_MODEL}
+    capabilities: [chat, vision]
+    vram_budget_gb: 8
+`;
+
+describe('POST /v1/messages — Plan 04-05 vision (VISION-01..03)', () => {
+  let visionApp: FastifyInstance;
+
+  beforeEach(async () => {
+    const registry = makeRegistryStore(loadRegistryFromString(YAML_VISION));
+    visionApp = await buildApp({
+      registry,
+      bearerToken: TOKEN,
+      loggerOpts: false as never,
+      makeAdapter: (entry: ModelEntry) => new OllamaOpenAIAdapter(entry.backend_url),
+      semaphores: {
+        get: () =>
+          ({ acquire: async () => () => {}, stats: () => ({ inFlight: 0, queued: 0 }) }) as never,
+      },
+    });
+  });
+  afterEach(async () => {
+    await visionApp.close();
+    vi.restoreAllMocks();
+  });
+
+  it('VISION-02: image content + non-vision model returns 400 + Anthropic envelope BEFORE adapter call', async () => {
+    // Negative: register a handler that throws if hit. The capability gate must
+    // fire before any upstream call so this handler is never invoked.
+    let upstreamHit = false;
+    server.use(
+      http.post(`${UPSTREAM_BASE}/chat/completions`, () => {
+        upstreamHit = true;
+        return HttpResponse.json({});
+      }),
+      http.post('http://upstream-mock:11434/api/chat', () => {
+        upstreamHit = true;
+        return HttpResponse.json({});
+      }),
+    );
+    const res = await visionApp.inject({
+      method: 'POST',
+      url: '/v1/messages',
+      headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
+      payload: {
+        model: MODEL_NAME, // non-vision
+        max_tokens: 100,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'image',
+                source: { type: 'base64', media_type: 'image/png', data: PNG_1x1_BASE64 },
+              },
+              { type: 'text', text: 'what is this?' },
+            ],
+          },
+        ],
+      },
+    });
+    expect(res.statusCode).toBe(400);
+    const env = res.json();
+    expect(env.type).toBe('error');
+    expect(env.error.type).toBe('invalid_request_error');
+    expect(env.error.message.toLowerCase()).toContain('vision');
+    expect(upstreamHit).toBe(false);
+  });
+
+  it('VISION-01 base64: vision happy path via mocked /api/chat returns assistant content + usage', async () => {
+    server.use(
+      ollamaNativeChatHandler({
+        url: 'http://upstream-mock:11434/api/chat',
+        model: VISION_MODEL,
+        content: 'I see a cat in the image',
+        promptEvalCount: 20,
+        evalCount: 8,
+      }),
+    );
+
+    const res = await visionApp.inject({
+      method: 'POST',
+      url: '/v1/messages',
+      headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
+      payload: {
+        model: VISION_MODEL,
+        max_tokens: 100,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'image',
+                source: { type: 'base64', media_type: 'image/png', data: PNG_1x1_BASE64 },
+              },
+              { type: 'text', text: 'what is in this image?' },
+            ],
+          },
+        ],
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.content).toEqual([{ type: 'text', text: 'I see a cat in the image' }]);
+    expect(body.usage).toEqual({ input_tokens: 20, output_tokens: 8 });
+    expect(body.model).toBe(VISION_MODEL);
+  });
+
+  it('VISION-01 URL form: fetches via MSW + forwards bare base64 to /api/chat', async () => {
+    const imageUrl = 'https://example.com/cat.png';
+    vi.spyOn(dns.promises, 'lookup').mockResolvedValue([
+      { address: '93.184.216.34', family: 4 },
+    ] as never);
+
+    let capturedNativeBody: { messages?: Array<{ images?: string[] }> } | null = null;
+    server.use(
+      imageFetchHandler({ url: imageUrl, contentType: 'image/png' }),
+      ollamaNativeChatHandler({
+        url: 'http://upstream-mock:11434/api/chat',
+        model: VISION_MODEL,
+        content: 'I see a cat',
+        evalCount: 6,
+        onRequest: (body) => {
+          capturedNativeBody = body as never;
+        },
+      }),
+    );
+
+    const res = await visionApp.inject({
+      method: 'POST',
+      url: '/v1/messages',
+      headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
+      payload: {
+        model: VISION_MODEL,
+        max_tokens: 100,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'image', source: { type: 'url', url: imageUrl } },
+              { type: 'text', text: '?' },
+            ],
+          },
+        ],
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(capturedNativeBody).not.toBeNull();
+    const images = capturedNativeBody!.messages?.[0]?.images;
+    expect(images).toBeDefined();
+    expect(images![0]).toBeTruthy();
+    // Must be bare base64 — no data: prefix.
+    expect(images![0]).not.toMatch(/^data:/);
+    expect(images![0]!.length).toBeGreaterThan(0);
+  });
+
+  it('VISION-01 URL: http:// scheme rejected with 400 invalid_image_url', async () => {
+    const res = await visionApp.inject({
+      method: 'POST',
+      url: '/v1/messages',
+      headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
+      payload: {
+        model: VISION_MODEL,
+        max_tokens: 100,
+        messages: [
+          {
+            role: 'user',
+            content: [{ type: 'image', source: { type: 'url', url: 'http://example.com/x.png' } }],
+          },
+        ],
+      },
+    });
+    expect(res.statusCode).toBe(400);
+    const env = res.json();
+    expect(env.type).toBe('error');
+    expect(env.error.type).toBe('invalid_request_error');
+    expect(env.error.message.toLowerCase()).toMatch(/https/);
+  });
+
+  it('VISION-01 URL: private IP resolution rejected with 400', async () => {
+    vi.spyOn(dns.promises, 'lookup').mockResolvedValue([
+      { address: '10.0.0.1', family: 4 },
+    ] as never);
+    const res = await visionApp.inject({
+      method: 'POST',
+      url: '/v1/messages',
+      headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
+      payload: {
+        model: VISION_MODEL,
+        max_tokens: 100,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'image', source: { type: 'url', url: 'https://internal.example.com/x.png' } },
+            ],
+          },
+        ],
+      },
+    });
+    expect(res.statusCode).toBe(400);
+    const env = res.json();
+    expect(env.error.message.toLowerCase()).toMatch(/private|loopback|ssrf/);
+  });
+
+  it('VISION-01 URL: non-image Content-Type rejected with 400', async () => {
+    const imageUrl = 'https://example.com/not-an-image';
+    vi.spyOn(dns.promises, 'lookup').mockResolvedValue([
+      { address: '93.184.216.34', family: 4 },
+    ] as never);
+    server.use(imageFetchHandler({ url: imageUrl, contentType: 'text/html' }));
+    const res = await visionApp.inject({
+      method: 'POST',
+      url: '/v1/messages',
+      headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
+      payload: {
+        model: VISION_MODEL,
+        max_tokens: 100,
+        messages: [
+          {
+            role: 'user',
+            content: [{ type: 'image', source: { type: 'url', url: imageUrl } }],
+          },
+        ],
+      },
+    });
+    expect(res.statusCode).toBe(400);
+    const env = res.json();
+    expect(env.error.message.toLowerCase()).toMatch(/content-type|text\/html/);
+  });
+
+  it('VISION-01 URL: oversized body rejected with 400 image_too_large', async () => {
+    const imageUrl = 'https://example.com/big.png';
+    vi.spyOn(dns.promises, 'lookup').mockResolvedValue([
+      { address: '93.184.216.34', family: 4 },
+    ] as never);
+    // 11 MB stream — exceeds the 10 MB cap quickly.
+    server.use(
+      http.get(imageUrl, () => {
+        const chunkSize = 256 * 1024;
+        const totalChunks = 44; // ~11 MB
+        const stream = new ReadableStream<Uint8Array>({
+          async start(controller) {
+            for (let i = 0; i < totalChunks; i++) {
+              controller.enqueue(new Uint8Array(chunkSize));
+            }
+            controller.close();
+          },
+        });
+        return new HttpResponse(stream, {
+          status: 200,
+          headers: { 'Content-Type': 'image/png' },
+        });
+      }),
+    );
+    const res = await visionApp.inject({
+      method: 'POST',
+      url: '/v1/messages',
+      headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
+      payload: {
+        model: VISION_MODEL,
+        max_tokens: 100,
+        messages: [
+          {
+            role: 'user',
+            content: [{ type: 'image', source: { type: 'url', url: imageUrl } }],
+          },
+        ],
+      },
+    });
+    expect(res.statusCode).toBe(400);
+    const env = res.json();
+    expect(env.error.message.toLowerCase()).toMatch(/10mb|too large|exceeded/);
+  });
 });

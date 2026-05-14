@@ -4,6 +4,11 @@ import { hasZodFastifySchemaValidationErrors } from '@bram-dc/fastify-type-provi
 // Re-export BackendSaturatedError so callers can import from this file (same pattern as RegistryUnknownModelError).
 export { BackendSaturatedError } from '../concurrency/semaphore.js';
 import { BackendSaturatedError } from '../concurrency/semaphore.js';
+// Plan 04-04 / 04-05: InvalidImageUrlError + ImageFetchError live in ollama-native-out.ts
+// (where they are thrown by the SSRF + fetch-guard pipeline). Re-exported here so the
+// envelope-mapping callers and unit tests have a single import surface.
+export { InvalidImageUrlError, ImageFetchError } from '../translation/ollama-native-out.js';
+import { InvalidImageUrlError, ImageFetchError } from '../translation/ollama-native-out.js';
 
 export type OpenAIErrorEnvelope = {
   error: { message: string; type: string; code: string; param: string | null };
@@ -75,46 +80,8 @@ export class InvalidToolArgumentsError extends Error {
   }
 }
 
-/**
- * Plan 04-04 T-04-01 mitigation (Plan 05 consumer): thrown by ollama-native-out.ts
- * when an image source's URL is non-https or resolves to a private/loopback address
- * (SSRF mitigation). Maps to 400 + invalid_request_error with code:'invalid_image_url'.
- *
- * Lives here in Plan 04 (not Plan 05) to avoid wave-4 collision on envelope.ts —
- * Plan 04 owns envelope.ts edits in this wave; Plan 05 owns the throw sites.
- */
-export class InvalidImageUrlError extends Error {
-  readonly code: 'invalid_image_url' = 'invalid_image_url';
-  constructor(
-    public readonly url: string,
-    public readonly reason: 'http_scheme_blocked' | 'private_address_blocked',
-  ) {
-    super(
-      reason === 'http_scheme_blocked'
-        ? `Image URL must use https:// scheme; got non-https URL: ${url}`
-        : `image URL resolves to a private/loopback address — rejected for SSRF mitigation: ${url}`,
-    );
-    this.name = 'InvalidImageUrlError';
-  }
-}
-
-/**
- * Plan 04-04 T-04-01 mitigation (Plan 05 consumer): thrown by ollama-native-out.ts
- * when an image fetch fails (too large, wrong content-type, HTTP error). Maps to 400.
- * Per-instance `code` field distinguishes the specific failure mode.
- */
-export class ImageFetchError extends Error {
-  readonly code: 'image_too_large' | 'image_invalid_content_type' | 'http_error';
-  constructor(
-    public readonly url: string,
-    code: 'image_too_large' | 'image_invalid_content_type' | 'http_error',
-    detail: string,
-  ) {
-    super(`failed to fetch image from ${url}: ${detail}`);
-    this.name = 'ImageFetchError';
-    this.code = code;
-  }
-}
+// InvalidImageUrlError + ImageFetchError are declared in ollama-native-out.ts and
+// re-exported above (single source of truth for the runtime throw sites).
 
 /** D-C3 status mapping — single source of truth. */
 export function mapToHttpStatus(err: unknown): number {
@@ -129,7 +96,7 @@ export function mapToHttpStatus(err: unknown): number {
   if (err instanceof CapabilityNotSupportedError) return 400;
   // Plan 04-04 T-04-02: malformed tool_calls[].function.arguments — 400.
   if (err instanceof InvalidToolArgumentsError) return 400;
-  // Plan 04-04 T-04-01: image URL or fetch failures — 400 (Plan 05 consumer).
+  // Plan 04-04 T-04-01: image URL or fetch failures — 400 (Plan 05 consumer / D-C4 SSRF).
   if (err instanceof InvalidImageUrlError) return 400;
   if (err instanceof ImageFetchError) return 400;
   // BackendSaturatedError (Plan 03-04, ROUTE-07) — backend concurrency cap exceeded.
@@ -197,7 +164,8 @@ export function toOpenAIErrorEnvelope(err: unknown): EnvelopeOrSkip {
       },
     };
   }
-  // Plan 04-04 T-04-01: image URL invalid (non-https / SSRF) — Plan 05 consumer.
+  // Plan 04-04 T-04-01 / Plan 04-05 D-C4: image URL invalid (non-https / SSRF guard).
+  // param points at the source.url path so clients can map the failure to the block.
   if (err instanceof InvalidImageUrlError) {
     return {
       error: {
@@ -323,9 +291,10 @@ export function toAnthropicErrorEnvelope(err: unknown): AnthropicEnvelopeOrSkip 
   if (err instanceof CapabilityNotSupportedError) {
     return { type: 'error', error: { type: 'invalid_request_error', message: err.message } };
   }
-  // Plan 04-04: InvalidToolArgumentsError / InvalidImageUrlError / ImageFetchError
-  // all map to invalid_request_error on the Anthropic surface (parity with
-  // toOpenAIErrorEnvelope where they're invalid_request_error + per-class code).
+  // Plan 04-04 / Plan 04-05: InvalidToolArgumentsError + InvalidImageUrlError + ImageFetchError
+  // all map to invalid_request_error on the Anthropic surface (taxonomy has no specific
+  // image_url or tool_arguments type — parity with toOpenAIErrorEnvelope which uses
+  // invalid_request_error + per-class code).
   if (
     err instanceof InvalidToolArgumentsError ||
     err instanceof InvalidImageUrlError ||
