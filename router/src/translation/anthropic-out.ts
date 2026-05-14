@@ -41,18 +41,34 @@ import {
 export type AnthropicMessage = CanonicalResponse;
 
 /**
+ * Plan 04-05 seam: opts.displayModel rewrites the response `model` field so the
+ * registry name appears on the wire instead of the upstream backend id. Mirrors
+ * CanonicalToAnthropicSseOpts.displayModel + CanonicalToOpenAIResponseOpts.displayModel.
+ */
+export interface CanonicalToAnthropicResponseOpts {
+  displayModel?: string;
+}
+
+/**
  * Translate a canonical response into the Anthropic /v1/messages wire shape.
  * For Phase 4 the canonical IS Anthropic — this is an identity mapping with one
  * defensive guard: strip the non-enumerable `_upstreamId` from the JSON serialization
  * (T-04-A2 — already non-enumerable, but explicit drop here for clarity in code review).
+ *
+ * Plan 04-05: opts.displayModel rewrites the wire `model` field (route consumes
+ * the seam so the registry name surfaces instead of the upstream backend id —
+ * replaces the prior `canonicalResult.model = entry.name` mutation).
  */
-export function canonicalToAnthropicResponse(canonical: CanonicalResponse): AnthropicMessage {
+export function canonicalToAnthropicResponse(
+  canonical: CanonicalResponse,
+  opts: CanonicalToAnthropicResponseOpts = {},
+): AnthropicMessage {
   return {
     id: canonical.id,
     type: canonical.type,
     role: canonical.role,
     content: canonical.content,
-    model: canonical.model,
+    model: opts.displayModel ?? canonical.model,
     stop_reason: canonical.stop_reason,
     stop_sequence: canonical.stop_sequence,
     usage: canonical.usage,

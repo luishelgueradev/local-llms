@@ -78,11 +78,26 @@ function readUpstreamId(canonical: CanonicalResponse): string | undefined {
 }
 
 /**
+ * Plan 04-05 seam: opts.displayModel rewrites the `model` field on the wire
+ * response so the registry name (e.g. "llama3.2:3b-instruct-q4_K_M") shows up
+ * instead of whatever the backend echoed in its own response (which for Ollama's
+ * /api/chat is the upstream model id, identical here but for vision dispatched
+ * via native /api/chat the canonical.model is the registry name passthrough). Mirrors
+ * canonicalToAnthropicResponse + canonicalToAnthropicSse / canonicalToOpenAISse opts.
+ */
+export interface CanonicalToOpenAIResponseOpts {
+  displayModel?: string;
+}
+
+/**
  * Translate a canonical response into the OpenAI ChatCompletion wire shape.
  * `_upstreamId` (non-enumerable) is preferred when present so the OpenAI surface
  * preserves the upstream id (Phase 2/3 tests assert `body.id === 'chatcmpl-msw'`).
  */
-export function canonicalToOpenAIResponse(canonical: CanonicalResponse): ChatCompletion {
+export function canonicalToOpenAIResponse(
+  canonical: CanonicalResponse,
+  opts: CanonicalToOpenAIResponseOpts = {},
+): ChatCompletion {
   // Collect all text blocks into a single string for choices[0].message.content.
   const textParts: string[] = [];
   for (const block of canonical.content) {
@@ -97,7 +112,7 @@ export function canonicalToOpenAIResponse(canonical: CanonicalResponse): ChatCom
     id,
     object: 'chat.completion',
     created: Math.floor(Date.now() / 1000),
-    model: canonical.model,
+    model: opts.displayModel ?? canonical.model,
     choices: [
       {
         index: 0,
@@ -176,6 +191,12 @@ export function openAIChatCompletionToCanonical(result: ChatCompletion): Canonic
 export interface CanonicalToOpenAISseOpts {
   signal?: AbortSignal;
   onCleanup?: () => void;
+  /**
+   * Plan 04-05 seam: when set, the synthetic chunk's `model` field is rewritten
+   * to this value (so the registry name appears on the wire instead of the
+   * backend's internal model id). Mirrors canonicalToAnthropicSse.displayModel.
+   */
+  displayModel?: string;
 }
 
 /**
@@ -215,7 +236,9 @@ export async function* canonicalToOpenAISse(
           // so the existing OpenAI integration tests stay green.
           const upstreamId = readUpstreamId(ev.message);
           id = upstreamId ?? ev.message.id.replace(/^msg_/, 'chatcmpl-');
-          model = ev.message.model;
+          // Plan 04-05: opts.displayModel rewrites the wire `model` field so the
+          // registry name surfaces instead of the upstream backend id.
+          model = opts.displayModel ?? ev.message.model;
           created = Math.floor(Date.now() / 1000);
           capturedInputTokens = ev.message.usage.input_tokens;
           break;

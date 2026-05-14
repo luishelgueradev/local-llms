@@ -1,35 +1,69 @@
-import OpenAI from 'openai';
+import OpenAI, { APIConnectionError } from 'openai';
 import type { BackendAdapter } from './adapter.js';
 import type {
   CanonicalRequest,
   CanonicalResponse,
   CanonicalStreamEvent,
 } from '../translation/canonical.js';
+import { newMessageId } from '../translation/canonical.js';
 import { canonicalToOpenAIChatCompletionParams } from '../translation/openai-in.js';
 import {
   openAIChatCompletionToCanonical,
   openAIChunksToCanonicalEvents,
 } from '../translation/openai-out.js';
+import {
+  canonicalToOllamaNativeChat,
+  ollamaNativeChunksToCanonicalEvents,
+} from '../translation/ollama-native-out.js';
+
+/**
+ * Walk canonical.messages → returns true iff any message has an image content block.
+ * Plan 04-05 (D-B3 / VISION-03 / Pitfall 8): image-bearing requests MUST dispatch
+ * through Ollama's NATIVE `/api/chat` endpoint — the OpenAI-compat shim at
+ * `/v1/chat/completions` is known-broken for vision (silently strips image content).
+ */
+function canonicalHasImage(canonical: CanonicalRequest): boolean {
+  for (const msg of canonical.messages) {
+    if (!Array.isArray(msg.content)) continue;
+    for (const block of msg.content) {
+      if (block.type === 'image') return true;
+    }
+  }
+  return false;
+}
 
 export class OllamaOpenAIAdapter implements BackendAdapter {
   private readonly client: OpenAI;
+  private readonly baseURL: string;
+  /**
+   * Derived native base — strips the trailing `/v1` so the Ollama-native
+   * `/api/chat` endpoint can be reached for vision dispatch (VISION-03).
+   */
+  private readonly nativeBase: string;
 
   constructor(baseURL: string) {
     // baseURL example: 'http://ollama:11434/v1'
     // apiKey is a non-empty placeholder per D-B1; local Ollama ignores it.
     // SDK v6 throws at construction time on empty apiKey (RESEARCH §Anti-Patterns).
+    this.baseURL = baseURL;
     this.client = new OpenAI({ baseURL, apiKey: 'ollama', timeout: 60_000 });
+    this.nativeBase = baseURL.replace(/\/v1\/?$/, '');
   }
 
   /**
-   * Plan 04 entry point (D-B1, D-B2). Canonical → OpenAI body → SDK call → canonical
-   * response. The OpenAI-compat path covers text + tool-call workloads; the native
-   * /api/chat branch for vision (D-B3) lands in Plan 05.
+   * Plan 04-05 entry point. Internal split:
+   *   - image-bearing canonical → native /api/chat via raw fetch (VISION-03)
+   *   - text/tool-only canonical → OpenAI-compat path (unchanged)
+   *
+   * The split is invisible to callers — the route + adapter contract stays canonical-only.
    */
   async chatCompletionsCanonical(
     canonical: CanonicalRequest,
     signal: AbortSignal,
   ): Promise<CanonicalResponse> {
+    if (canonicalHasImage(canonical)) {
+      return this.nativeChatCompletions(canonical, signal);
+    }
     const openaiReq = canonicalToOpenAIChatCompletionParams(canonical);
     const result = await this.client.chat.completions.create(
       {
@@ -45,23 +79,22 @@ export class OllamaOpenAIAdapter implements BackendAdapter {
   }
 
   /**
-   * Plan 04 streaming entry point. Returns an async iterable of CanonicalStreamEvent —
-   * upstream OpenAI chunks are reassembled by `openAIChunksToCanonicalEvents` into
-   * the canonical event sequence (message_start → content_block_* → message_delta →
-   * message_stop). The route layer (canonicalToOpenAISse on /v1/chat/completions or
-   * canonicalToAnthropicSse on /v1/messages) re-emits to the protocol-specific wire
-   * format.
+   * Plan 04-05 streaming entry point. Same internal split as non-stream:
+   *   - image-bearing canonical → native /api/chat NDJSON via raw fetch (VISION-03)
+   *   - text/tool-only canonical → OpenAI-compat SSE (unchanged)
    *
    * Plan 04-03 (Issue #6): `opts.inputTokensHint` is the route's pre-stream
-   * `countTokens(canonical)` pre-count. Forwarded to `openAIChunksToCanonicalEvents`
-   * so `message_start.message.usage.input_tokens` is non-zero on the Anthropic
-   * surface. Plan 05 will mirror this in the native /api/chat branch.
+   * `countTokens(canonical)` pre-count. Forwarded to both branches so
+   * `message_start.message.usage.input_tokens` is non-zero on the Anthropic surface.
    */
   async chatCompletionsCanonicalStream(
     canonical: CanonicalRequest,
     signal: AbortSignal,
     opts?: { inputTokensHint?: number },
   ): Promise<AsyncIterable<CanonicalStreamEvent>> {
+    if (canonicalHasImage(canonical)) {
+      return this.nativeChatCompletionsStream(canonical, signal, opts);
+    }
     const openaiReq = canonicalToOpenAIChatCompletionParams(canonical);
     const upstream = await this.client.chat.completions.create(
       {
@@ -78,6 +111,82 @@ export class OllamaOpenAIAdapter implements BackendAdapter {
     return openAIChunksToCanonicalEvents(upstream, {
       model: canonical.model,
       inputTokensHint: opts?.inputTokensHint,
+    });
+  }
+
+  /**
+   * Plan 04-05 (D-B3 / VISION-03): native /api/chat dispatch for vision.
+   *
+   * The OpenAI Node SDK can't be reused here because Ollama's native endpoint
+   * speaks Ollama's wire shape, not OpenAI's. Raw `fetch` with the AbortSignal
+   * forwarded preserves the SC3 (client-disconnect) abort propagation chain.
+   *
+   * Errors:
+   *   - canonicalToOllamaNativeChat throws InvalidImageUrlError / ImageFetchError
+   *     when URL-source images fail any of the SSRF guards. These bubble up to
+   *     the centralized error handler (envelope.ts maps to 400).
+   *   - non-2xx HTTP → APIConnectionError (mapped to 502 by envelope.ts).
+   */
+  private async nativeChatCompletions(
+    canonical: CanonicalRequest,
+    signal: AbortSignal,
+  ): Promise<CanonicalResponse> {
+    const nativeReq = await canonicalToOllamaNativeChat({ ...canonical, stream: false });
+    const res = await fetch(`${this.nativeBase}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(nativeReq),
+      signal,
+    });
+    if (!res.ok) {
+      throw new APIConnectionError({
+        cause: new Error(`Ollama native /api/chat returned ${res.status}`),
+      });
+    }
+    const body = (await res.json()) as {
+      model?: string;
+      message?: { role?: string; content?: string };
+      prompt_eval_count?: number;
+      eval_count?: number;
+    };
+    const content = body.message?.content ?? '';
+    const canonicalResp: CanonicalResponse = {
+      id: newMessageId(),
+      type: 'message',
+      role: 'assistant',
+      content: [{ type: 'text', text: content }],
+      model: canonical.model,
+      stop_reason: 'end_turn',
+      stop_sequence: null,
+      usage: {
+        input_tokens: body.prompt_eval_count ?? 0,
+        output_tokens: body.eval_count ?? 0,
+      },
+    };
+    return canonicalResp;
+  }
+
+  private async nativeChatCompletionsStream(
+    canonical: CanonicalRequest,
+    signal: AbortSignal,
+    opts?: { inputTokensHint?: number },
+  ): Promise<AsyncIterable<CanonicalStreamEvent>> {
+    const nativeReq = await canonicalToOllamaNativeChat({ ...canonical, stream: true });
+    const res = await fetch(`${this.nativeBase}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(nativeReq),
+      signal,
+    });
+    if (!res.ok) {
+      throw new APIConnectionError({
+        cause: new Error(`Ollama native /api/chat returned ${res.status}`),
+      });
+    }
+    return ollamaNativeChunksToCanonicalEvents(res.body, {
+      model: canonical.model,
+      inputTokensHint: opts?.inputTokensHint,
+      signal,
     });
   }
 
