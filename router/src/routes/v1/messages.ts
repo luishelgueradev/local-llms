@@ -1,16 +1,23 @@
 /**
- * messages.ts — POST /v1/messages route (Plan 04-02 non-stream branch only).
+ * messages.ts — POST /v1/messages route.
  *
  * Wire surface: Anthropic Messages API. Body validated by anthropic-in.ts'
  * AnthropicMessagesRequestSchema (carrying the role-alternation + tool_result
- * ordering superRefines). Translation through canonical → adapter.canonical →
- * canonicalToAnthropicResponse. The route's structure mirrors chat-completions.ts
- * byte-for-byte for AbortController + onClose + safeRelease + semaphore plumbing.
+ * ordering superRefines). Translation through canonical → adapter.canonical{,Stream} →
+ * canonicalToAnthropicResponse|Sse. The route's AbortController + onClose +
+ * safeRelease + semaphore + heartbeat + sseCleanup plumbing mirrors
+ * chat-completions.ts byte-for-byte; only the translator pipeline differs.
  *
- * Plan 04-02 ships the non-stream branch only. The stream branch returns 501 with
- * an Anthropic envelope pointing at Plan 04-03 (ANTHR-01 + ANTHR-06 + ANTHR-07).
- * Plan 04-03 replaces the 501 stub with the full SSE pipeline (canonicalToAnthropicSse
- * + reply.sse() + heartbeat).
+ * Plan 04-02 shipped the non-stream branch + a 501 stub for streaming. Plan 04-03
+ * (THIS edit) replaces the 501 stub with the full SSE pipeline:
+ *   countTokens(canonical)  → inputTokensHint
+ *   adapter.chatCompletionsCanonicalStream(canonical, signal, { inputTokensHint })
+ *   reply.sse(canonicalToAnthropicSse(upstream, { signal, onCleanup }))
+ *   startAnthropicHeartbeat(reply.raw)   ← typed `event: ping` frame every 15s
+ *
+ * Issue #6 resolution: the route does NOT intercept the canonical event stream to
+ * back-patch input_tokens. The hint is computed ONCE here and passed to the adapter
+ * via the new opts arg; the adapter→translator pipeline owns event emission.
  *
  * D-E5 / T-04-05: anthropic-version request header is echoed verbatim on the
  * response, length-capped to 64 chars with CR/LF stripped (header injection mitigation).
@@ -29,9 +36,20 @@ import type { RegistryStore } from '../../config/registry.js';
 import type { AdapterFactory, BackendAdapter } from '../../backends/adapter.js';
 import type { BackendSemaphore } from '../../concurrency/semaphore.js';
 import { BackendSaturatedError } from '../../concurrency/semaphore.js';
+import { startAnthropicHeartbeat } from '../../sse/heartbeat.js';
 import { anthropicRequestToCanonical } from '../../translation/anthropic-in.js';
-import { canonicalToAnthropicResponse } from '../../translation/anthropic-out.js';
-import { CapabilityNotSupportedError } from '../../errors/envelope.js';
+import {
+  canonicalToAnthropicResponse,
+  canonicalToAnthropicSse,
+} from '../../translation/anthropic-out.js';
+import { countTokens } from '../../translation/count-tokens.js';
+import type { CanonicalStreamEvent } from '../../translation/canonical.js';
+import {
+  ANTHROPIC_NO_ENVELOPE,
+  CapabilityNotSupportedError,
+  mapToHttpStatus,
+  toAnthropicErrorEnvelope,
+} from '../../errors/envelope.js';
 
 /**
  * Permissive body schema. The translator's AnthropicMessagesRequestSchema is the
@@ -114,21 +132,6 @@ export function registerMessagesRoute(
         void reply.header('anthropic-version', echoed);
       }
 
-      // Plan 04-03 replaces this stub with the full streaming pipeline.
-      // Returning the Anthropic envelope keeps clients on the Anthropic surface
-      // — the centralized error handler is NOT involved here because we're
-      // synthesizing a deliberate 501 (not throwing).
-      if (body.stream === true) {
-        return reply.code(501).send({
-          type: 'error',
-          error: {
-            type: 'invalid_request_error',
-            message:
-              'streaming not yet implemented; lands in Plan 04-03 — POST with stream:false',
-          },
-        });
-      }
-
       // Resolve model → entry → adapter. resolve(unknown) throws RegistryUnknownModelError
       // which the centralized error handler maps to 404 + Anthropic envelope.
       const entry = opts.registry.resolve(body.model);
@@ -148,16 +151,22 @@ export function registerMessagesRoute(
 
       // ── AbortController plumbing (mirrors chat-completions.ts) ──────────────
       const controller = new AbortController();
+      // Mutable closure so onClose can also stop the heartbeat once the stream branch
+      // starts it. No-op until then.
+      let stopHeartbeat: (() => void) | null = null;
       const onClose = (): void => {
         controller.abort(new Error('client-disconnect'));
+        stopHeartbeat?.();
       };
+      // WR-05 (chat-completions.ts) — log when req.raw.socket is undefined so the
+      // SC3 abort-propagation degradation is observable. Same logic as chat-completions.
       const sock = req.raw.socket;
       if (sock) {
         sock.once('close', onClose);
       } else {
         req.log.warn(
           { url: req.url },
-          'messages: req.raw.socket undefined — abort propagation may not fire',
+          'messages: req.raw.socket undefined — abort propagation may not fire (HTTP/2 or inject?)',
         );
       }
 
@@ -174,7 +183,85 @@ export function registerMessagesRoute(
         release = await semaphore.acquire(controller.signal);
         released = false;
 
-        // Non-stream branch only in Plan 04-02. Plan 04-03 lands the stream branch.
+        if (body.stream === true) {
+          // ── STREAM BRANCH (Plan 04-03 — ANTHR-01 stream / ANTHR-06 / ANTHR-07) ─
+          //
+          // Issue #6 resolution: pre-stream input_tokens hint computed ONCE here
+          // and passed to the adapter via the new opts arg. The adapter forwards
+          // it into openAIChunksToCanonicalEvents (or the Plan 05 native /api/chat
+          // branch's ollamaNativeChunksToCanonicalEvents) so the synthetic
+          // message_start event already carries a wire-correct input_tokens. The
+          // route does NOT intercept the canonical event stream to back-patch.
+          const inputTokensHint = countTokens(canonical);
+
+          let upstream: AsyncIterable<CanonicalStreamEvent>;
+          try {
+            // Some SDKs throw synchronously on bad params; some return a thenable
+            // that rejects. Wrap in try/catch so a PRE-STREAM error becomes a JSON
+            // Anthropic envelope (not a half-written SSE response).
+            upstream = await adapter.chatCompletionsCanonicalStream(
+              canonical,
+              controller.signal,
+              { inputTokensHint },
+            );
+          } catch (err) {
+            // HTTP not yet 200; emit Anthropic envelope.
+            req.raw.socket?.off('close', onClose);
+            const env = toAnthropicErrorEnvelope(err);
+            const status = mapToHttpStatus(err);
+            if (env === ANTHROPIC_NO_ENVELOPE) return; // client gone — defensive
+            return reply.code(status).send(env);
+          }
+
+          // Start heartbeat AFTER upstream resolves but BEFORE consuming. The SSE
+          // plugin flushes headers on the first iteration; starting before the first
+          // yield is equivalent to "after the first byte" (RESEARCH §Pattern 3).
+          // Stops in both onCleanup AND onClose's stopHeartbeat hook.
+          const heartbeat = startAnthropicHeartbeat(reply.raw);
+          stopHeartbeat = () => heartbeat.stop();
+
+          // sseCleanup runs in canonicalToAnthropicSse's finally on stream end /
+          // abort / error. CRITICAL (Pitfall 1 / T-3-D4): MUST call safeRelease so
+          // the semaphore slot is released when the SSE stream closes — NOT when
+          // the adapter call returns (which is immediately for streaming).
+          const sseCleanup = (): void => {
+            heartbeat.stop();
+            req.raw.socket?.off('close', onClose);
+            safeRelease();
+          };
+
+          // WR-04 fix (chat-completions.ts:194-208): wrap reply.sse in try/finally
+          // so the heartbeat is always stopped, including when reply.sse rejects
+          // synchronously (headers already sent / plugin degraded). heartbeat.stop()
+          // is idempotent — calling it twice (here AND from sseCleanup) is safe.
+          try {
+            await reply.sse(
+              canonicalToAnthropicSse(upstream, {
+                signal: controller.signal,
+                onCleanup: sseCleanup,
+                // Plan 04-04 will add displayModel: entry.name + idOverride here.
+              }),
+            );
+          } finally {
+            heartbeat.stop();
+          }
+
+          // Belt-and-suspenders log: if the request ended with a client-abort, log info.
+          // Byte-equivalent to chat-completions.ts:207-216.
+          if (controller.signal.aborted) {
+            req.log.info(
+              {
+                url: req.url,
+                bytesEmitted: heartbeat.bytesSinceStart,
+                msSinceStart: heartbeat.msSinceStart,
+              },
+              'stream: client disconnected',
+            );
+          }
+          return;
+        }
+
+        // ── NON-STREAM BRANCH (Plan 04-02 — byte-identical to before) ─────────
         const canonicalResult = await adapter.chatCompletionsCanonical(canonical, controller.signal);
 
         // TEMPORARY (Plan 04-02 Task 2 step 6): the adapter returns canonical.model
