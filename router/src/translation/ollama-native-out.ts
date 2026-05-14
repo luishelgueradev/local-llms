@@ -348,7 +348,7 @@ export async function fetchImageAsBase64(
     const pinned = pinnedAddresses;
     dispatcher = new Agent({
       connect: {
-        lookup(hostname, _opts, cb) {
+        lookup(hostname, opts, cb) {
           // Re-apply the deny check against the pinned set (defense in depth —
           // the set was already validated in step 2 but a future change to
           // isDenied should not retroactively trust step 2's verdict).
@@ -357,6 +357,15 @@ export async function fetchImageAsBase64(
               cb(new Error('private address blocked at connect'), '', 0);
               return;
             }
+          }
+          // Undici invokes this with opts.all=true and expects either:
+          //   - cb(null, [{address, family}, ...])    when all === true
+          //   - cb(null, address, family)             when all !== true
+          // Bridging the two avoids the silent "Invalid IP address: undefined"
+          // TypeError that surfaces as a generic "fetch failed" upstream.
+          if (opts && (opts as { all?: boolean }).all) {
+            (cb as unknown as (e: NodeJS.ErrnoException | null, addrs: { address: string; family: number }[]) => void)(null, pinned);
+            return;
           }
           const first = pinned[0];
           if (first === undefined) {

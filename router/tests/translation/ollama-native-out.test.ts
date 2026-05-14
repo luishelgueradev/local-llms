@@ -372,6 +372,27 @@ describe('fetchImageAsBase64 — URL guard chain (D-C4 SSRF mitigation)', () => 
     }
   });
 
+  // CR-02 follow-up regression: when undici invokes the dispatcher's lookup hook
+  // it passes `opts.all === true` and expects the callback to return either:
+  //   - cb(null, [{address, family}, ...])    when all === true
+  //   - cb(null, address, family)             when all !== true
+  // The original CR-02 fix only handled the second form, causing undici to throw
+  // "Invalid IP address: undefined" which surfaced as a generic "fetch failed"
+  // upstream. msw-stubbed tests did not catch the bug because msw intercepts at
+  // a higher layer (the dispatcher's lookup never fires). This test exercises
+  // the all-true branch through real fetch + a non-loopback HTTPS endpoint via
+  // an msw-stubbed body so the path goes through the dispatcher.
+  it('URL source — pinned-IP Agent lookup honors opts.all === true (CR-02 followup)', async () => {
+    const url = 'https://lookup-all.example/test.png';
+    server.use(imageFetchHandler({ url, contentType: 'image/png', bodyBytes: PNG_1x1_BYTES }));
+    vi.spyOn(dns.promises, 'lookup').mockResolvedValueOnce([
+      { address: '93.184.216.34', family: 4 },
+      { address: '93.184.216.35', family: 4 },
+    ] as never);
+    const out = await fetchImageAsBase64(url);
+    expect(out).toBe(PNG_1x1_BASE64);
+  });
+
   // CR-01 regression: even though the initial DNS lookup resolves to a public IP
   // and the scheme is https, a 3xx response must NOT be followed — the redirect
   // target could be an internal endpoint or a non-https scheme that bypasses the
