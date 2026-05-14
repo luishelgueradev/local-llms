@@ -17,7 +17,7 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../../src/app.js';
-import { makeFakeBufferedWriter } from '../fakes.js';
+import { makeFakeBufferedWriter, makeFakeMetrics } from '../fakes.js';
 import { loadRegistryFromString, makeRegistryStore } from '../../src/config/registry.js';
 import { BackendSemaphore } from '../../src/concurrency/semaphore.js';
 import type { ModelEntry } from '../../src/config/registry.js';
@@ -61,6 +61,7 @@ beforeEach(async () => {
     makeAdapter: (entry: ModelEntry) => new OllamaOpenAIAdapter(entry.backend_url),
     semaphoreFactory: (n, c, w) => new BackendSemaphore(n, c, w),
     bufferedWriter: makeFakeBufferedWriter(),
+    metrics: makeFakeMetrics(),
   });
 });
 afterEach(async () => {

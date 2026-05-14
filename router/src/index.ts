@@ -6,6 +6,7 @@ import { makeLoggerOptions } from './log/logger.js';
 import { makeDb, makePool } from './db/index.js';
 import { runMigrations } from './db/migrate.js';
 import { makeBufferedWriter } from './db/bufferedWriter.js';
+import { makeMetricsRegistry } from './metrics/registry.js';
 
 async function main(): Promise<void> {
   const env = loadEnv();
@@ -26,15 +27,15 @@ async function main(): Promise<void> {
   const db = makeDb(pool);
   await runMigrations(db, bootLog);
 
-  // STUB droppedCounter — Plan 05-02 replaces this with the real
-  // metrics.logBufferDroppedTotal Counter (D-C3 — increments on D-A1
-  // overflow drops). The stub is correct for Plan 05-01 because routes
-  // don't push rows yet (Plan 05-02 lands recordOutcome + the route call
-  // sites that produce rows).
-  const droppedCounterStub = { inc: () => {} }; // TODO 05-02: replace with metrics.logBufferDroppedTotal
+  // Plan 05-02 (D-C3, OBS-01) — fresh prom-client registry per process.
+  // Constructed BEFORE the bufferedWriter so its logBufferDroppedTotal
+  // counter wires into the writer as the real counter (replacing the
+  // stub from Plan 05-01).
+  const metrics = makeMetricsRegistry();
+
   const bufferedWriter = makeBufferedWriter({
     db,
-    droppedCounter: droppedCounterStub,
+    droppedCounter: metrics.logBufferDroppedTotal,
     logger: bootLog,
   });
 
@@ -48,6 +49,7 @@ async function main(): Promise<void> {
     bearerToken: env.ROUTER_BEARER_TOKEN,
     loggerOpts,
     bufferedWriter,
+    metrics,
   });
 
   // RESEARCH A4 / Pitfall 7 — operator opts into polling fallback for WSL2 + Docker

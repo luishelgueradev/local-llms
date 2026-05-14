@@ -59,6 +59,30 @@ export class CapabilityNotSupportedError extends Error {
 }
 
 /**
+ * Plan 05-02 D-D5 / ROUTE-09: thrown by the agentIdPreHandler when an inbound
+ * X-Agent-Id header violates the regex `/^[A-Za-z0-9._:-]{1,128}$/`. Maps to
+ * 400 + invalid_request_error on both wire surfaces (OpenAI envelope:
+ * code='invalid_agent_id'; Anthropic envelope: type='invalid_request_error').
+ *
+ * The supplied value is truncated to 32 chars in the message body so an
+ * attacker spraying long agent-ids can't bloat error envelopes / log lines
+ * (defense in depth).
+ */
+export class InvalidAgentIdError extends Error {
+  readonly code = 'invalid_agent_id';
+  constructor(public readonly suppliedValue: string) {
+    const display =
+      typeof suppliedValue === 'string' && suppliedValue.length > 32
+        ? `${suppliedValue.slice(0, 32)}...`
+        : String(suppliedValue ?? '');
+    super(
+      `X-Agent-Id "${display}" violates regex /^[A-Za-z0-9._:-]{1,128}$/`,
+    );
+    this.name = 'InvalidAgentIdError';
+  }
+}
+
+/**
  * Plan 04-04 T-04-02 mitigation: thrown by openai-in.ts when an OpenAI assistant
  * `tool_calls[i].function.arguments` string is not valid JSON. Maps to 400 +
  * invalid_request_error with code:'invalid_tool_arguments' on both wire surfaces.
@@ -94,6 +118,8 @@ export function mapToHttpStatus(err: unknown): number {
   if (err instanceof RegistryUnknownModelError) return 404;
   // Plan 04-02 D-C2: missing capability for the requested model — pre-adapter 400.
   if (err instanceof CapabilityNotSupportedError) return 400;
+  // Plan 05-02 D-D5 / ROUTE-09: X-Agent-Id regex violation — pre-route 400.
+  if (err instanceof InvalidAgentIdError) return 400;
   // Plan 04-04 T-04-02: malformed tool_calls[].function.arguments — 400.
   if (err instanceof InvalidToolArgumentsError) return 400;
   // Plan 04-04 T-04-01: image URL or fetch failures — 400 (Plan 05 consumer / D-C4 SSRF).
@@ -150,6 +176,17 @@ export function toOpenAIErrorEnvelope(err: unknown): EnvelopeOrSkip {
         type: 'invalid_request_error',
         code: 'model_capability_mismatch',
         param: 'model',
+      },
+    };
+  }
+  // Plan 05-02 D-D5: X-Agent-Id regex violation — OpenAI envelope.
+  if (err instanceof InvalidAgentIdError) {
+    return {
+      error: {
+        message: err.message,
+        type: 'invalid_request_error',
+        code: 'invalid_agent_id',
+        param: 'X-Agent-Id',
       },
     };
   }
@@ -289,6 +326,10 @@ export function toAnthropicErrorEnvelope(err: unknown): AnthropicEnvelopeOrSkip 
     return { type: 'error', error: { type: 'not_found_error', message: err.message } };
   }
   if (err instanceof CapabilityNotSupportedError) {
+    return { type: 'error', error: { type: 'invalid_request_error', message: err.message } };
+  }
+  // Plan 05-02 D-D5: X-Agent-Id regex violation — Anthropic envelope.
+  if (err instanceof InvalidAgentIdError) {
     return { type: 'error', error: { type: 'invalid_request_error', message: err.message } };
   }
   // Plan 04-04 / Plan 04-05: InvalidToolArgumentsError + InvalidImageUrlError + ImageFetchError

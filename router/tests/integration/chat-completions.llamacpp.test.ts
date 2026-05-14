@@ -16,7 +16,7 @@ import type { FastifyInstance } from 'fastify';
 import { server } from '../setup.js';
 import { ollamaStreamHandler, llamacppStreamHandler } from '../msw/handlers.js';
 import { buildApp } from '../../src/app.js';
-import { makeFakeBufferedWriter } from '../fakes.js';
+import { makeFakeBufferedWriter, makeFakeMetrics } from '../fakes.js';
 import { loadRegistryFromString, makeRegistryStore } from '../../src/config/registry.js';
 import { LlamacppOpenAIAdapter } from '../../src/backends/llamacpp-openai.js';
 import { makeAdapter } from '../../src/backends/factory.js';
@@ -73,6 +73,7 @@ beforeEach(async () => {
       get: () => ({ acquire: async () => () => {}, stats: () => ({ inFlight: 0, queued: 0 }) }) as never,
     },
     bufferedWriter: makeFakeBufferedWriter(),
+    metrics: makeFakeMetrics(),
   });
 });
 afterEach(async () => {
@@ -181,6 +182,7 @@ describe('SC1 proof: factory.makeAdapter routes to different backend by model na
         get: () => ({ acquire: async () => () => {}, stats: () => ({ inFlight: 0, queued: 0 }) }) as never,
       },
       bufferedWriter: makeFakeBufferedWriter(),
+    metrics: makeFakeMetrics(),
     });
   });
   afterEach(async () => {

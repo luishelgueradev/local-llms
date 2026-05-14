@@ -65,8 +65,13 @@ describe('agentIdPreHandler (ROUTE-09, D-D5)', () => {
   });
 
   it('2. valid X-Agent-Id "claude-code:luis" — pino child log line carries agent_id', async () => {
-    // Send a body-shape-invalid request so it 400s without needing upstream; pino still
-    // logs from the centralized error handler via req.log.warn(...).
+    // Send a VALID body so zod validation (preValidation) passes; agentIdPreHandler
+    // (preHandler hook, runs AFTER preValidation) fires and augments req.log via
+    // req.log = req.log.child({ agent_id }). Subsequent route-level logs (request
+    // completion, any upstream-call info logs) carry the agent_id field.
+    // No upstream handler is registered → request will 502 (APIConnectionError),
+    // but req.log.warn from the centralized error handler runs AFTER agentIdPreHandler,
+    // so the warn line carries agent_id.
     const res = await app.inject({
       method: 'POST',
       url: '/v1/chat/completions',
@@ -75,9 +80,10 @@ describe('agentIdPreHandler (ROUTE-09, D-D5)', () => {
         'content-type': 'application/json',
         'x-agent-id': 'claude-code:luis',
       },
-      payload: { messages: [{ role: 'user', content: 'hi' }] }, // missing model -> 400
+      payload: { model: MODEL_NAME, messages: [{ role: 'user', content: 'hi' }] },
     });
-    expect(res.statusCode).toBe(400);
+    // Either 200 (if upstream mock active) or 502 (no msw handler) — both run pino logs.
+    expect([200, 502]).toContain(res.statusCode);
     const lines = collectedLogLines.join('');
     expect(lines).toContain('"agent_id":"claude-code:luis"');
   });

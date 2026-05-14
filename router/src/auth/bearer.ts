@@ -3,7 +3,13 @@ import type { FastifyRequest, FastifyReply } from 'fastify';
 import { BearerAuthError } from '../errors/envelope.js';
 
 /** Routes that skip bearer auth. ROUTE-04 is the single source of truth. */
-export const PUBLIC_PATHS: ReadonlySet<string> = new Set(['/healthz', '/readyz']);
+// TODO Phase 6: Traefik MUST add a middleware returning 404 for external
+// /metrics requests (CONTEXT D-C5, RESEARCH Pitfall 11). Currently safe
+// because router binds 127.0.0.1:3000 (compose.yml line 224). Phase 6
+// removes that binding — DO NOT FORGET TO ADD THE PATH BLACKLIST when
+// Traefik lands. The /metrics surface is operational telemetry (request
+// rates, error rates per backend) and IS reconnaissance data for an attacker.
+export const PUBLIC_PATHS: ReadonlySet<string> = new Set(['/healthz', '/readyz', '/metrics']);
 
 export function makeBearerHook(expectedToken: string) {
   if (!expectedToken || expectedToken.length < 8) {

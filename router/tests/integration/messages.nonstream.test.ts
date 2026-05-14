@@ -19,7 +19,7 @@ import {
   imageFetchHandler,
 } from '../msw/handlers.js';
 import { buildApp } from '../../src/app.js';
-import { makeFakeBufferedWriter } from '../fakes.js';
+import { makeFakeBufferedWriter, makeFakeMetrics } from '../fakes.js';
 import { loadRegistryFromString, makeRegistryStore } from '../../src/config/registry.js';
 import { OllamaOpenAIAdapter } from '../../src/backends/ollama-openai.js';
 import type { ModelEntry } from '../../src/config/registry.js';
@@ -55,6 +55,7 @@ beforeEach(async () => {
         ({ acquire: async () => () => {}, stats: () => ({ inFlight: 0, queued: 0 }) }) as never,
     },
     bufferedWriter: makeFakeBufferedWriter(),
+    metrics: makeFakeMetrics(),
   });
 });
 afterEach(async () => {
@@ -423,6 +424,7 @@ describe('POST /v1/messages — Plan 04-05 vision (VISION-01..03)', () => {
           ({ acquire: async () => () => {}, stats: () => ({ inFlight: 0, queued: 0 }) }) as never,
       },
       bufferedWriter: makeFakeBufferedWriter(),
+    metrics: makeFakeMetrics(),
     });
   });
   afterEach(async () => {

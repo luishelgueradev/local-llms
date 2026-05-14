@@ -1,4 +1,8 @@
-import Fastify, { type FastifyInstance, type FastifyServerOptions } from 'fastify';
+import Fastify, {
+  type FastifyInstance,
+  type FastifyServerOptions,
+  type preHandlerAsyncHookHandler,
+} from 'fastify';
 import { FastifySSEPlugin } from 'fastify-sse-v2';
 import {
   serializerCompiler,
@@ -25,6 +29,8 @@ import { makeAdapter as defaultMakeAdapter } from './backends/factory.js';
 import { registerReadyz } from './routes/readyz.js';
 import { BackendSemaphore } from './concurrency/semaphore.js';
 import type { BufferedWriter } from './db/bufferedWriter.js';
+import type { MetricsRegistry } from './metrics/registry.js';
+import { agentIdPreHandler as defaultAgentIdPreHandler } from './middleware/agentId.js';
 
 // Fastify module augmentation so TypeScript knows about app.liveness + app.semaphores (decorators).
 declare module 'fastify' {
@@ -73,6 +79,19 @@ export interface BuildAppOpts {
    * dropped.
    */
   bufferedWriter: BufferedWriter;
+  /**
+   * Plan 05-02 (D-C3 + OBS-01) — required for production wiring; in test
+   * fixtures construct via `makeMetricsRegistry()` (lightweight: fresh
+   * Registry + 5 metrics + Node defaults). The /metrics route reads
+   * `opts.metrics.register.contentType` and `.metrics()`.
+   */
+  metrics: MetricsRegistry;
+  /**
+   * Plan 05-02 (D-D5 / ROUTE-09) — preHandler that validates X-Agent-Id and
+   * attaches req.agentId + decorates req.log child. Defaults to the
+   * production agentIdPreHandler; tests override for hook-isolation cases.
+   */
+  agentIdPreHandler?: preHandlerAsyncHookHandler;
 }
 
 export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
@@ -94,6 +113,14 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
   // so invalid tokens are rejected before any route-level processing occurs.
   // Using 'onRequest' (not 'preHandler') ensures auth is the first gate (Rule 1 fix).
   app.addHook('onRequest', makeBearerHook(opts.bearerToken));
+
+  // Plan 05-02 (D-D5 / ROUTE-09) — X-Agent-Id preHandler runs AFTER bearer
+  // auth (onRequest) and BEFORE the route handler. Hook ordering verified
+  // against fastify.dev/docs/v5.8.x/Reference/Hooks/: onRequest → ... →
+  // preHandler. Bearer must pass first; agent-id is post-auth metadata
+  // enrichment. The handler also stamps req._t0 = performance.now() — the
+  // latency_ms source for the request_log row (D-D6 + Plan 05-02 Task 3).
+  app.addHook('preHandler', opts.agentIdPreHandler ?? defaultAgentIdPreHandler);
 
   // Centralized error handler — D-C1 envelope for ANY uncaught error from a route.
   // The route handlers in plan 02-03 + 02-04 may also handle errors locally; this is the
@@ -228,6 +255,16 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
 
   // GET /readyz — public, per-backend liveness summary (Plan 03-03, ROUTE-06).
   registerReadyz(app, opts.registry, liveness);
+
+  // GET /metrics — Plan 05-02 (D-C3, D-C5, OBS-01). Prometheus text/plain format.
+  // Public (skip-list in auth/bearer.ts), loopback-bound until Phase 6 (Pitfall 11).
+  // No compress middleware here (forbidden globally on streaming routes since
+  // Phase 2; /metrics is short text but the precedent stands — Prometheus
+  // scrapers reject gzip without negotiation).
+  app.get('/metrics', async (_req, reply) => {
+    void reply.type(opts.metrics.register.contentType);
+    return opts.metrics.register.metrics();
+  });
 
   // Chat completions — non-stream branch in plan 02-03; stream branch in plan 02-04
   // (same route file; plan 02-04 replaces the 501 stub).
