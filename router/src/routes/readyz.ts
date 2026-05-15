@@ -5,7 +5,7 @@
  * - Strict-all aggregation: 200 only when ALL declared backends are alive (D-D4)
  *   Plan 05-04 (D-G2): also requires postgres alive when configured.
  * - Cache-only hot path: reads in-memory probe cache synchronously (D-D2 / T-3-D1)
- * - Stale detection: lastProbeAt older than 2 × INTERVAL_MS → 'stale' (D-D6)
+ * - Stale detection: lastProbeAt older than 2 × LIVENESS_INTERVAL_MS → 'stale' (D-D6)
  * - Explicit field projection: no spread of internal probe state (T-3-02)
  *
  * Response shape (D-D4 + Plan 05-04 postgres extension):
@@ -21,11 +21,10 @@ import type { FastifyInstance } from 'fastify';
 import type { RegistryStore } from '../config/registry.js';
 import type { LivenessScheduler } from '../backends/liveness.js';
 import { POSTGRES_PROBE_URL } from '../app.js';
+import { LIVENESS_INTERVAL_MS } from '../config/constants.js';
 
 /** 2 × scheduler interval — probes older than this are considered stale (D-D6). */
 const STALE_FACTOR = 2;
-/** Must match the scheduler's intervalMs default in app.ts / makeLivenessScheduler. */
-const INTERVAL_MS = 10_000;
 
 export function registerReadyz(
   app: FastifyInstance,
@@ -51,7 +50,7 @@ export function registerReadyz(
       }
 
       const age = now - new Date(r.lastProbeAt).getTime();
-      const stale = age > STALE_FACTOR * INTERVAL_MS;
+      const stale = age > STALE_FACTOR * LIVENESS_INTERVAL_MS;
 
       // Explicit projection only — no spread of ProbeResult (T-3-02 mitigation).
       // error field is the upstream message string, NEVER a stack trace.
@@ -84,7 +83,7 @@ export function registerReadyz(
         postgresAlive = false;
       } else {
         const age = now - new Date(r.lastProbeAt).getTime();
-        const stale = age > STALE_FACTOR * INTERVAL_MS;
+        const stale = age > STALE_FACTOR * LIVENESS_INTERVAL_MS;
         const status = stale ? ('stale' as const) : r.status;
         postgres = {
           status,

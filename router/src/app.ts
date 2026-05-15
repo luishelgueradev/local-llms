@@ -28,6 +28,7 @@ import {
 import { makeLivenessScheduler, type LivenessScheduler } from './backends/liveness.js';
 import { makeAdapter as defaultMakeAdapter } from './backends/factory.js';
 import { registerReadyz } from './routes/readyz.js';
+import { LIVENESS_INTERVAL_MS } from './config/constants.js';
 import { BackendSemaphore } from './concurrency/semaphore.js';
 import type { BufferedWriter } from './db/bufferedWriter.js';
 import type { UsageDailyScheduler } from './db/usageDaily.js';
@@ -282,7 +283,7 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
     : null;
 
   const schedulerOpts: Parameters<typeof makeLivenessScheduler>[0] = {
-    intervalMs: 10_000,
+    intervalMs: LIVENESS_INTERVAL_MS,
     timeoutMs: 2_000,
     logger: app.log as Parameters<typeof makeLivenessScheduler>[0]['logger'],
     probe: async (url, signal) => {
