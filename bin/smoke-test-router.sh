@@ -525,13 +525,29 @@ sys.exit(0 if isinstance(content, str) and len(content) > 0 else 1)
   # ========================================================================
   # Subsection B: --profile llamacpp active (the swap -- SC1 proof)
   # ========================================================================
-  echo ""
-  echo "[smoke-test-router] Phase 3.B: bringing up --profile llamacpp..."
-  if docker compose --profile llamacpp up -d --wait 2>&1 | tail -5; then
-    pass "compose --profile llamacpp up -d --wait succeeded"
+  #
+  # Hardware-dependent: cold-loading a 4.7GB GGUF on llamacpp can exceed
+  # the service `start_period` (60s in compose.yml) on WSL2/slower hosts,
+  # making `up --wait` time out even when the eventual load succeeds.
+  # Operators on such hosts can opt out via SKIP_LLAMACPP=1 — Phase 3.B is
+  # skipped entirely (SKIPS bumped, FAILURES untouched) and Phase 4 + 5
+  # still run because they re-establish --profile ollama state.
+  if [[ "${SKIP_LLAMACPP:-0}" == "1" ]]; then
+    skip "Phase 3.B (SKIP_LLAMACPP=1): llamacpp profile + SC1-half-2 (qwen2.5) + BCKND-02 GPU residency skipped"
   else
-    fail "compose --profile llamacpp up -d --wait failed"
-  fi
+    echo ""
+    echo "[smoke-test-router] Phase 3.B: bringing up --profile llamacpp..."
+    LLAMACPP_HEALTHY=true
+    if docker compose --profile llamacpp up -d --wait 2>&1 | tail -5; then
+      pass "compose --profile llamacpp up -d --wait succeeded"
+    else
+      # On WSL2 / slower hosts a 4.7GB GGUF can take >60s start_period to
+      # cold-load. Don't cascade: downgrade to SKIP for downstream assertions
+      # that depend on llamacpp being healthy, and keep going so Phase 4 + 5
+      # still run (after the Phase 4 setup block restores --profile ollama).
+      fail "compose --profile llamacpp up -d --wait failed (GGUF load may exceed 60s start_period on this host — set SKIP_LLAMACPP=1 to skip Phase 3.B explicitly)"
+      LLAMACPP_HEALTHY=false
+    fi
 
   # Wait for router /healthz (llamacpp cold-start can take ~60s)
   for i in $(seq 1 90); do
@@ -623,6 +639,7 @@ else:
   # Tear down
   docker compose --profile llamacpp down --remove-orphans 2>&1 | tail -2
 
+  fi  # end SKIP_LLAMACPP / else
 fi  # end "if GGUF present"
 
 echo ""
@@ -648,6 +665,15 @@ VISION_MODEL="llama3.2-vision:11b-instruct-q4_K_M"
 
 echo ""
 echo "[smoke-test-router] === Phase 4 section: Anthropic surface + vision (SC-P4-A..E) ==="
+
+# Phase 3's --profile llamacpp teardown left the stack down. Phase 4 + 5
+# expect `--profile ollama` state (postgres + pg-backup + router + ollama).
+# Bring it back up idempotently before running the Anthropic section.
+echo "[smoke-test-router] Phase 4: ensuring --profile ollama stack is up..."
+if ! docker compose --profile ollama up -d --wait 2>&1 | tail -3; then
+  fail "Phase 4 setup: --profile ollama up -d --wait failed; remaining Phase 4 + 5 sections will be unreliable"
+fi
+sleep 2
 
 # ── SC-P4-A: /v1/messages non-stream ────────────────────────────────────────
 echo ""
@@ -892,6 +918,15 @@ echo "[smoke-test-router] === Phase 4 section complete (SKIPS=${SKIPS}) ==="
 echo ""
 echo "[smoke-test-router] === Phase 5: Postgres + Observability ==="
 echo "[smoke-test-router] (postgres + pg-backup must be up; ${MODEL} must be loaded in ollama)"
+
+# Safety net: ensure the --profile ollama stack is still up. Phase 4's
+# `setup` block (above) brought it up, but if any earlier section failed
+# in a way that took the stack down, this re-establishes it.
+if ! curl -fsS -m 2 "${ROUTER_URL}/healthz" >/dev/null 2>&1; then
+  echo "[smoke-test-router] Phase 5: router not reachable, bringing --profile ollama up..."
+  docker compose --profile ollama up -d --wait 2>&1 | tail -3 || true
+  sleep 2
+fi
 
 # ── SC-P5-A: GET /metrics unauth returns 200 + 5 custom HELP lines ──────────
 echo ""

@@ -239,9 +239,15 @@ fi
 pass "active sessions terminated"
 
 # ─── Step 2: DROP + CREATE the router database ───────────────────────────────
+# WITH (FORCE) is mandatory (PG 13+): without it, the router's pg.Pool can
+# reconnect in the millisecond gap between Step 1's pg_terminate and this DROP,
+# leaving the router DB in an inaccessible state (`invalid` per pg_database) or
+# even crashing a backend process. WITH (FORCE) terminates lingering connections
+# atomically with the DROP — Step 1's pg_terminate is now belt-and-suspenders
+# for the legible failure path; this is the load-bearing safety.
 echo ""
-echo "[restore-drill] Step 2: DROP DATABASE IF EXISTS router ..."
-if ! docker compose exec -T postgres psql -U app -d postgres -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS router;" >/dev/null 2>&1; then
+echo "[restore-drill] Step 2: DROP DATABASE IF EXISTS router WITH (FORCE) ..."
+if ! docker compose exec -T postgres psql -U app -d postgres -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS router WITH (FORCE);" >/dev/null 2>&1; then
   fail "DROP DATABASE router failed"
   exit 1
 fi
