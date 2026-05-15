@@ -182,15 +182,21 @@ echo "[smoke-test] Pre-flight: Ollama API is reachable."
 # ---------------------------------------------------------------------------
 echo "[smoke-test] Pre-flight: checking model '${MODEL}' is pulled..."
 
-MODEL_FOUND=$(python3 - <<PYEOF
-import json, sys
-data = json.loads("""${TAGS_RESPONSE}""")
-models = data.get("models", [])
-target = "${MODEL}"
-found = any(m.get("name","").startswith(target) or m.get("model","").startswith(target) for m in models)
-print("yes" if found else "no")
-PYEOF
-)
+MODEL_FOUND=$(_SMOKE_TAGS="$TAGS_RESPONSE" _SMOKE_MODEL="$MODEL" python3 -c '
+import json, os, sys
+raw = os.environ.get("_SMOKE_TAGS", "")
+target = os.environ.get("_SMOKE_MODEL", "")
+try:
+    data = json.loads(raw)
+    models = data.get("models", [])
+    found = any(
+        m.get("name", "").startswith(target) or m.get("model", "").startswith(target)
+        for m in models
+    )
+    print("yes" if found else "no")
+except Exception:
+    print("no")
+')
 
 if [[ "$MODEL_FOUND" != "yes" ]]; then
   # Construct the pull command from variables so the script never contains the literal pull command
