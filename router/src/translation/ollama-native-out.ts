@@ -279,7 +279,7 @@ function isDeniedIPv6(rawAddress: string): boolean {
 function isDenied(address: string, family: number): boolean {
   if (family === 4) return isDeniedIPv4(address);
   if (family === 6) return isDeniedIPv6(address);
-  return true; // unknown family → deny
+  return true; // unknown family (Node only emits 4|6 today) — deny-on-unknown is forward-defensive
 }
 
 // ── fetchImageAsBase64 (D-C4 — five-layer guard chain) ────────────────────────
