@@ -35,7 +35,8 @@ DIRS=(
   "${HOST_DATA_ROOT}/models-gguf/gguf"
   "${HOST_DATA_ROOT}/models-gguf/ollama"
   "${HOST_DATA_ROOT}/models-hf"
-  "${HOST_DATA_ROOT}/postgres"
+  "${HOST_DATA_ROOT}/postgres-data"     # compose.yml: postgres-data:/var/lib/postgresql/data
+  "${HOST_DATA_ROOT}/postgres-backups"  # compose.yml: postgres-backups:/backups (pg-backup sidecar)
   "${HOST_DATA_ROOT}/valkey"
   "${HOST_DATA_ROOT}/traefik/acme"
   "${HOST_DATA_ROOT}/traefik/logs"
@@ -55,42 +56,51 @@ echo "[bootstrap] Host tree created:"
 echo "  ${HOST_DATA_ROOT}/models-gguf/gguf"
 echo "  ${HOST_DATA_ROOT}/models-gguf/ollama"
 echo "  ${HOST_DATA_ROOT}/models-hf"
-echo "  ${HOST_DATA_ROOT}/postgres"
+echo "  ${HOST_DATA_ROOT}/postgres-data"
+echo "  ${HOST_DATA_ROOT}/postgres-backups"
 echo "  ${HOST_DATA_ROOT}/valkey"
 echo "  ${HOST_DATA_ROOT}/traefik/acme"
 echo "  ${HOST_DATA_ROOT}/traefik/logs"
 
-# ── Set ownership to the invoking user ───────────────────────────────────────
+# ── Set ownership to the invoking user (targeted — Phase 5 guard active) ─────
 #
-# ─── chown — Phase 1 scope ────────────────────────────────────────────────
-# SAFE in Phase 1: only models-gguf/, models-hf/, traefik/{acme,logs}/ exist
-#                  with real content; all are user-owned.
+# Phase 5 (Postgres) has shipped. postgres-data/ and postgres-backups/ must be
+# owned by uid 70 (postgres:17-alpine) — NOT by the invoking user. A blanket
+# `chown -R $(id -u):$(id -g) ${HOST_DATA_ROOT}` clobbers that ownership and
+# breaks the Postgres container on the next `docker compose up postgres`.
 #
-# FUTURE FOOTGUN — DO NOT REMOVE THIS COMMENT:
-#   After Phase 5 (Postgres, postgres/ subdir) and Phase 8 (Valkey,
-#   valkey/ subdir) land, those services run as non-user uids inside
-#   their containers (Postgres uid 999, Valkey uid 999/1000 depending
-#   on image). A blanket `chown -R $(id -u):$(id -g) ${HOST_DATA_ROOT}`
-#   on a re-run will clobber the required ownership and break Postgres
-#   on the next `docker compose up`.
-#
-#   When Phase 5 or Phase 8 lands, this script MUST be updated to
-#   exclude postgres/ and valkey/ from the recursive chown — e.g. via
-#   `find "${HOST_DATA_ROOT}" -mindepth 1 -maxdepth 1 \
-#      ! -name postgres ! -name valkey -exec chown -R ... {} +`
-#   or by chowning the specific Phase 1 subdirs explicitly.
-#
-#   Phase 1 itself requires NO logic change — just this comment so the
-#   constraint is not forgotten when the later phases ship.
-# ──────────────────────────────────────────────────────────────────────────
-CURRENT_UID=$(id -u)
-DIR_UID=$(stat -c '%u' "${HOST_DATA_ROOT}" 2>/dev/null || echo "0")
-if [ "${DIR_UID}" != "${CURRENT_UID}" ]; then
-  echo "[bootstrap] Setting ownership of ${HOST_DATA_ROOT} to $(id -u):$(id -g)..."
-  sudo chown -R "$(id -u):$(id -g)" "${HOST_DATA_ROOT}"
-else
-  echo "[bootstrap] Ownership of ${HOST_DATA_ROOT} already correct (uid ${CURRENT_UID})."
-fi
+# Strategy:
+#   1. Chown only the user-owned subtrees explicitly (models-gguf, models-hf,
+#      valkey, traefik).
+#   2. Pre-set postgres-data/ and postgres-backups/ to uid 70:70 so the
+#      postgres:17-alpine container can write immediately without a runtime
+#      `chown` step.
+echo "[bootstrap] Setting directory ownership..."
+
+for dir in \
+  "${HOST_DATA_ROOT}/models-gguf" \
+  "${HOST_DATA_ROOT}/models-hf" \
+  "${HOST_DATA_ROOT}/valkey" \
+  "${HOST_DATA_ROOT}/traefik"; do
+  if [ -d "$dir" ]; then
+    dir_uid=$(stat -c '%u' "$dir" 2>/dev/null || echo "0")
+    if [ "$dir_uid" != "$(id -u)" ]; then
+      sudo chown -R "$(id -u):$(id -g)" "$dir"
+      echo "[bootstrap]   chown $(id -u):$(id -g) $dir (was uid $dir_uid)"
+    else
+      echo "[bootstrap]   $dir — ownership already correct (uid $(id -u))"
+    fi
+  fi
+done
+
+# Postgres dirs: owned by uid 70 (postgres:17-alpine). Pre-create with the
+# correct uid so the container can write immediately on first `compose up`.
+sudo chown 70:70 "${HOST_DATA_ROOT}/postgres-data" 2>/dev/null \
+  && echo "[bootstrap]   chown 70:70 ${HOST_DATA_ROOT}/postgres-data" \
+  || echo "[bootstrap]   chown 70:70 ${HOST_DATA_ROOT}/postgres-data — skipped (may not exist yet)"
+sudo chown 70:70 "${HOST_DATA_ROOT}/postgres-backups" 2>/dev/null \
+  && echo "[bootstrap]   chown 70:70 ${HOST_DATA_ROOT}/postgres-backups" \
+  || echo "[bootstrap]   chown 70:70 ${HOST_DATA_ROOT}/postgres-backups — skipped (may not exist yet)"
 
 # ── Copy .env.example → .env if missing (D-14) ───────────────────────────────
 if [ ! -f "$REPO_ROOT/.env" ]; then
