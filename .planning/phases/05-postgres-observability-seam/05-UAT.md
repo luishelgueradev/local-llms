@@ -1,9 +1,10 @@
 ---
-status: diagnosed
+status: resolved
 phase: 05-postgres-observability-seam
 source: [05-01-SUMMARY.md, 05-02-SUMMARY.md, 05-03-SUMMARY.md, 05-04-SUMMARY.md, 05-05-SUMMARY.md]
 started: 2026-05-15T00:00:00Z
-updated: 2026-05-15T15:30:00Z
+updated: 2026-05-15T19:35:00Z
+resolved_by: 05-06-SUMMARY.md
 ---
 
 ## Current Test
@@ -94,37 +95,30 @@ evidence: |
 ## Summary
 
 total: 10
-passed: 9
-issues: 1
+passed: 10
+issues: 0
 pending: 0
 skipped: 0
 blocked: 0
 
 # Test 9 (restore drill) — fixed inline (49d8e57) and re-tested clean.
-# Test 3 (full smoke script) — partially fixed inline (49d8e57): Phase 3.B cascade
-#   gone, Phase 5 SC-P5-A/B/C/D pass. Remaining 7 failures are smoke-script bugs
-#   (Phase 4 Python 3.12 f-string syntax + SC-P5-E logic + OBS-05 pg-backup
-#   exclusion) — pre-existing, NOT Phase 5 code defects.
+# Test 3 (full smoke script) — partially fixed inline (49d8e57); fully resolved by
+#   Plan 05-06 Tasks 1-4 (commits 8bab5b8 / 55f9ac0 / 990cf3f / c731ce9). All 3
+#   pre-existing smoke-script bugs (Python 3.12 f-strings, SC-P5-E logic, OBS-05
+#   pg-backup exclusion) are now closed; SC-P4-D also gains a model_not_found
+#   skip branch.
 
 ## Gaps
 
 - truth: "bin/smoke-test-router.sh exits 0 with all Phase 5 sections PASS"
-  status: partially_fixed
-  reason: "Fixed inline (commit 49d8e57): Phase 3.B SKIP_LLAMACPP=1 opt-out + Phase 4/5 setup blocks that re-establish --profile ollama. After fix, Phase 5 SC-P5-A/B/C/D all PASS. Remaining 7 failures are pre-existing smoke-script bugs (Phase 4 Python 3.12 f-strings + SC-P5-E logic + OBS-05 pg-backup exclusion) — NOT Phase 5 code defects."
+  status: resolved
+  reason: "Fully fixed across two cycles. Cycle 1 (commit 49d8e57): Phase 3.B SKIP_LLAMACPP=1 opt-out + Phase 4/5 setup blocks. Cycle 2 (Plan 05-06 Tasks 1-4, commits 8bab5b8 / 55f9ac0 / 990cf3f / c731ce9): Python 3.12 f-string syntax in SC-P4-A/C/E, SC-P5-E gated on body.postgres.status, OBS-05 grep excludes pg-backup, SC-P4-D adds model_not_found skip branch. `bash -n` clean; all 19 inline python3 blocks compile under Python 3.12; no overall-HTTP-code gates remain in SC-P5-E."
   severity: minor
   test: 3
-  root_cause: "Architectural: Phase 3.B teardown left stack down (fixed). Plus pre-existing smoke-script bugs in Phase 4 (Python f-string escapes break under Python 3.12 strict parser) + SC-P5-E logic (asserts overall /readyz=200, not body.postgres.status) + OBS-05 (forgets to exclude pg-backup, which is a fire-and-forget sidecar per Plan 03 D-F2)."
-  artifacts:
-    - path: "bin/smoke-test-router.sh"
-      issue: "Phase 4 sections 'SC-P4-A/C/E' use `f\"...{d.get(\\\"id\\\")}\"` backslash-quoted f-string syntax — invalid under Python 3.12. Should use `'` single quotes inside or remove the f-string nesting."
-    - path: "bin/smoke-test-router.sh"
-      issue: "SC-P5-E expects overall `/readyz` status=200 to pre-validate, then expects return to 200 after unpause. In --profile ollama state llamacpp is permanently down so /readyz is always 503. The test should isolate `body.postgres.status` rather than the overall code."
-    - path: "bin/smoke-test-router.sh"
-      issue: "OBS-05 grep excludes only `gpu-preflight` from the healthcheck count but should also exclude `pg-backup` (Plan 03 D-F2 — fire-and-forget sidecar with no healthcheck by design)."
+  resolved_by: "Plan 05-06 Tasks 1-4"
+  root_cause: "Architectural: Phase 3.B teardown left stack down (Cycle 1). Plus pre-existing smoke-script bugs in Phase 4 (Python f-string escapes break under Python 3.12 strict parser) + SC-P5-E logic (asserts overall /readyz=200, not body.postgres.status) + OBS-05 (forgot to exclude pg-backup, fire-and-forget sidecar per Plan 03 D-F2) — all fixed in Cycle 2."
   missing:
-    - "Fix Phase 4 inline-python f-string escapes (Python 3.12 compatibility)."
-    - "SC-P5-E: change `/readyz=200` checks to `body.postgres.status='alive'/'down'` checks — isolate the postgres assertion from the overall ready gate."
-    - "OBS-05: add `pg-backup` to the exclusion grep alongside `gpu-preflight`."
+    - "(Resolved — Plan 05-06 Tasks 1-4.)"
   debug_session: ""
 
 - truth: "bin/restore-drill.sh --yes <dump> reliably exits 0 on a running stack"
