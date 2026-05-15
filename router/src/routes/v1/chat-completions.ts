@@ -212,7 +212,44 @@ export function registerChatCompletionsRoute(
             req.raw.socket?.off('close', onClose);
             const env = toOpenAIErrorEnvelope(err);
             const status = mapToHttpStatus(err);
-            if (env === NO_ENVELOPE) return;  // client gone — defensive
+            // CR-02 (05-VERIFICATION.md gaps[1]): pre-stream error must produce a
+            // request_log row. safeRecord is idempotent via the recorded flag (lines
+            // 181-187) so calling it here AND from the finally is structurally safe —
+            // only the first call observes effects. NO_ENVELOPE → client disconnect
+            // (APIUserAbortError) records as 'disconnect' status_class with the
+            // 'client_disconnect' error_code. Regular envelope → typed error_code
+            // via mapErrorToCode + redactable error_message via err.message.
+            if (env === NO_ENVELOPE) {
+              safeRecord({
+                protocol: 'openai',
+                route: req.url.split('?')[0] ?? req.url,
+                backend: entry.backend,
+                model: entry.name,
+                statusClass: 'disconnect',
+                httpStatus: status,
+                durationMs: performance.now() - (req._t0 ?? performance.now()),
+                errorCode: 'client_disconnect',
+                agentId: req.agentId,
+                requestId: req.id,
+                timestamp: new Date(),
+              });
+              return; // client gone — defensive
+            }
+            const errInst = err instanceof Error ? err : new Error(String(err));
+            safeRecord({
+              protocol: 'openai',
+              route: req.url.split('?')[0] ?? req.url,
+              backend: entry.backend,
+              model: entry.name,
+              statusClass: deriveStatusClass(status, false),
+              httpStatus: status,
+              durationMs: performance.now() - (req._t0 ?? performance.now()),
+              errorCode: mapErrorToCode(errInst),
+              errorMessage: errInst.message,
+              agentId: req.agentId,
+              requestId: req.id,
+              timestamp: new Date(),
+            });
             return reply.code(status).send(env);
           }
 
@@ -317,34 +354,34 @@ export function registerChatCompletionsRoute(
         // error paths, this is the primary release point.
         safeRelease();
 
-        // Plan 05-02 Task 3: record the non-stream outcome here. For the stream
-        // branch, sseCleanup already called safeRecord — recorded=true means this
-        // is a no-op (Pitfall 8 idempotency). For non-stream success/failure, this
-        // is the primary call site. We do NOT record from finally if the stream
-        // branch ran (recorded=true; closures share state correctly).
-        if (body.stream !== true) {
-          // Status / http_status from reply (set by reply.send for success or by
-          // the centralized error handler for re-thrown errors).
-          const httpStatus = caughtErr ? mapToHttpStatus(caughtErr) : reply.statusCode;
-          safeRecord({
-            protocol: 'openai',
-            route: req.url.split('?')[0] ?? req.url,
-            backend: entry.backend,
-            model: entry.name,
-            statusClass: caughtErr
-              ? deriveStatusClass(httpStatus, false)
-              : deriveStatusClass(reply.statusCode, false),
-            httpStatus,
-            durationMs: performance.now() - (req._t0 ?? performance.now()),
-            tokensIn: caughtErr ? undefined : canonicalResult?.usage.input_tokens,
-            tokensOut: caughtErr ? undefined : canonicalResult?.usage.output_tokens,
-            errorCode: caughtErr ? mapErrorToCode(caughtErr) : undefined,
-            errorMessage: caughtErr?.message,
-            agentId: req.agentId,
-            requestId: req.id,
-            timestamp: new Date(),
-          });
-        }
+        // CR-02 (05-VERIFICATION.md gaps[1]): body.stream guard DROPPED — the
+        // finally is the universal safety net for any path that bypassed the
+        // inner pre-stream catch + sseCleanup. safeRecord's recorded flag (lines
+        // 181-187) keeps double-recording structurally impossible. For the stream
+        // branch, sseCleanup OR the inner catch already called safeRecord —
+        // recorded=true means this is a no-op (Pitfall 8 idempotency). For
+        // non-stream success/failure, this is the primary call site.
+        // Status / http_status from reply (set by reply.send for success or by
+        // the centralized error handler for re-thrown errors).
+        const httpStatus = caughtErr ? mapToHttpStatus(caughtErr) : reply.statusCode;
+        safeRecord({
+          protocol: 'openai',
+          route: req.url.split('?')[0] ?? req.url,
+          backend: entry.backend,
+          model: entry.name,
+          statusClass: caughtErr
+            ? deriveStatusClass(httpStatus, false)
+            : deriveStatusClass(reply.statusCode, false),
+          httpStatus,
+          durationMs: performance.now() - (req._t0 ?? performance.now()),
+          tokensIn: caughtErr ? undefined : canonicalResult?.usage.input_tokens,
+          tokensOut: caughtErr ? undefined : canonicalResult?.usage.output_tokens,
+          errorCode: caughtErr ? mapErrorToCode(caughtErr) : undefined,
+          errorMessage: caughtErr?.message,
+          agentId: req.agentId,
+          requestId: req.id,
+          timestamp: new Date(),
+        });
       }
     },
   );
