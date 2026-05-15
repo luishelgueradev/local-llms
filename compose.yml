@@ -214,7 +214,7 @@ services:
     restart: unless-stopped
     environment:
       - ROUTER_BEARER_TOKEN=${ROUTER_BEARER_TOKEN}
-      - OLLAMA_URL=http://ollama:11434/v1
+      - MODELS_YAML_PATH=/app/models.yaml   # matches volume mount; explicit > implicit default (IN-03)
       - PORT=3000
       - LOG_LEVEL=info
       - NODE_ENV=production
@@ -225,6 +225,8 @@ services:
       # consumer will read it directly from compose at that point.
       - ROUTER_DATABASE_URL=postgresql://app:${POSTGRES_PASSWORD}@postgres:5432/router
       - OPENWEBUI_DATABASE_URL=postgresql://app:${POSTGRES_PASSWORD}@postgres:5432/openwebui
+      # OLLAMA_URL removed: parsed from env.ts but never consumed — backend URLs
+      # are authoritative from models.yaml backend_url fields (03-REVIEW WR-04).
     ports:
       # localhost-only — D-A4. Phase 6 (Traefik) removes this.
       - "127.0.0.1:3000:3000"
