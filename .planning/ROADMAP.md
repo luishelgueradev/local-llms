@@ -34,7 +34,7 @@ Un endpoint HTTPS único que hable simultáneamente OpenAI y Anthropic, despache
   3. The volume layout exists on disk: `models-gguf/` (with `gguf/` and `ollama/` subdirs) and `models-hf/` as separate top-level volumes — never a single shared `/models` tree.
   4. A single Ollama service comes up cleanly with one curated small model pulled, and `nvidia-smi` inside the Ollama container shows the GPU plus an Ollama process consuming VRAM during inference (no silent CPU fallback).
   5. Compose service ordering uses `depends_on` with the **right condition for the dependency type**: `condition: service_completed_successfully` for one-shot gates (e.g., `gpu-preflight` exits 0 then is gone), `condition: service_healthy` for long-running services with healthchecks (e.g., `ollama`'s `/api/tags` healthcheck via `ollama list`). The `service_healthy` condition does not apply to one-shot services that exit; using it on `gpu-preflight` would never resolve.
-**Plans:** 4 plans
+**Plans:** 5 plans
 Plans:
 **Wave 1**
 - [x] 01-01-PLAN.md — Host bootstrap + volume tree + .env contract (D-01, D-02, D-03, D-14)
@@ -126,7 +126,7 @@ Plans:
   3. A `pg_dump` cron job runs daily and a tested restore drill (drop database → restore → re-query) reads back identical data; the restore procedure is documented in the project README.
   4. `GET /metrics` on the router exposes Prometheus-format request rate, time-to-first-token, latency, and per-backend counters (without bearer auth — but only the metrics endpoint is unauthenticated, no other surface is).
   5. `docker compose ps` shows healthy state for every service via real healthchecks (not just process-up), and an `X-Agent-Id` request header is reflected into structured pino logs and the `request_log.agent_id` column.
-**Plans:** 4 plans
+**Plans:** 5 plans
 Plans:
 **Wave 1**
 - [x] 05-01-PLAN.md — Postgres service + Drizzle schema + boot-time migrator + buffered writer foundation + onClose drain (DATA-01, DATA-02, DATA-03, DATA-04, OBS-05; D-A1..A7, D-B1..B8, D-E1..E4, D-G1)
@@ -139,6 +139,9 @@ Plans:
 
 **Wave 4** *(blocked on Waves 1–2; serializes app.ts + readyz.ts edits with Wave 2; final live verification)*
 - [x] 05-04-PLAN.md — usage_daily refresh + /readyz postgres probe + bin/smoke-test-router.sh Phase 5 section (5 scenarios) + human-verify checkpoint (DATA-02, DATA-04, OBS-05; D-G2, D-G3, T-5-20..T-5-23)
+
+**Wave 5** *(gap closure — depends_on Wave 1 (Plan 01 schema) + Wave 2 (Plan 02 routes + recordOutcome) + Wave 4 (Plan 04 readyz pg probe); fixes the three BLOCKER gaps from 05-VERIFICATION.md — CR-01 hot-reload postgres probe regression + CR-02 stream pre-stream observability + CR-03 mid-stream upstream status_class fidelity)*
+- [ ] 05-05-PLAN.md — Gap closure: onReload re-adds POSTGRES_PROBE_URL + safeRecord from inner pre-stream catch (drop body.stream finally guard) + widen translator onCleanup with error field + sseCleanup overrides status_class/error_code/error_message on mid-stream upstream throw + coverage-matrix regression gate in recordOutcome.test.ts (DATA-03, DATA-04, OBS-01, OBS-05, ROUTE-09; CR-01, CR-02, CR-03; T-5-30..T-5-34)
 
 ### Phase 6: Traefik + TLS + Open WebUI
 **Goal:** Make the router a real HTTPS endpoint with the four-network topology, then bring up Open WebUI on the same proxy so human chats flow through the same router as agents — same logs, same metering, same Anthropic translation.
