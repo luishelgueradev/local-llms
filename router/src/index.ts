@@ -1,7 +1,7 @@
 import pino, { type LoggerOptions } from 'pino';
 import { loadEnv } from './config/env.js';
 import { loadRegistryFromFile, makeRegistryStore, watchRegistry } from './config/registry.js';
-import { buildApp } from './app.js';
+import { buildApp, POSTGRES_PROBE_URL } from './app.js';
 import { makeLoggerOptions } from './log/logger.js';
 import { makeDb, makePool } from './db/index.js';
 import { runMigrations } from './db/migrate.js';
@@ -75,7 +75,14 @@ async function main(): Promise<void> {
       app.log.info({ models: next.models.length, names: next.models.map((m) => m.name) }, 'registry reloaded');
       // Phase 3: re-register liveness probes against the new URL set.
       // liveness.start() is idempotent — de-dups timers; clears removed URLs (Pitfall 6).
-      const urls = Array.from(new Set(next.models.map((m) => m.backend_url)));
+      const backendUrls = Array.from(new Set(next.models.map((m) => m.backend_url)));
+      // CR-01 (05-VERIFICATION.md gaps[0]): mirror app.ts:308-311 boot wiring so the
+      // postgres /readyz probe survives hot-reloads. Without this re-add, the
+      // liveness scheduler's start(urls) deletion-semantics (liveness.ts:104-111)
+      // clear the postgres probe timer + cache entry on every reload, leaving
+      // /readyz returning 503 + postgres.status='down — never probed' until process
+      // restart. `pool` is in closure scope from the outer-scope `const pool` above.
+      const urls = pool ? [...backendUrls, POSTGRES_PROBE_URL] : backendUrls;
       app.liveness.start(urls);
     },
     onError: (err) => {
