@@ -132,4 +132,27 @@ describe('newMessageId / newToolUseId (Pattern S8, D-E3, D-E4)', () => {
     const b = newMessageId();
     expect(b > a).toBe(true);
   });
+
+  // IN-05: cross-helper monotonicity (Pattern S8).
+  //
+  // Both newMessageId() and newToolUseId() draw from the same module-level
+  // monotonicFactory(), so the ULID portion of a newToolUseId() called immediately
+  // after a newMessageId() is lexicographically >= the message's ULID. This
+  // ordering invariant matters when a route emits message_start + tool_use blocks
+  // in tight succession: log consumers can sort IDs chronologically.
+  //
+  // This test guards against a future change that gives each helper its own factory,
+  // which would silently break the shared-monotonicity guarantee.
+  it('IN-05: newToolUseId ULID >= newMessageId ULID (shared monotonicFactory cross-helper)', () => {
+    // Call in tight succession — both will land in the same millisecond.
+    const msgId = newMessageId();
+    const toolId = newToolUseId();
+
+    // Extract the raw ULID portions (strip prefixes) and compare lexicographically.
+    // monotonicFactory guarantees that the second call's ULID > first call's ULID
+    // even within a single millisecond.
+    const msgUlid = msgId.slice('msg_'.length);
+    const toolUlid = toolId.slice('toolu_'.length);
+    expect(toolUlid > msgUlid).toBe(true);
+  });
 });
