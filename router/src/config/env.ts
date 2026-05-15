@@ -8,7 +8,11 @@ const EnvSchema = z.object({
   // need a syntactically-valid URL — the lazy connect resolves at flush
   // time, not env-parse time.
   ROUTER_DATABASE_URL: z.string().url(),
-  OLLAMA_URL: z.string().url().default('http://ollama:11434/v1'),
+  // OLLAMA_URL was removed: it was parsed but never consumed — backend URLs come
+  // from models.yaml per-entry backend_url (registry-driven). Phase 3 WR-04
+  // identified the same dead field; removing it here closes both IN-01 and 03/WR-04.
+  // TODO(phase-N): if a single global Ollama base-URL override ever becomes useful,
+  //   re-add it with an explicit consumer in registry.ts or adapter.ts.
   PORT: z.coerce.number().int().positive().default(3000),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
   NODE_ENV: z.enum(['development', 'production', 'test']).default('production'),
