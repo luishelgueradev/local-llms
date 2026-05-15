@@ -143,11 +143,10 @@ services:
       # PITFALLS Pitfall 3 + Performance Traps row "OLLAMA_NUM_PARALLEL".
       - OLLAMA_NUM_PARALLEL=2
     healthcheck:
-      # The ollama/ollama image is Alpine-style minimal — NO curl, NO
-      # wget, NO python. Use `ollama list` instead: it talks to the local
-      # API server (same /api/tags endpoint internally) and is guaranteed to
-      # be present (it's the same binary the container is running). Verified
-      # in 01-04 verification; the prior `curl …` healthcheck failed with
+      # The ollama/ollama image ships no curl, wget, or python — use `ollama list`
+      # for the healthcheck (it talks to the local API server internally and is
+      # guaranteed to be present; it's the same binary the container is running).
+      # Verified in 01-04 verification; the prior `curl …` healthcheck failed with
       # 'curl: executable file not found in $PATH'.
       test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
       interval: 10s
