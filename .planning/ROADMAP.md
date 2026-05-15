@@ -141,7 +141,7 @@ Plans:
 - [x] 05-04-PLAN.md — usage_daily refresh + /readyz postgres probe + bin/smoke-test-router.sh Phase 5 section (5 scenarios) + human-verify checkpoint (DATA-02, DATA-04, OBS-05; D-G2, D-G3, T-5-20..T-5-23)
 
 **Wave 5** *(gap closure — depends_on Wave 1 (Plan 01 schema) + Wave 2 (Plan 02 routes + recordOutcome) + Wave 4 (Plan 04 readyz pg probe); fixes the three BLOCKER gaps from 05-VERIFICATION.md — CR-01 hot-reload postgres probe regression + CR-02 stream pre-stream observability + CR-03 mid-stream upstream status_class fidelity)*
-- [ ] 05-05-PLAN.md — Gap closure: onReload re-adds POSTGRES_PROBE_URL + safeRecord from inner pre-stream catch (drop body.stream finally guard) + widen translator onCleanup with error field + sseCleanup overrides status_class/error_code/error_message on mid-stream upstream throw + coverage-matrix regression gate in recordOutcome.test.ts (DATA-03, DATA-04, OBS-01, OBS-05, ROUTE-09; CR-01, CR-02, CR-03; T-5-30..T-5-34)
+- [x] 05-05-PLAN.md — Gap closure: onReload re-adds POSTGRES_PROBE_URL + safeRecord from inner pre-stream catch (drop body.stream finally guard) + widen translator onCleanup with error field + sseCleanup overrides status_class/error_code/error_message on mid-stream upstream throw + coverage-matrix regression gate in recordOutcome.test.ts (DATA-03, DATA-04, OBS-01, OBS-05, ROUTE-09; CR-01, CR-02, CR-03; T-5-30..T-5-34)
 
 ### Phase 6: Traefik + TLS + Open WebUI
 **Goal:** Make the router a real HTTPS endpoint with the four-network topology, then bring up Open WebUI on the same proxy so human chats flow through the same router as agents — same logs, same metering, same Anthropic translation.
