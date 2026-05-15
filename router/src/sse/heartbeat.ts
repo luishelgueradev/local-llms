@@ -85,7 +85,8 @@ function makeHeartbeat(
   const id = setInterval(beat, intervalMs);
   // Don't keep the event loop alive just for the heartbeat — graceful shutdown should
   // not block on a 15s timer.
-  id.unref?.();
+  // Node 22 Timeout always has unref() — optional chain was unnecessary (IN-04).
+  id.unref();
 
   return {
     stop,
