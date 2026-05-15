@@ -128,7 +128,11 @@ export function canonicalToOpenAIResponse(
 
   const message: ChatCompletionMessage = {
     role: 'assistant',
-    content: toolUseBlocks.length > 0 && textParts.length === 0 ? null : textParts.join(''),
+    // IN-01: join multiple text blocks with '\n' so a response with more than
+    // one text block (e.g. thinking text before tool_use + continuation text
+    // after) doesn't concatenate them without any separator. Single text blocks
+    // are unaffected (no trailing newline added). join('') was the prior behavior.
+    content: toolUseBlocks.length > 0 && textParts.length === 0 ? null : textParts.join('\n'),
     refusal: null,
   };
   if (toolUseBlocks.length > 0) {
