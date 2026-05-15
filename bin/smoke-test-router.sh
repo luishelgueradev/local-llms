@@ -1157,10 +1157,10 @@ fi
 # ── OBS-05 final check: every long-running service is healthy ───────────────
 echo ""
 echo "[smoke-test-router] OBS-05: every service has a real healthcheck reporting healthy ..."
-UNHEALTHY_LINES=$(docker compose ps --format '{{.Name}} {{.Health}}' 2>/dev/null | grep -vE 'healthy|gpu-preflight' || true)
+UNHEALTHY_LINES=$(docker compose ps --format '{{.Name}} {{.Health}}' 2>/dev/null | grep -vE 'healthy|gpu-preflight|pg-backup' || true)
 UNHEALTHY_COUNT=$(echo -n "${UNHEALTHY_LINES}" | grep -c . || echo 0)
 if [[ "${UNHEALTHY_COUNT}" == "0" ]]; then
-  pass "OBS-05: all long-running services healthy (gpu-preflight excluded as one-shot)"
+  pass "OBS-05: all long-running services healthy (gpu-preflight + pg-backup excluded by design — see Plan 01 D-G1 + Plan 03 D-F2)"
 else
   fail "OBS-05: ${UNHEALTHY_COUNT} service(s) not healthy"
   docker compose ps --format '{{.Name}} {{.Health}}' 2>&1 | head -20
