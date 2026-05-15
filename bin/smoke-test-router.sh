@@ -101,10 +101,12 @@ if [[ -z "${ROUTER_BEARER_TOKEN:-}" ]]; then
   exit 1
 fi
 
-# Failure tracking
+# Failure / skip tracking
 FAILURES=0
+SKIPS=0
 fail() { echo "[smoke-test-router] FAIL: $*" >&2; FAILURES=$((FAILURES + 1)); }
 pass() { echo "[smoke-test-router] PASS: $*"; }
+skip() { echo "[smoke-test-router] SKIP: $*"; SKIPS=$((SKIPS + 1)); }
 
 echo ""
 echo "[smoke-test-router] ================================================================"
@@ -657,9 +659,7 @@ echo "[smoke-test-router] === Phase 3 section complete ==="
 #
 # Tracking — SKIPS counter for vision section when model isn't pulled / env
 # disables network. FAILURES is the existing counter from Phase 2.
-
-SKIPS=0
-skip() { echo "[smoke-test-router] SKIP: $*"; SKIPS=$((SKIPS + 1)); }
+# (skip() + SKIPS=0 are defined at the top alongside fail()/pass() — WR-01 fix.)
 
 VISION_MODEL="llama3.2-vision:11b-instruct-q4_K_M"
 
