@@ -1,9 +1,12 @@
 backends:
   ollama:
+    # base_url: documentation only — NOT used at runtime (see registry.ts BackendsSection comment).
+    # Effective backend URL per model is each entry's backend_url field below.
     base_url: http://ollama:11434/v1
     concurrency: 2
     queue_max_wait_ms: 30000
   llamacpp:
+    # base_url: documentation only — NOT used at runtime (see registry.ts BackendsSection comment).
     base_url: http://llamacpp:8080/v1
     concurrency: 2
     queue_max_wait_ms: 30000

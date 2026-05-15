@@ -34,6 +34,11 @@ export const ModelEntrySchema = z.object({
 const BackendsSection = z.record(
   z.string(),
   z.object({
+    // base_url: accepted for documentation / operator readability ONLY. NOT used at runtime.
+    // The effective backend URL per model is each ModelEntry.backend_url (Phase 3 D-B1).
+    // Operators who edit backends.ollama.base_url expecting it to reroute traffic will see
+    // no effect — change the per-model backend_url fields instead.
+    // See 03-REVIEW IN-04 for the audit trail.
     base_url: z.string().url().optional(),
     concurrency: z.number().int().positive().default(2),
     queue_max_wait_ms: z.number().int().positive().default(30_000),
