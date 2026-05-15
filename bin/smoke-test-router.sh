@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# bin/smoke-test-router.sh — end-to-end router verification for local-llms Phase 2
+# bin/smoke-test-router.sh — end-to-end router verification for local-llms Phases 2–5
 #
 # What this script asserts (ROADMAP success criteria SC1–SC5):
 #   SC1. POST /v1/chat/completions stream=true returns OpenAI-shape SSE chunks
@@ -55,10 +55,11 @@ Usage: bash bin/smoke-test-router.sh [options]
   -h | --help                   Print this help and exit 0
 
 Purpose:
-  End-to-end Phase 2 verification — asserts SC1..SC5 against the real Ollama
-  backend on the GPU. Run after `docker compose up -d --build router`.
+  End-to-end Phase 2–5 verification — asserts SC1..SC5 (Phase 2), multi-backend
+  dispatch (Phase 3), Anthropic surface + vision (Phase 4), Postgres + Observability (Phase 5).
+  Run after `docker compose up -d --build router`.
 
-  Exit 0 = all 5 success criteria pass.
+  Exit 0 = all assertions pass.
   Exit 1 = one or more assertions failed; actionable diagnostic printed.
 USAGE
 }
@@ -110,7 +111,7 @@ skip() { echo "[smoke-test-router] SKIP: $*"; SKIPS=$((SKIPS + 1)); }
 
 echo ""
 echo "[smoke-test-router] ================================================================"
-echo "[smoke-test-router]  local-llms — Phase 2 Router Verification"
+echo "[smoke-test-router]  local-llms — Phase 2-5 Router Verification"
 echo "[smoke-test-router]  Router URL : ${ROUTER_URL}"
 echo "[smoke-test-router]  Model      : ${MODEL}"
 echo "[smoke-test-router] ================================================================"
