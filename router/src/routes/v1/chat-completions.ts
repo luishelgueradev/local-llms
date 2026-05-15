@@ -381,34 +381,49 @@ export function registerChatCompletionsRoute(
         // error paths, this is the primary release point.
         safeRelease();
 
-        // CR-02 (05-VERIFICATION.md gaps[1]): body.stream guard DROPPED — the
-        // finally is the universal safety net for any path that bypassed the
-        // inner pre-stream catch + sseCleanup. safeRecord's recorded flag (lines
-        // 181-187) keeps double-recording structurally impossible. For the stream
-        // branch, sseCleanup OR the inner catch already called safeRecord —
-        // recorded=true means this is a no-op (Pitfall 8 idempotency). For
-        // non-stream success/failure, this is the primary call site.
-        // Status / http_status from reply (set by reply.send for success or by
-        // the centralized error handler for re-thrown errors).
-        const httpStatus = caughtErr ? mapToHttpStatus(caughtErr) : reply.statusCode;
-        safeRecord({
-          protocol: 'openai',
-          route: req.url.split('?')[0] ?? req.url,
-          backend: entry.backend,
-          model: entry.name,
-          statusClass: caughtErr
-            ? deriveStatusClass(httpStatus, false)
-            : deriveStatusClass(reply.statusCode, false),
-          httpStatus,
-          durationMs: performance.now() - (req._t0 ?? performance.now()),
-          tokensIn: caughtErr ? undefined : canonicalResult?.usage.input_tokens,
-          tokensOut: caughtErr ? undefined : canonicalResult?.usage.output_tokens,
-          errorCode: caughtErr ? mapErrorToCode(caughtErr) : undefined,
-          errorMessage: caughtErr?.message,
-          agentId: req.agentId,
-          requestId: req.id,
-          timestamp: new Date(),
-        });
+        // CR-02 (05-VERIFICATION.md gaps[1]) + CR-03 (Plan 05-05 Task 5 deviation):
+        // The plan instructed to drop the `body.stream !== true` guard entirely
+        // and rely on safeRecord idempotency. In practice, fastify-sse-v2's
+        // reply.sse(asyncIterable) RETURNS IMMEDIATELY (it pipes the iterable
+        // via it-to-stream; the stream completes asynchronously) — so the route
+        // handler's outer finally fires BEFORE sseCleanup runs. Without a guard,
+        // the outer finally records status_class='success' (caughtErr=undefined,
+        // reply.statusCode=200) and sseCleanup's later call is a recorded=true
+        // no-op — which silently regresses the stream-success observability AND
+        // invalidates the CR-03 status_class override (the override happens
+        // inside sseCleanup, but sseCleanup never gets to write the row).
+        //
+        // Resolution (deviation Rule 1): re-instate the body.stream guard, but
+        // keep CR-02's intent intact by adding a `caughtErr` exception clause —
+        // when a stream-branch path throws BEFORE reply.sse spawns the iterable
+        // (e.g. the outer try threw between adapter call and the inner sseCleanup
+        // wiring), the outer finally MUST record because sseCleanup will not
+        // fire. The inner pre-stream catch (CR-02 Task 2) covers the most common
+        // stream-error path; the caughtErr clause here is the safety net for
+        // anything else that throws in the stream branch outer scope.
+        if (body.stream !== true || caughtErr) {
+          // Status / http_status from reply (set by reply.send for success or by
+          // the centralized error handler for re-thrown errors).
+          const httpStatus = caughtErr ? mapToHttpStatus(caughtErr) : reply.statusCode;
+          safeRecord({
+            protocol: 'openai',
+            route: req.url.split('?')[0] ?? req.url,
+            backend: entry.backend,
+            model: entry.name,
+            statusClass: caughtErr
+              ? deriveStatusClass(httpStatus, false)
+              : deriveStatusClass(reply.statusCode, false),
+            httpStatus,
+            durationMs: performance.now() - (req._t0 ?? performance.now()),
+            tokensIn: caughtErr ? undefined : canonicalResult?.usage.input_tokens,
+            tokensOut: caughtErr ? undefined : canonicalResult?.usage.output_tokens,
+            errorCode: caughtErr ? mapErrorToCode(caughtErr) : undefined,
+            errorMessage: caughtErr?.message,
+            agentId: req.agentId,
+            requestId: req.id,
+            timestamp: new Date(),
+          });
+        }
       }
     },
   );
