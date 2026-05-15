@@ -1,4 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
+import { APIConnectionError } from 'openai';
 import { http, HttpResponse } from 'msw';
 import type { FastifyInstance } from 'fastify';
 import { server } from '../setup.js';
@@ -14,6 +15,9 @@ import type {
   CanonicalResponse,
   CanonicalStreamEvent,
 } from '../../src/translation/canonical.js';
+import { BackendSaturatedError } from '../../src/concurrency/semaphore.js';
+import type { RequestLogInsert } from '../../src/db/schema/index.js';
+import { makeMetricsRegistry } from '../../src/metrics/registry.js';
 
 const TOKEN = 'local-llms_t1t2t3t4t5t6t7t8t9t0aabbccddeeff';
 const MODEL_NAME = 'llama3.2:3b-instruct-q4_K_M';
@@ -284,6 +288,140 @@ describe('POST /v1/chat/completions stream=true — abort + error paths (SC3 moc
     // Followed by [DONE]
     const idx = events.findIndex((e) => e.event === 'error');
     expect(events[idx + 1]?.data).toBe('[DONE]');
+  });
+});
+
+describe('CR-02 — stream pre-stream error records exactly one row (05-VERIFICATION.md gaps[1])', () => {
+  // Each case wires a streaming POST to a fake adapter whose
+  // chatCompletionsCanonicalStream throws SYNCHRONOUSLY so the route's inner
+  // pre-stream catch (chat-completions.ts ~210) fires BEFORE the SSE headers
+  // ship. The fake bufferedWriter captures the row safeRecord pushes; the
+  // assertions then confirm the row count is exactly 1 (idempotency proof
+  // — if both the inner catch AND the finally fired safeRecord, we'd have
+  // 2 rows; the recorded flag prevents that) and that status_class /
+  // error_code / error_message are populated correctly.
+  function makeRejectingAdapter(err: Error): BackendAdapter {
+    return {
+      async chatCompletionsCanonical(
+        _req: CanonicalRequest,
+        _signal: AbortSignal,
+      ): Promise<CanonicalResponse> {
+        throw new Error('not used in stream test');
+      },
+      async probeLiveness(
+        _signal: AbortSignal,
+      ): Promise<{ ok: boolean; latencyMs: number; error?: string }> {
+        return { ok: true, latencyMs: 0 };
+      },
+      async chatCompletionsCanonicalStream(
+        _req: CanonicalRequest,
+        _signal: AbortSignal,
+      ): Promise<AsyncIterable<CanonicalStreamEvent>> {
+        // Throw synchronously (rejects on the await) so the inner pre-stream
+        // catch runs and emits the JSON envelope path — NOT the SSE path.
+        throw err;
+      },
+    };
+  }
+
+  async function buildAppWithFakeAdapter(err: Error): Promise<{
+    app: FastifyInstance;
+    pushed: RequestLogInsert[];
+  }> {
+    const pushed: RequestLogInsert[] = [];
+    const fakeBuffered = {
+      push: (row: RequestLogInsert) => pushed.push(row),
+      drain: async () => {},
+      get size() {
+        return 0;
+      },
+    };
+    const registry = makeRegistryStore(loadRegistryFromString(YAML));
+    const a = await buildApp({
+      registry,
+      bearerToken: TOKEN,
+      loggerOpts: false as never,
+      makeAdapter: () => makeRejectingAdapter(err),
+      semaphores: {
+        get: () =>
+          ({ acquire: async () => () => {}, stats: () => ({ inFlight: 0, queued: 0 }) }) as never,
+      },
+      bufferedWriter: fakeBuffered,
+      metrics: makeMetricsRegistry(),
+    });
+    return { app: a, pushed };
+  }
+
+  it('CR-02-A: BackendSaturatedError → 429 wire envelope + 1 client_error row with backend_saturated', async () => {
+    const seededErr = new BackendSaturatedError('ollama', 30_000);
+    const { app: localApp, pushed } = await buildAppWithFakeAdapter(seededErr);
+    try {
+      const res = await localApp.inject({
+        method: 'POST',
+        url: '/v1/chat/completions',
+        headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
+        payload: {
+          model: MODEL_NAME,
+          messages: [{ role: 'user', content: 'hi' }],
+          stream: true,
+        },
+      });
+
+      // Wire side: 429 with OpenAI envelope (rate_limit_error / backend_saturated).
+      expect(res.statusCode).toBe(429);
+      const body = res.json() as { error?: { code?: string; type?: string } };
+      expect(body.error?.code).toBe('backend_saturated');
+      expect(body.error?.type).toBe('rate_limit_error');
+
+      // Buffered side: EXACTLY ONE row (idempotency proof).
+      expect(pushed.length).toBe(1);
+      expect(pushed[0].status_class).toBe('client_error');
+      expect(pushed[0].error_code).toBe('backend_saturated');
+      expect(pushed[0].http_status).toBe(429);
+      expect(pushed[0].protocol).toBe('openai');
+      expect(pushed[0].error_message).not.toBeNull();
+    } finally {
+      await localApp.close();
+    }
+  });
+
+  it('CR-02-B: APIConnectionError → 502 wire envelope + 1 server_error row with redacted error_message (D-D3)', async () => {
+    // The seeded message contains 'Bearer abc123def456' so we can additionally
+    // assert the truncateAndRedact path stripped it before the row landed.
+    const seededErr = new APIConnectionError({
+      message: 'connect ECONNREFUSED — Bearer abc123def456 expired',
+      cause: new Error('ECONNREFUSED'),
+    } as never);
+    const { app: localApp, pushed } = await buildAppWithFakeAdapter(seededErr);
+    try {
+      const res = await localApp.inject({
+        method: 'POST',
+        url: '/v1/chat/completions',
+        headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
+        payload: {
+          model: MODEL_NAME,
+          messages: [{ role: 'user', content: 'hi' }],
+          stream: true,
+        },
+      });
+
+      // Wire side: 502 with OpenAI envelope (upstream_error / econnrefused).
+      expect(res.statusCode).toBe(502);
+      const body = res.json() as { error?: { code?: string; type?: string } };
+      expect(body.error?.type).toBe('upstream_error');
+
+      // Buffered side: EXACTLY ONE row (idempotency proof).
+      expect(pushed.length).toBe(1);
+      expect(pushed[0].status_class).toBe('server_error');
+      expect(pushed[0].error_code).toBe('upstream_timeout');
+      expect(pushed[0].http_status).toBe(502);
+      expect(pushed[0].protocol).toBe('openai');
+      expect(pushed[0].error_message).not.toBeNull();
+      // D-D3 redaction gate — truncateAndRedact stripped the 'Bearer xxx' substring.
+      expect(pushed[0].error_message).not.toContain('Bearer ');
+    } finally {
+      await localApp.close();
+    }
   });
 });
 

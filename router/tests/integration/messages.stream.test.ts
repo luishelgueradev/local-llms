@@ -14,6 +14,7 @@
  */
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import * as dns from 'node:dns';
+import { APIConnectionError } from 'openai';
 import { http, HttpResponse } from 'msw';
 import type { FastifyInstance } from 'fastify';
 import { server } from '../setup.js';
@@ -33,6 +34,9 @@ import type {
   CanonicalResponse,
   CanonicalStreamEvent,
 } from '../../src/translation/canonical.js';
+import { BackendSaturatedError } from '../../src/concurrency/semaphore.js';
+import type { RequestLogInsert } from '../../src/db/schema/index.js';
+import { makeMetricsRegistry } from '../../src/metrics/registry.js';
 
 const PNG_1x1_BASE64 =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
@@ -686,5 +690,136 @@ describe('regression gate — /v1/chat/completions stream still uses OpenAI term
     expect(res.payload).toContain('[DONE]');
     // OpenAI surface never emits the Anthropic typed terminator.
     expect(res.payload).not.toContain('event: message_stop');
+  });
+});
+
+describe('CR-02 — stream pre-stream error records exactly one row (05-VERIFICATION.md gaps[1])', () => {
+  // Symmetric to chat-completions.stream.test.ts — anthropic surface variant.
+  // Adapter throws SYNCHRONOUSLY so the route's inner pre-stream catch
+  // (messages.ts ~238) fires BEFORE the SSE headers ship. The fake
+  // bufferedWriter captures the row safeRecord pushes; the assertions then
+  // confirm exactly one row + correct status_class / error_code / redacted
+  // error_message.
+  function makeRejectingAdapter(err: Error): BackendAdapter {
+    return {
+      async chatCompletionsCanonical(
+        _req: CanonicalRequest,
+        _signal: AbortSignal,
+      ): Promise<CanonicalResponse> {
+        throw new Error('not used in stream test');
+      },
+      async probeLiveness(
+        _signal: AbortSignal,
+      ): Promise<{ ok: boolean; latencyMs: number; error?: string }> {
+        return { ok: true, latencyMs: 0 };
+      },
+      async chatCompletionsCanonicalStream(
+        _req: CanonicalRequest,
+        _signal: AbortSignal,
+        _opts?: { inputTokensHint?: number },
+      ): Promise<AsyncIterable<CanonicalStreamEvent>> {
+        throw err;
+      },
+    };
+  }
+
+  async function buildAppWithFakeAdapter(err: Error): Promise<{
+    app: FastifyInstance;
+    pushed: RequestLogInsert[];
+  }> {
+    const pushed: RequestLogInsert[] = [];
+    const fakeBuffered = {
+      push: (row: RequestLogInsert) => pushed.push(row),
+      drain: async () => {},
+      get size() {
+        return 0;
+      },
+    };
+    const registry = makeRegistryStore(loadRegistryFromString(YAML));
+    const a = await buildApp({
+      registry,
+      bearerToken: TOKEN,
+      loggerOpts: false as never,
+      makeAdapter: () => makeRejectingAdapter(err),
+      semaphores: {
+        get: () =>
+          ({ acquire: async () => () => {}, stats: () => ({ inFlight: 0, queued: 0 }) }) as never,
+      },
+      bufferedWriter: fakeBuffered,
+      metrics: makeMetricsRegistry(),
+    });
+    return { app: a, pushed };
+  }
+
+  it('CR-02-A: BackendSaturatedError → 429 wire envelope + 1 client_error row with backend_saturated', async () => {
+    const seededErr = new BackendSaturatedError('ollama', 30_000);
+    const { app: localApp, pushed } = await buildAppWithFakeAdapter(seededErr);
+    try {
+      const res = await localApp.inject({
+        method: 'POST',
+        url: '/v1/messages',
+        headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
+        payload: {
+          model: MODEL_NAME,
+          max_tokens: 100,
+          messages: [{ role: 'user', content: 'hi' }],
+          stream: true,
+        },
+      });
+
+      // Wire side: 429 with Anthropic envelope (rate_limit_error).
+      expect(res.statusCode).toBe(429);
+      const body = res.json() as { type?: string; error?: { type?: string } };
+      expect(body.type).toBe('error');
+      expect(body.error?.type).toBe('rate_limit_error');
+
+      // Buffered side: EXACTLY ONE row.
+      expect(pushed.length).toBe(1);
+      expect(pushed[0].status_class).toBe('client_error');
+      expect(pushed[0].error_code).toBe('backend_saturated');
+      expect(pushed[0].http_status).toBe(429);
+      expect(pushed[0].protocol).toBe('anthropic');
+      expect(pushed[0].error_message).not.toBeNull();
+    } finally {
+      await localApp.close();
+    }
+  });
+
+  it('CR-02-B: APIConnectionError → 502 wire envelope + 1 server_error row with redacted error_message (D-D3)', async () => {
+    const seededErr = new APIConnectionError({
+      message: 'connect ECONNREFUSED — Bearer abc123def456 expired',
+      cause: new Error('ECONNREFUSED'),
+    } as never);
+    const { app: localApp, pushed } = await buildAppWithFakeAdapter(seededErr);
+    try {
+      const res = await localApp.inject({
+        method: 'POST',
+        url: '/v1/messages',
+        headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
+        payload: {
+          model: MODEL_NAME,
+          max_tokens: 100,
+          messages: [{ role: 'user', content: 'hi' }],
+          stream: true,
+        },
+      });
+
+      // Wire side: 502 with Anthropic envelope (api_error per anthropic taxonomy).
+      expect(res.statusCode).toBe(502);
+      const body = res.json() as { type?: string; error?: { type?: string } };
+      expect(body.type).toBe('error');
+      expect(body.error?.type).toBe('api_error');
+
+      // Buffered side: EXACTLY ONE row.
+      expect(pushed.length).toBe(1);
+      expect(pushed[0].status_class).toBe('server_error');
+      expect(pushed[0].error_code).toBe('upstream_timeout');
+      expect(pushed[0].http_status).toBe(502);
+      expect(pushed[0].protocol).toBe('anthropic');
+      expect(pushed[0].error_message).not.toBeNull();
+      expect(pushed[0].error_message).not.toContain('Bearer ');
+    } finally {
+      await localApp.close();
+    }
   });
 });
