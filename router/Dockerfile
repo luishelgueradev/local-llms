@@ -33,6 +33,8 @@ ENV NODE_ENV=production
 COPY --from=build /app/dist ./dist
 COPY --from=prod-deps /app/node_modules ./node_modules
 COPY package.json ./
+# Drizzle migration SQL + journal — runMigrations() reads ./db/migrations at boot.
+COPY db ./db
 # The bind-mounted models.yaml lands at /app/models.yaml at runtime per
 # compose.yml; the file does NOT need to be baked into the image.
 EXPOSE 3000
