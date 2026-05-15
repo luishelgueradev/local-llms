@@ -378,7 +378,13 @@ LITERAL_LEAKS=$(printf '%s\n' "${SC5_LOGS}" | grep -cF "${ROUTER_BEARER_TOKEN}" 
 SHAPED_LEAKS=$(printf '%s\n' "${SC5_LOGS}" | grep -ciE 'bearer [A-Za-z0-9._+/=-]{16,}|authorization:[[:space:]]*bearer[[:space:]]+[A-Za-z0-9._+/=-]{16,}' || true)
 LEAK_COUNT=$(( LITERAL_LEAKS + SHAPED_LEAKS ))
 if [[ "${LEAK_COUNT}" -ne 0 ]]; then
-  FIRST_MATCH=$(printf '%s\n' "${SC5_LOGS}" | grep -iE "${ROUTER_BEARER_TOKEN}|bearer [A-Za-z0-9._+/=-]{16,}|authorization:[[:space:]]*bearer[[:space:]]+[A-Za-z0-9._+/=-]{16,}" | head -1)
+  # WR-03 fix: use -F for the token portion so ERE metacharacters in the token
+  # don't abort the script or silently match wrong lines. Fall back to a separate
+  # -iE grep for the token-shaped pattern only if the literal search misses.
+  FIRST_MATCH=$(printf '%s\n' "${SC5_LOGS}" | grep -F "${ROUTER_BEARER_TOKEN}" | head -1)
+  if [[ -z "${FIRST_MATCH}" ]]; then
+    FIRST_MATCH=$(printf '%s\n' "${SC5_LOGS}" | grep -iE 'bearer [A-Za-z0-9._+/=-]{16,}|authorization:[[:space:]]*bearer[[:space:]]+[A-Za-z0-9._+/=-]{16,}' | head -1)
+  fi
   fail "SC5: found ${LEAK_COUNT} bearer-token leak line(s) (literal=${LITERAL_LEAKS}, shaped=${SHAPED_LEAKS}, expected 0). First match: ${FIRST_MATCH}"
 else
   pass "SC5: zero bearer-token leaks in router logs after a full session"
