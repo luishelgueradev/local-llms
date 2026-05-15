@@ -21,7 +21,9 @@ export function makeBearerHook(expectedToken: string) {
   const padBuf = randomBytes(expectedBuf.length);
 
   return async function bearerOnRequest(req: FastifyRequest, _reply: FastifyReply) {
-    const path = (req.url.split('?')[0] ?? '/');
+    // String.prototype.split always returns a non-empty array, so [0] is never
+    // undefined — the previous `?? '/'` fallback was dead code (IN-02).
+    const path = req.url.split('?')[0];
     if (PUBLIC_PATHS.has(path)) return;
 
     const auth = req.headers.authorization;
