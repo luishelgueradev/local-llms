@@ -212,7 +212,44 @@ export function registerChatCompletionsRoute(
             req.raw.socket?.off('close', onClose);
             const env = toOpenAIErrorEnvelope(err);
             const status = mapToHttpStatus(err);
-            if (env === NO_ENVELOPE) return;  // client gone — defensive
+            // CR-02 (05-VERIFICATION.md gaps[1]): pre-stream error must produce a
+            // request_log row. safeRecord is idempotent via the recorded flag (lines
+            // 181-187) so calling it here AND from the finally is structurally safe —
+            // only the first call observes effects. NO_ENVELOPE → client disconnect
+            // (APIUserAbortError) records as 'disconnect' status_class with the
+            // 'client_disconnect' error_code. Regular envelope → typed error_code
+            // via mapErrorToCode + redactable error_message via err.message.
+            if (env === NO_ENVELOPE) {
+              safeRecord({
+                protocol: 'openai',
+                route: req.url.split('?')[0] ?? req.url,
+                backend: entry.backend,
+                model: entry.name,
+                statusClass: 'disconnect',
+                httpStatus: status,
+                durationMs: performance.now() - (req._t0 ?? performance.now()),
+                errorCode: 'client_disconnect',
+                agentId: req.agentId,
+                requestId: req.id,
+                timestamp: new Date(),
+              });
+              return; // client gone — defensive
+            }
+            const errInst = err instanceof Error ? err : new Error(String(err));
+            safeRecord({
+              protocol: 'openai',
+              route: req.url.split('?')[0] ?? req.url,
+              backend: entry.backend,
+              model: entry.name,
+              statusClass: deriveStatusClass(status, false),
+              httpStatus: status,
+              durationMs: performance.now() - (req._t0 ?? performance.now()),
+              errorCode: mapErrorToCode(errInst),
+              errorMessage: errInst.message,
+              agentId: req.agentId,
+              requestId: req.id,
+              timestamp: new Date(),
+            });
             return reply.code(status).send(env);
           }
 
@@ -232,22 +269,49 @@ export function registerChatCompletionsRoute(
           // Plan 05-02 Task 3: also call safeRecord with the final tokens passed
           // from canonicalToOpenAISse's widened onCleanup signature. The route is
           // the structural enforcement point for the request_log row (D-D6).
-          const sseCleanup = (final?: { tokensIn: number; tokensOut: number }): void => {
+          //
+          // CR-03 (05-VERIFICATION.md gaps[2]): when the translator reports a
+          // mid-stream upstream error via final.error, override status_class /
+          // error_code / error_message to reflect the real outcome. Without this
+          // override, reply.statusCode === 200 (SSE headers already flushed) +
+          // controller.signal.aborted === false → deriveStatusClass returns
+          // 'success' — the audit trail would record success for a wire-correct
+          // error. Reuses existing helpers (mapToHttpStatus + mapErrorToCode) —
+          // NO new helper duplication.
+          const sseCleanup = (final?: {
+            tokensIn: number;
+            tokensOut: number;
+            error?: Error;
+          }): void => {
             heartbeat.stop();
             req.raw.socket?.off('close', onClose);
             safeRelease();  // Pitfall 1 mitigation — slot released on stream end/abort/error
+            const hasUpstreamError = final?.error !== undefined;
+            const errStatus = hasUpstreamError
+              ? mapToHttpStatus(final!.error)
+              : reply.statusCode;
+            const statusClass = hasUpstreamError
+              ? deriveStatusClass(errStatus, false)
+              : deriveStatusClass(reply.statusCode, controller.signal.aborted);
+            const errorCode = hasUpstreamError
+              ? mapErrorToCode(final!.error)
+              : controller.signal.aborted
+                ? 'client_disconnect'
+                : undefined;
+            const errorMessage = hasUpstreamError ? final!.error!.message : undefined;
             safeRecord({
               protocol: 'openai',
               route: req.url.split('?')[0] ?? req.url,
               backend: entry.backend,
               model: entry.name,
-              statusClass: deriveStatusClass(reply.statusCode, controller.signal.aborted),
-              httpStatus: reply.statusCode,
+              statusClass,
+              httpStatus: errStatus,
               durationMs: performance.now() - (req._t0 ?? performance.now()),
               ttftMs: heartbeat.msSinceStart,
               tokensIn: final?.tokensIn,
               tokensOut: final?.tokensOut,
-              errorCode: controller.signal.aborted ? 'client_disconnect' : undefined,
+              errorCode,
+              errorMessage,
               agentId: req.agentId,
               requestId: req.id,
               timestamp: new Date(),
@@ -317,12 +381,27 @@ export function registerChatCompletionsRoute(
         // error paths, this is the primary release point.
         safeRelease();
 
-        // Plan 05-02 Task 3: record the non-stream outcome here. For the stream
-        // branch, sseCleanup already called safeRecord — recorded=true means this
-        // is a no-op (Pitfall 8 idempotency). For non-stream success/failure, this
-        // is the primary call site. We do NOT record from finally if the stream
-        // branch ran (recorded=true; closures share state correctly).
-        if (body.stream !== true) {
+        // CR-02 (05-VERIFICATION.md gaps[1]) + CR-03 (Plan 05-05 Task 5 deviation):
+        // The plan instructed to drop the `body.stream !== true` guard entirely
+        // and rely on safeRecord idempotency. In practice, fastify-sse-v2's
+        // reply.sse(asyncIterable) RETURNS IMMEDIATELY (it pipes the iterable
+        // via it-to-stream; the stream completes asynchronously) — so the route
+        // handler's outer finally fires BEFORE sseCleanup runs. Without a guard,
+        // the outer finally records status_class='success' (caughtErr=undefined,
+        // reply.statusCode=200) and sseCleanup's later call is a recorded=true
+        // no-op — which silently regresses the stream-success observability AND
+        // invalidates the CR-03 status_class override (the override happens
+        // inside sseCleanup, but sseCleanup never gets to write the row).
+        //
+        // Resolution (deviation Rule 1): re-instate the body.stream guard, but
+        // keep CR-02's intent intact by adding a `caughtErr` exception clause —
+        // when a stream-branch path throws BEFORE reply.sse spawns the iterable
+        // (e.g. the outer try threw between adapter call and the inner sseCleanup
+        // wiring), the outer finally MUST record because sseCleanup will not
+        // fire. The inner pre-stream catch (CR-02 Task 2) covers the most common
+        // stream-error path; the caughtErr clause here is the safety net for
+        // anything else that throws in the stream branch outer scope.
+        if (body.stream !== true || caughtErr) {
           // Status / http_status from reply (set by reply.send for success or by
           // the centralized error handler for re-thrown errors).
           const httpStatus = caughtErr ? mapToHttpStatus(caughtErr) : reply.statusCode;

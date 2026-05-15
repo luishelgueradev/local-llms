@@ -227,8 +227,16 @@ export interface CanonicalToOpenAISseOpts {
    * finally block, the values are the LAST captured input/output token counts
    * from message_start.message.usage / message_delta.usage. May be 0 if the
    * stream errored before message_start was received (pre-stream error path).
+   *
+   * Plan 05-05 (CR-03 / 05-VERIFICATION.md gaps[2]) — signature widened again
+   * to surface a `error?: Error` field. Set by the translator's catch block
+   * when the upstream stream throws AFTER the SSE headers have shipped (so
+   * reply.statusCode is locked at 200 but the audit trail must reflect a
+   * server_error / upstream_timeout outcome). Undefined on the happy path
+   * AND on the client-disconnect path (signal.aborted): the route's existing
+   * 'disconnect' derivation handles client-aborts unchanged.
    */
-  onCleanup?: (final?: { tokensIn: number; tokensOut: number }) => void;
+  onCleanup?: (final?: { tokensIn: number; tokensOut: number; error?: Error }) => void;
   /** Plan 04-04 / 04-05 seam: replaces canonical.model on emitted chunks (registry name on the wire). */
   displayModel?: string;
   /** Plan 04-04: replaces the derived `chatcmpl-...` id on emitted chunks. */
@@ -257,6 +265,12 @@ export async function* canonicalToOpenAISse(
   let created = Math.floor(Date.now() / 1000);
   let capturedInputTokens = 0;
   let capturedOutputTokens = 0;
+  // CR-03 (05-VERIFICATION.md gaps[2]): captured in the catch block (when the
+  // upstream stream throws AFTER message_start ships) and surfaced via the
+  // widened onCleanup contract so the route's sseCleanup can override
+  // status_class / error_code / error_message. undefined on happy path AND on
+  // client-disconnect (signal.aborted) — those don't represent upstream errors.
+  let caughtErr: Error | undefined;
   let capturedFinishReason:
     | 'stop'
     | 'length'
@@ -419,6 +433,11 @@ export async function* canonicalToOpenAISse(
     if (opts.signal?.aborted) {
       return;
     }
+    // CR-03 (05-VERIFICATION.md gaps[2]): capture the upstream error so the
+    // finally below can surface it to the route's sseCleanup. Skip for the
+    // signal.aborted branch above — that's a client-disconnect, not an upstream
+    // error, and the route's existing 'disconnect' derivation handles it.
+    caughtErr = err instanceof Error ? err : new Error(String(err));
     const env = toOpenAIErrorEnvelope(err);
     if (env === NO_ENVELOPE) {
       yield { event: '', data: '[DONE]' };
@@ -433,7 +452,16 @@ export async function* canonicalToOpenAISse(
     // re-aggregating. capturedInputTokens may be 0 if message_start was not
     // received; capturedOutputTokens is the LAST message_delta.usage.output_tokens
     // value before stream end.
-    opts.onCleanup?.({ tokensIn: capturedInputTokens, tokensOut: capturedOutputTokens });
+    //
+    // CR-03 (05-VERIFICATION.md gaps[2]): pass caughtErr (set in catch) to the
+    // route's sseCleanup so it can override status_class / error_code /
+    // error_message. undefined on happy path; non-undefined on mid-stream
+    // upstream throw.
+    opts.onCleanup?.({
+      tokensIn: capturedInputTokens,
+      tokensOut: capturedOutputTokens,
+      error: caughtErr,
+    });
   }
 }
 

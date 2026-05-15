@@ -240,7 +240,45 @@ export function registerMessagesRoute(
             req.raw.socket?.off('close', onClose);
             const env = toAnthropicErrorEnvelope(err);
             const status = mapToHttpStatus(err);
-            if (env === ANTHROPIC_NO_ENVELOPE) return; // client gone — defensive
+            // CR-02 (05-VERIFICATION.md gaps[1]): pre-stream error must produce a
+            // request_log row. safeRecord is idempotent via the recorded flag
+            // (lines 201-207) so calling it here AND from the finally is
+            // structurally safe — only the first call observes effects.
+            // ANTHROPIC_NO_ENVELOPE → client disconnect (APIUserAbortError) records
+            // as 'disconnect' status_class with the 'client_disconnect' error_code.
+            // The pre-stream catch fires BEFORE message_start ships, so no
+            // upstreamMessageId is yet captured.
+            if (env === ANTHROPIC_NO_ENVELOPE) {
+              safeRecord({
+                protocol: 'anthropic',
+                route: req.url.split('?')[0] ?? req.url,
+                backend: entry.backend,
+                model: entry.name,
+                statusClass: 'disconnect',
+                httpStatus: status,
+                durationMs: performance.now() - (req._t0 ?? performance.now()),
+                errorCode: 'client_disconnect',
+                agentId: req.agentId,
+                requestId: req.id,
+                timestamp: new Date(),
+              });
+              return; // client gone — defensive
+            }
+            const errInst = err instanceof Error ? err : new Error(String(err));
+            safeRecord({
+              protocol: 'anthropic',
+              route: req.url.split('?')[0] ?? req.url,
+              backend: entry.backend,
+              model: entry.name,
+              statusClass: deriveStatusClass(status, false),
+              httpStatus: status,
+              durationMs: performance.now() - (req._t0 ?? performance.now()),
+              errorCode: mapErrorToCode(errInst),
+              errorMessage: errInst.message,
+              agentId: req.agentId,
+              requestId: req.id,
+              timestamp: new Date(),
+            });
             return reply.code(status).send(env);
           }
 
@@ -258,26 +296,52 @@ export function registerMessagesRoute(
           //
           // Plan 05-02 Task 3: safeRecord with final tokens + msg_<ulid> passed
           // from canonicalToAnthropicSse's widened onCleanup signature.
+          //
+          // CR-03 (05-VERIFICATION.md gaps[2]): when the translator reports a
+          // mid-stream upstream error via final.error, override status_class /
+          // error_code / error_message to reflect the real outcome. Without this
+          // override, reply.statusCode === 200 (SSE headers already flushed) +
+          // controller.signal.aborted === false → deriveStatusClass returns
+          // 'success' — the audit trail would record success for a wire-correct
+          // error. upstreamMessageId continues to flow alongside (the override
+          // does NOT drop it — mid-stream errors after message_start ships still
+          // have a meaningful upstream_message_id to record). Reuses existing
+          // helpers (mapToHttpStatus + mapErrorToCode) — NO new helper duplication.
           const sseCleanup = (final?: {
             tokensIn: number;
             tokensOut: number;
             upstreamMessageId?: string;
+            error?: Error;
           }): void => {
             heartbeat.stop();
             req.raw.socket?.off('close', onClose);
             safeRelease();
+            const hasUpstreamError = final?.error !== undefined;
+            const errStatus = hasUpstreamError
+              ? mapToHttpStatus(final!.error)
+              : reply.statusCode;
+            const statusClass = hasUpstreamError
+              ? deriveStatusClass(errStatus, false)
+              : deriveStatusClass(reply.statusCode, controller.signal.aborted);
+            const errorCode = hasUpstreamError
+              ? mapErrorToCode(final!.error)
+              : controller.signal.aborted
+                ? 'client_disconnect'
+                : undefined;
+            const errorMessage = hasUpstreamError ? final!.error!.message : undefined;
             safeRecord({
               protocol: 'anthropic',
               route: req.url.split('?')[0] ?? req.url,
               backend: entry.backend,
               model: entry.name,
-              statusClass: deriveStatusClass(reply.statusCode, controller.signal.aborted),
-              httpStatus: reply.statusCode,
+              statusClass,
+              httpStatus: errStatus,
               durationMs: performance.now() - (req._t0 ?? performance.now()),
               ttftMs: heartbeat.msSinceStart,
               tokensIn: final?.tokensIn,
               tokensOut: final?.tokensOut,
-              errorCode: controller.signal.aborted ? 'client_disconnect' : undefined,
+              errorCode,
+              errorMessage,
               agentId: req.agentId,
               requestId: req.id,
               upstreamMessageId: final?.upstreamMessageId,
@@ -342,9 +406,27 @@ export function registerMessagesRoute(
       } finally {
         safeRelease();
 
-        // Plan 05-02 Task 3: record non-stream outcome here. safeRecord is
-        // idempotent — if sseCleanup already ran (stream branch), this is a no-op.
-        if (body.stream !== true) {
+        // CR-02 (05-VERIFICATION.md gaps[1]) + CR-03 (Plan 05-05 Task 5 deviation):
+        // The plan instructed to drop the `body.stream !== true` guard entirely
+        // and rely on safeRecord idempotency. In practice, fastify-sse-v2's
+        // reply.sse(asyncIterable) RETURNS IMMEDIATELY (it pipes the iterable
+        // via it-to-stream; the stream completes asynchronously) — so the route
+        // handler's outer finally fires BEFORE sseCleanup runs. Without a guard,
+        // the outer finally records status_class='success' (caughtErr=undefined,
+        // reply.statusCode=200) and sseCleanup's later call is a recorded=true
+        // no-op — which silently regresses the stream-success observability AND
+        // invalidates the CR-03 status_class override (the override happens
+        // inside sseCleanup, but sseCleanup never gets to write the row).
+        //
+        // Resolution (deviation Rule 1): re-instate the body.stream guard, but
+        // keep CR-02's intent intact by adding a `caughtErr` exception clause —
+        // when a stream-branch path throws BEFORE reply.sse spawns the iterable
+        // (e.g. the outer try threw between adapter call and the inner sseCleanup
+        // wiring), the outer finally MUST record because sseCleanup will not
+        // fire. The inner pre-stream catch (CR-02 Task 2) covers the most common
+        // stream-error path; the caughtErr clause here is the safety net for
+        // anything else that throws in the stream branch outer scope.
+        if (body.stream !== true || caughtErr) {
           const httpStatus = caughtErr ? mapToHttpStatus(caughtErr) : reply.statusCode;
           safeRecord({
             protocol: 'anthropic',

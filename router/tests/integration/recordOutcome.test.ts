@@ -18,6 +18,7 @@ import {
   mapErrorToCode,
   truncateAndRedact,
   type OutcomeContext,
+  type StatusClass,
 } from '../../src/metrics/recordOutcome.js';
 import { makeMetricsRegistry } from '../../src/metrics/registry.js';
 import type { RequestLogInsert } from '../../src/db/schema/index.js';
@@ -29,6 +30,7 @@ import {
   InvalidImageUrlError,
   InvalidToolArgumentsError,
   RegistryUnknownModelError,
+  mapToHttpStatus,
 } from '../../src/errors/envelope.js';
 import { APIConnectionError, APIConnectionTimeoutError } from 'openai';
 
@@ -136,20 +138,28 @@ describe('mapErrorToCode (D-D2 taxonomy)', () => {
   });
 });
 
+// Module-scope `makeDeps()` so the coverage-matrix describe at the END of the
+// file (Task 6 of Plan 05-05) can reuse the same fakeBuffered/metrics shape
+// without inlining a parallel construction. Lifted from inside the original
+// `describe('makeRecordRequestOutcome — D-D1 row shape + metric observations')`
+// block so vitest's describe-time scope can see it. The original-callsite
+// describes still reference this helper directly (see the destructure on the
+// first line of each `it(...)` body below).
+function makeDeps() {
+  const pushed: RequestLogInsert[] = [];
+  const fakeBuffered = {
+    push: (row: RequestLogInsert) => pushed.push(row),
+    drain: async () => {},
+    get size() {
+      return 0;
+    },
+  };
+  const metrics = makeMetricsRegistry();
+  const record = makeRecordRequestOutcome({ metrics, bufferedWriter: fakeBuffered });
+  return { record, pushed, metrics };
+}
+
 describe('makeRecordRequestOutcome — D-D1 row shape + metric observations', () => {
-  function makeDeps() {
-    const pushed: RequestLogInsert[] = [];
-    const fakeBuffered = {
-      push: (row: RequestLogInsert) => pushed.push(row),
-      drain: async () => {},
-      get size() {
-        return 0;
-      },
-    };
-    const metrics = makeMetricsRegistry();
-    const record = makeRecordRequestOutcome({ metrics, bufferedWriter: fakeBuffered });
-    return { record, pushed, metrics };
-  }
 
   it('1. success non-stream openai — row matches D-D1 shape with success/200 + no error fields', async () => {
     const { record, pushed, metrics } = makeDeps();
@@ -301,4 +311,142 @@ describe('makeRecordRequestOutcome — D-D1 row shape + metric observations', ()
     expect(pushed[0].error_code).toBe('client_disconnect');
     expect(pushed[0].tokens_out).toBe(47);
   });
+});
+
+// ─── Plan 05-05 Task 6: coverage matrix (regression gate for CR-02 / CR-03) ──
+//
+// Table-driven assertion that every typed error class produces the expected
+// (status_class, error_code, http_status) triple AND that error_message stays
+// non-null + post-redaction (no 'Bearer ' substring) after the
+// makeRecordRequestOutcome → bufferedWriter.push pipeline. This is the future
+// regression gate for both CR-02 (which only tests one error class per route)
+// and CR-03 (same), AND for any new error class added to errors/envelope.ts —
+// any drift in mapToHttpStatus / mapErrorToCode will surface here BEFORE it
+// silently regresses request_log audit fidelity.
+//
+// The matrix omits InvalidToolArgumentsError / InvalidImageUrlError /
+// ImageFetchError because those have non-trivial constructors that are awkward
+// to invoke in a table; the existing per-error `it(...)` cases in the
+// `describe('mapErrorToCode (D-D2 taxonomy)', ...)` block above already cover
+// them individually.
+describe('coverage matrix — every typed error class produces expected status_class + error_code (regression gate for CR-02 / CR-03)', () => {
+  interface MatrixCase {
+    name: string;
+    err: Error;
+    expectedStatusClass: StatusClass;
+    expectedErrorCode: string;
+    expectedHttpStatus: number;
+  }
+
+  const cases: MatrixCase[] = [
+    {
+      name: 'RegistryUnknownModelError',
+      err: new RegistryUnknownModelError('foo', ['bar']),
+      expectedStatusClass: 'client_error',
+      expectedErrorCode: 'unknown_model',
+      expectedHttpStatus: 404,
+    },
+    {
+      name: 'BackendSaturatedError',
+      err: new BackendSaturatedError('ollama', 30_000),
+      expectedStatusClass: 'client_error',
+      expectedErrorCode: 'backend_saturated',
+      expectedHttpStatus: 429,
+    },
+    {
+      name: 'CapabilityNotSupportedError(vision)',
+      err: new CapabilityNotSupportedError('llama-3-7b', 'vision'),
+      expectedStatusClass: 'client_error',
+      expectedErrorCode: 'model_capability_mismatch',
+      expectedHttpStatus: 400,
+    },
+    {
+      name: 'InvalidAgentIdError',
+      err: new InvalidAgentIdError('weird;value'),
+      expectedStatusClass: 'client_error',
+      expectedErrorCode: 'invalid_request',
+      expectedHttpStatus: 400,
+    },
+    {
+      name: 'APIConnectionError',
+      // Seeded message contains 'Bearer abc123' so the redaction assertion
+      // below proves the truncateAndRedact path stripped it.
+      err: new APIConnectionError({
+        message: 'connect ECONNREFUSED Bearer abc123',
+        cause: new Error('ECONNREFUSED'),
+      } as never),
+      expectedStatusClass: 'server_error',
+      expectedErrorCode: 'upstream_timeout',
+      expectedHttpStatus: 502,
+    },
+    {
+      name: 'APIConnectionTimeoutError',
+      err: new APIConnectionTimeoutError({ message: 'connect ETIMEDOUT' } as never),
+      expectedStatusClass: 'server_error',
+      expectedErrorCode: 'upstream_timeout',
+      expectedHttpStatus: 504,
+    },
+    {
+      name: 'plain Error with statusCode 5xx',
+      err: Object.assign(new Error('upstream bad gateway'), { statusCode: 502 }),
+      expectedStatusClass: 'server_error',
+      expectedErrorCode: 'upstream_5xx',
+      // mapToHttpStatus only special-cases statusCode === 400; 5xx falls
+      // through to the default 500. mapErrorToCode independently recognizes
+      // statusCode 5xx → 'upstream_5xx'. The matrix asserts both contracts
+      // separately so a future widening of mapToHttpStatus to honor 5xx
+      // statusCode hints surfaces here as a clear failure.
+      expectedHttpStatus: 500,
+    },
+    {
+      name: 'default Error',
+      err: new Error('boom'),
+      expectedStatusClass: 'server_error',
+      expectedErrorCode: 'internal_error',
+      expectedHttpStatus: 500,
+    },
+  ];
+
+  it.each(cases)(
+    '$name → status_class=$expectedStatusClass + error_code=$expectedErrorCode + http_status=$expectedHttpStatus',
+    ({ name, err, expectedStatusClass, expectedErrorCode, expectedHttpStatus }) => {
+      const { record, pushed } = makeDeps();
+
+      // Step 1: assert the mapToHttpStatus contract for this error class —
+      // catches regressions in errors/envelope.ts BEFORE the status_class
+      // assertion runs (so a status mapping drift surfaces with a clear name).
+      const httpStatus = mapToHttpStatus(err);
+      expect(httpStatus).toBe(expectedHttpStatus);
+
+      // Step 2: build the OutcomeContext from the case row; non-error fields
+      // are fixed values per the plan spec.
+      const ctx: OutcomeContext = {
+        protocol: 'openai',
+        route: '/v1/chat/completions',
+        backend: 'ollama',
+        model: 'llama-3-7b',
+        statusClass: deriveStatusClass(httpStatus, false),
+        httpStatus,
+        durationMs: 100,
+        errorCode: mapErrorToCode(err),
+        errorMessage: err.message,
+        agentId: 'claude-code:cov',
+        requestId: `req-cov-${name}`,
+        timestamp: new Date(),
+      };
+
+      // Step 3: invoke record() and assert the row landed.
+      record(ctx);
+      expect(pushed.length).toBe(1);
+      expect(pushed[0].status_class).toBe(expectedStatusClass);
+      expect(pushed[0].error_code).toBe(expectedErrorCode);
+      expect(pushed[0].http_status).toBe(expectedHttpStatus);
+
+      // Step 4: D-D3 redaction gate — the seeded 'Bearer abc123' substring on
+      // APIConnectionError must be stripped post-write. Other rows whose
+      // seeded message does not contain 'Bearer' trivially pass this check.
+      expect(pushed[0].error_message).not.toBeNull();
+      expect(pushed[0].error_message).not.toContain('Bearer ');
+    },
+  );
 });
