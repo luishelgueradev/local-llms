@@ -21,18 +21,41 @@ files_reviewed_list:
   - router/src/sse/stream.ts
 findings:
   critical: 0
-  warning: 3
-  info: 5
-  total: 8
-status: issues_found
+  warning: 0
+  info: 0
+  total: 0
+status: clean
 ---
 
-# Phase 2: Code Review Report (Refresh)
+# Phase 2: Code Review Report (Refresh + Fix Cycle)
 
-**Reviewed:** 2026-05-15T22:49:41Z
+**Reviewed:** 2026-05-15
 **Depth:** standard
 **Files Reviewed:** 15
-**Status:** issues_found
+**Status:** clean — all findings resolved
+
+## Fix Cycle Complete (2026-05-15)
+
+All 8 findings from the 2026-05-15 refresh pass were resolved across 8 atomic commits:
+
+| Finding | Commit | Resolution |
+|---------|--------|------------|
+| WR-01 — `skip()` called before defined (line 536 vs 662) | `45caa27` | Hoisted `SKIPS=0` + `skip()` to lines 104-107 alongside `fail()`/`pass()`. **Also closes 03/WR-05.** |
+| WR-02 — B1/B2/B3 cascading false failures when llamacpp unhealthy | `7d04bed` | Gate B1/B2/B3 on `LLAMACPP_HEALTHY == "true"` |
+| WR-03 — `$ROUTER_BEARER_TOKEN` interpolated into `grep -iE` without `-F` | `c0b3357` | Use `-F` for token in SC5 FIRST_MATCH diagnostic |
+| IN-01 — `OLLAMA_URL` env var unused | `daa0ea5` | Removed dead `OLLAMA_URL` from EnvSchema. **Also closes 03/WR-04.** |
+| IN-02 — Unreachable `?? '/'` in `bearer.ts:24` | `c4391ae` | Dropped fallback |
+| IN-03 — SC3 describe name misleading | `78dd907` | Clarified describe block name |
+| IN-04 — `id.unref?.()` optional chain unreachable on Node 22 | `e086c0f` | Removed optional chain |
+| IN-05 — Dead export `chunkToSseEvents` from sse/stream.ts | `ab2f156` | Added deprecation banner |
+
+**Validation:** `bash -n bin/smoke-test-router.sh` clean; `tsc --noEmit` clean; `vitest run` for affected tests — 21 passed, 2 skipped, 0 failures.
+
+---
+
+# Prior Refresh Findings (now all resolved — kept for traceability)
+
+**Status (historical):** issues_found
 
 **Refresh history:** Prior pass 2026-05-12 (7 warnings, 6 info). Current pass 2026-05-15.
 

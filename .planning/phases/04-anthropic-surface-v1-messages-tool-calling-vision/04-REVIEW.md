@@ -23,14 +23,35 @@ files_reviewed_list:
   - router/src/translation/openai-out.ts
 findings:
   critical: 0
-  warning: 1
-  info: 4
-  total: 5
-status: issues_found
-refresh_history: "Pass 2 — 2026-05-15. All 3 prior BLOCKER/Critical and all 7 prior WARNING findings verified closed. 1 new WARNING found (streaming stop_reason always end_turn). 4 of 5 prior INFO still open."
+  warning: 0
+  info: 0
+  total: 0
+status: clean
+refresh_history: "Pass 2 — 2026-05-15. All 3 prior BLOCKER/Critical and all 7 prior WARNING findings verified closed. 1 new WARNING found + 4 of 5 prior INFO still open. Pass 3 (fix cycle) — 2026-05-15: all 6 remaining findings resolved across 6 atomic commits."
 ---
 
-# Phase 4: Code Review Report (Refresh)
+# Phase 4: Code Review Report (Refresh + Fix Cycle)
+
+**Status:** clean — all findings resolved
+
+## Fix Cycle Complete (2026-05-15)
+
+All 6 findings from the 2026-05-15 refresh pass were resolved across 6 atomic commits:
+
+| Finding | Commit | Resolution |
+|---------|--------|------------|
+| WR-01 — Streaming `stop_reason` hardcoded `'end_turn'` masks max_tokens truncation | `b205833` | Added `openAIFinishToCanonicalStop()` + `upstreamFinishReason` capture in two-chunk pattern (choices-bearing chunk carries finish_reason; usage-only chunk triggers message_delta). 'length' → 'max_tokens', 'stop' → 'end_turn', 'tool_calls' → 'tool_use'. Regression test added. |
+| IN-01 — Multi-text-block join uses no separator | `a080ee5` | Changed `textParts.join('')` to `join('\n')` |
+| IN-02 — Fixed `/tmp/.scp4e-body` path | `3a46bca` | Switched to `mktemp` for unique per-run path |
+| IN-03 — Empty `anthropic-version:` echo | `a98d664` | Return null for empty post-sanitization header |
+| IN-04 — Unreachable "unknown family" branch | `85f345a` | Added clarifying comment to `isDenied` |
+| IN-05 — Shared `monotonicFactory` untested | `a75c9d2` | Added lexicographic-ordering cross-helper test for `newMessageId`/`newToolUseId` |
+
+**Validation:** `bash -n` clean; `tsc --noEmit` clean; `vitest run` full suite — 40 files, **493 tests pass** (was 489 before WR-01 + IN-05 regression tests), 2 skipped.
+
+---
+
+# Prior Refresh Pass (now all resolved — kept for traceability)
 
 **Reviewed:** 2026-05-15
 **Depth:** standard

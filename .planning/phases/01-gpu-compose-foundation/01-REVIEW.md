@@ -1,6 +1,6 @@
 ---
 phase: 01-gpu-compose-foundation
-reviewed: 2026-05-15T12:00:00Z
+reviewed: 2026-05-15T23:30:00Z
 depth: standard
 files_reviewed: 8
 files_reviewed_list:
@@ -13,19 +13,38 @@ files_reviewed_list:
   - .gitignore
   - README.md
 findings:
-  critical: 1
-  warning: 1
-  info: 2
-  total: 4
-status: issues_found
+  critical: 0
+  warning: 0
+  info: 0
+  total: 0
+status: clean
 ---
 
-# Phase 01: Code Review Report (Refresh)
+# Phase 01: Code Review Report (Refresh + Fix Cycle)
 
 **Reviewed:** 2026-05-15
 **Depth:** standard
 **Files Reviewed:** 8
-**Status:** issues_found
+**Status:** clean — all findings resolved
+
+## Fix Cycle Complete (2026-05-15)
+
+All 4 findings from the 2026-05-15 refresh pass were resolved across 3 atomic commits:
+
+| Finding | Commit | Resolution |
+|---------|--------|------------|
+| CR-01 — bootstrap-host DIRS vs compose.yml mismatch | `0fb0b2a` | Renamed `postgres/` → `postgres-data/`, added `postgres-backups/`; targeted per-subtree chown; pre-chown postgres dirs to uid 70:70 |
+| IN-01 — Stale FUTURE FOOTGUN comment | `0fb0b2a` | Removed (combined with CR-01 commit) |
+| WR-01 — `${MODEL}` unquoted in TAGS_RESPONSE heredoc | `af7f243` | Replaced unquoted heredoc with env-var + single-quoted `python3 -c '...'` (matches CR-02 pattern from `5264e9e`) |
+| IN-02 — Ollama "Alpine-style minimal" misframing | `d064cf8` | Replaced with factually correct wording ("ships no curl, wget, or python") |
+
+**Validation:** `bash -n` clean on all 4 scripts; `docker compose config --quiet` passes.
+
+---
+
+# Prior Refresh Findings (now all resolved — kept for traceability)
+
+**Status (historical):** issues_found
 
 **Refresh history:**
 - Prior pass: 2026-05-10 — 2 critical, 7 warning, 3 info (12 total)

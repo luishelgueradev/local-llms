@@ -23,16 +23,39 @@ files_reviewed_list:
   - bin/smoke-test-router.sh
 findings:
   critical: 0
-  warning: 3
-  info: 4
-  total: 7
-status: issues_found
+  warning: 0
+  info: 0
+  total: 0
+status: clean
 ---
 
-# Phase 03: Code Review Report (Refresh)
+# Phase 03: Code Review Report (Refresh + Fix Cycle)
 
-**Reviewed:** 2026-05-15T12:00:00Z
+**Reviewed:** 2026-05-15
 **Prior review:** 2026-05-13 (status: issues_found, critical: 1, warning: 4, info: 3, total: 8)
+**Status:** clean — all findings resolved
+
+## Fix Cycle Complete (2026-05-15)
+
+All 7 findings from the 2026-05-15 refresh pass were resolved across 5 atomic commits (WR-04 and WR-05 were closed as byproducts of Phase 02 fixes):
+
+| Finding | Commit | Resolution |
+|---------|--------|------------|
+| WR-02 — `INTERVAL_MS = 10_000` hardcoded in readyz.ts; no link to scheduler | `e12e9ef` | Created `router/src/config/constants.ts` with `LIVENESS_INTERVAL_MS`; imported by both `app.ts` (scheduler) and `readyz.ts` (stale detection) |
+| WR-04 — `OLLAMA_URL` dead config | `daa0ea5` (Phase 02) + `9eea876` (Phase 03 compose part) | Removed from EnvSchema + compose.yml |
+| WR-05 — `skip()` before defined (same bug as 02/WR-01) | `45caa27` (Phase 02) | Hoisted `skip()` definition — closes both phases' WR |
+| IN-01 — Hot-reload semaphoreMap not rebuilt | `a28b284` | Documented limitation at onReload site; safe for Phase 3 (single backend type); resolution required before Phase 7 widens LocalBackendEnum |
+| IN-02 — Smoke-test banner stale ("Phase 2") | `2bddb93` | Updated to "Phases 2-5" |
+| IN-03 — `MODELS_YAML_PATH` not set in prod router service | `9eea876` | Added explicit env var to compose.yml router: service |
+| IN-04 — `backends.base_url` accepted but never read | `f93f263` | Added accepted-but-ignored comment to schema + models.yaml |
+
+**Validation:** `bash -n bin/smoke-test-router.sh` clean; `tsc --noEmit` clean; `vitest run` full suite — 40 files, 489 tests pass, 2 skipped; `docker compose config --quiet` clean.
+
+---
+
+# Prior Refresh Findings (now all resolved — kept for traceability)
+
+**Status (historical):** issues_found
 **Refresh history:** prior: 2026-05-13; current: 2026-05-15
 **Depth:** standard
 **Files Reviewed:** 17
