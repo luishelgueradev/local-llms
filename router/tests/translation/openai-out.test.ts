@@ -147,6 +147,126 @@ describe('openAIChatCompletionToCanonical (inverse, adapter-internal helper)', (
 });
 
 describe('openAIChunksToCanonicalEvents (inverse stream)', () => {
+  // ── WR-01 regression: finish_reason captured before usage-only chunk ──────────
+  //
+  // The upstream stream structure is:
+  //   chunk1: choices[{delta:{content:'...'}, finish_reason:null}]    (text)
+  //   chunk2: choices[{delta:{},              finish_reason:'length'}] (close)
+  //   chunk3: choices:[],  usage:{...}                                  (usage-only)
+  //
+  // Before the fix, the usage-only chunk (chunk3) caused message_delta to be
+  // emitted with stop_reason:'end_turn' unconditionally — masking max_tokens
+  // truncation. The fix captures finish_reason from chunk2 BEFORE chunk3 fires.
+  it('WR-01: maps finish_reason:length → stop_reason:max_tokens (truncation regression)', async () => {
+    const chunks: ChatCompletionChunk[] = [
+      {
+        id: 'chatcmpl-wr01',
+        object: 'chat.completion.chunk',
+        created: 0,
+        model: 'x',
+        choices: [{ index: 0, delta: { content: 'partial' }, finish_reason: null }],
+      } as ChatCompletionChunk,
+      {
+        // Choices-bearing chunk that carries finish_reason:'length'.
+        id: 'chatcmpl-wr01',
+        object: 'chat.completion.chunk',
+        created: 0,
+        model: 'x',
+        choices: [{ index: 0, delta: {}, finish_reason: 'length' }],
+      } as ChatCompletionChunk,
+      {
+        // Usage-only chunk — choices:[] — triggers message_delta emission.
+        id: 'chatcmpl-wr01',
+        object: 'chat.completion.chunk',
+        created: 0,
+        model: 'x',
+        choices: [],
+        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+      } as ChatCompletionChunk,
+    ];
+
+    async function* gen() {
+      for (const c of chunks) yield c;
+    }
+    const events = await collect(openAIChunksToCanonicalEvents(gen(), { model: 'x' }));
+
+    const msgDelta = events.find(
+      (e): e is Extract<typeof e, { type: 'message_delta' }> => e.type === 'message_delta',
+    );
+    expect(msgDelta).toBeDefined();
+    // Before the fix this was 'end_turn' — truncation silently masked.
+    expect(msgDelta!.delta.stop_reason).toBe('max_tokens');
+  });
+
+  it('WR-01: maps finish_reason:stop → stop_reason:end_turn (normal completion)', async () => {
+    const chunks: ChatCompletionChunk[] = [
+      {
+        id: 'chatcmpl-wr01b',
+        object: 'chat.completion.chunk',
+        created: 0,
+        model: 'x',
+        choices: [{ index: 0, delta: { content: 'done' }, finish_reason: null }],
+      } as ChatCompletionChunk,
+      {
+        id: 'chatcmpl-wr01b',
+        object: 'chat.completion.chunk',
+        created: 0,
+        model: 'x',
+        choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+      } as ChatCompletionChunk,
+      {
+        id: 'chatcmpl-wr01b',
+        object: 'chat.completion.chunk',
+        created: 0,
+        model: 'x',
+        choices: [],
+        usage: { prompt_tokens: 3, completion_tokens: 1, total_tokens: 4 },
+      } as ChatCompletionChunk,
+    ];
+
+    async function* gen() {
+      for (const c of chunks) yield c;
+    }
+    const events = await collect(openAIChunksToCanonicalEvents(gen(), { model: 'x' }));
+
+    const msgDelta = events.find(
+      (e): e is Extract<typeof e, { type: 'message_delta' }> => e.type === 'message_delta',
+    );
+    expect(msgDelta).toBeDefined();
+    expect(msgDelta!.delta.stop_reason).toBe('end_turn');
+  });
+
+  it('WR-01: maps finish_reason:tool_calls → stop_reason:tool_use', async () => {
+    const chunks: ChatCompletionChunk[] = [
+      {
+        id: 'chatcmpl-wr01c',
+        object: 'chat.completion.chunk',
+        created: 0,
+        model: 'x',
+        choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }],
+      } as ChatCompletionChunk,
+      {
+        id: 'chatcmpl-wr01c',
+        object: 'chat.completion.chunk',
+        created: 0,
+        model: 'x',
+        choices: [],
+        usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 },
+      } as ChatCompletionChunk,
+    ];
+
+    async function* gen() {
+      for (const c of chunks) yield c;
+    }
+    const events = await collect(openAIChunksToCanonicalEvents(gen(), { model: 'x' }));
+
+    const msgDelta = events.find(
+      (e): e is Extract<typeof e, { type: 'message_delta' }> => e.type === 'message_delta',
+    );
+    expect(msgDelta).toBeDefined();
+    expect(msgDelta!.delta.stop_reason).toBe('tool_use');
+  });
+
   it('emits message_start → content_block_start → content_block_delta → content_block_stop → message_delta → message_stop', async () => {
     const chunks: ChatCompletionChunk[] = [
       {

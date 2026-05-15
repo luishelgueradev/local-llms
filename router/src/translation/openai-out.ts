@@ -486,6 +486,38 @@ export interface OpenAIChunksToCanonicalOpts {
   inputTokensHint?: number;
 }
 
+/**
+ * Map an upstream OpenAI finish_reason string to the canonical StopReason.
+ *
+ * The usage-only chunk (choices:[]) that carries stream_options.include_usage
+ * is emitted AFTER the choices-bearing chunk that carries finish_reason.
+ * This helper is used by openAIChunksToCanonicalEvents to convert the captured
+ * finish_reason into the canonical stop_reason emitted in message_delta.
+ *
+ * Mapping (WR-01):
+ *   'length'         → 'max_tokens'   (model hit max_tokens — truncation)
+ *   'tool_calls'
+ *   'function_call'  → 'tool_use'     (model requested a tool call)
+ *   'content_filter' → 'end_turn'     (no direct canonical equivalent — closest neighbor)
+ *   'stop' / null / undefined → 'end_turn' (normal completion)
+ */
+function openAIFinishToCanonicalStop(
+  finish: string | null | undefined,
+): 'end_turn' | 'max_tokens' | 'stop_sequence' | 'tool_use' {
+  switch (finish) {
+    case 'length':
+      return 'max_tokens';
+    case 'tool_calls':
+    case 'function_call':
+      return 'tool_use';
+    case 'content_filter':
+      // No direct canonical equivalent — map to end_turn (closest neighbor).
+      return 'end_turn';
+    default:
+      return 'end_turn';
+  }
+}
+
 export async function* openAIChunksToCanonicalEvents(
   chunks: AsyncIterable<ChatCompletionChunk>,
   opts: OpenAIChunksToCanonicalOpts,
@@ -493,6 +525,11 @@ export async function* openAIChunksToCanonicalEvents(
   let started = false;
   let textBlockOpen = false;
   const msgId = newMessageId();
+  // WR-01: track finish_reason from choices-bearing chunks so the usage-only
+  // chunk (choices:[]) can synthesize the correct canonical stop_reason.
+  // The upstream emits finish_reason on the last non-empty choices chunk and
+  // then a separate usage-only chunk — we must capture it before that arrives.
+  let upstreamFinishReason: string | null | undefined;
 
   for await (const chunk of chunks) {
     if (!started) {
@@ -519,6 +556,11 @@ export async function* openAIChunksToCanonicalEvents(
     const choice = chunk.choices[0];
     const deltaContent = typeof choice?.delta?.content === 'string' ? choice.delta.content : '';
 
+    // WR-01: capture finish_reason from any choices-bearing chunk that sets it.
+    if (choice?.finish_reason != null) {
+      upstreamFinishReason = choice.finish_reason;
+    }
+
     if (deltaContent !== '') {
       if (!textBlockOpen) {
         textBlockOpen = true;
@@ -540,9 +582,16 @@ export async function* openAIChunksToCanonicalEvents(
         yield { type: 'content_block_stop', index: 0 };
         textBlockOpen = false;
       }
+      // WR-01: use the captured finish_reason (from the last choices-bearing chunk)
+      // to set the canonical stop_reason. Hardcoding 'end_turn' here masked
+      // max_tokens truncation — agents checking stop_reason==='max_tokens' to
+      // detect and continue truncated responses would never detect truncation.
       const messageDelta = {
         type: 'message_delta' as const,
-        delta: { stop_reason: 'end_turn' as const, stop_sequence: null },
+        delta: {
+          stop_reason: openAIFinishToCanonicalStop(upstreamFinishReason),
+          stop_sequence: null,
+        },
         usage: { output_tokens: chunk.usage.completion_tokens },
       };
       Object.defineProperty(messageDelta.usage, '_upstreamInputTokens', {
