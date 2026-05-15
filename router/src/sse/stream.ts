@@ -1,3 +1,12 @@
+/**
+ * DEPRECATED PRODUCTION PATH: chunkToSseEvents was the original SSE generator used
+ * by /v1/chat/completions (Phase 2). Phase 4 replaced it with canonicalToOpenAISse
+ * (translation/openai-out.ts) which operates on the canonical layer. This file is
+ * retained as a unit-test target; it is NOT imported by any production source.
+ * Consider removing when the unit tests are migrated to canonicalToOpenAISse directly.
+ * (IN-05)
+ */
+
 import type { ChatCompletionChunk } from 'openai/resources/chat/completions';
 import { NO_ENVELOPE, midStreamErrorFrameLines, toOpenAIErrorEnvelope } from '../errors/envelope.js';
 
