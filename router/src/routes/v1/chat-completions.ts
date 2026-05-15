@@ -269,22 +269,49 @@ export function registerChatCompletionsRoute(
           // Plan 05-02 Task 3: also call safeRecord with the final tokens passed
           // from canonicalToOpenAISse's widened onCleanup signature. The route is
           // the structural enforcement point for the request_log row (D-D6).
-          const sseCleanup = (final?: { tokensIn: number; tokensOut: number }): void => {
+          //
+          // CR-03 (05-VERIFICATION.md gaps[2]): when the translator reports a
+          // mid-stream upstream error via final.error, override status_class /
+          // error_code / error_message to reflect the real outcome. Without this
+          // override, reply.statusCode === 200 (SSE headers already flushed) +
+          // controller.signal.aborted === false → deriveStatusClass returns
+          // 'success' — the audit trail would record success for a wire-correct
+          // error. Reuses existing helpers (mapToHttpStatus + mapErrorToCode) —
+          // NO new helper duplication.
+          const sseCleanup = (final?: {
+            tokensIn: number;
+            tokensOut: number;
+            error?: Error;
+          }): void => {
             heartbeat.stop();
             req.raw.socket?.off('close', onClose);
             safeRelease();  // Pitfall 1 mitigation — slot released on stream end/abort/error
+            const hasUpstreamError = final?.error !== undefined;
+            const errStatus = hasUpstreamError
+              ? mapToHttpStatus(final!.error)
+              : reply.statusCode;
+            const statusClass = hasUpstreamError
+              ? deriveStatusClass(errStatus, false)
+              : deriveStatusClass(reply.statusCode, controller.signal.aborted);
+            const errorCode = hasUpstreamError
+              ? mapErrorToCode(final!.error)
+              : controller.signal.aborted
+                ? 'client_disconnect'
+                : undefined;
+            const errorMessage = hasUpstreamError ? final!.error!.message : undefined;
             safeRecord({
               protocol: 'openai',
               route: req.url.split('?')[0] ?? req.url,
               backend: entry.backend,
               model: entry.name,
-              statusClass: deriveStatusClass(reply.statusCode, controller.signal.aborted),
-              httpStatus: reply.statusCode,
+              statusClass,
+              httpStatus: errStatus,
               durationMs: performance.now() - (req._t0 ?? performance.now()),
               ttftMs: heartbeat.msSinceStart,
               tokensIn: final?.tokensIn,
               tokensOut: final?.tokensOut,
-              errorCode: controller.signal.aborted ? 'client_disconnect' : undefined,
+              errorCode,
+              errorMessage,
               agentId: req.agentId,
               requestId: req.id,
               timestamp: new Date(),

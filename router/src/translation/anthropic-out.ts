@@ -91,11 +91,24 @@ export interface CanonicalToAnthropicSseOpts {
    * output_tokens from message_delta.usage observed in the canonical event
    * stream, and message_start.message.id (the canonical msg_<ulid>) for the
    * Anthropic request_log.upstream_message_id column.
+   *
+   * Plan 05-05 (CR-03 / 05-VERIFICATION.md gaps[2]) — signature widened again
+   * to surface a `error?: Error` field. Set by the translator's catch block
+   * when the upstream stream throws AFTER the SSE headers have shipped (so
+   * reply.statusCode is locked at 200 but the audit trail must reflect a
+   * server_error / upstream_timeout outcome). Undefined on the happy path
+   * AND on the client-disconnect path (signal.aborted) AND on the
+   * ANTHROPIC_NO_ENVELOPE branch (APIUserAbortError — non-signal-originated
+   * client gone). The route's existing 'disconnect' derivation handles
+   * client-aborts unchanged. upstreamMessageId continues to flow alongside
+   * even when error is present (mid-stream errors after message_start ships
+   * still have a meaningful upstream_message_id to record).
    */
   onCleanup?: (final?: {
     tokensIn: number;
     tokensOut: number;
     upstreamMessageId?: string;
+    error?: Error;
   }) => void;
   /**
    * Plan 04-04 seam: when set, the synthetic `message_start.message.model` field
@@ -139,6 +152,12 @@ export async function* canonicalToAnthropicSse(
   let capturedInputTokens = 0;
   let capturedOutputTokens = 0;
   let capturedUpstreamMessageId: string | undefined;
+  // CR-03 (05-VERIFICATION.md gaps[2]): captured in the catch block (when the
+  // upstream stream throws AFTER message_start ships) and surfaced via the
+  // widened onCleanup contract so the route's sseCleanup can override
+  // status_class / error_code / error_message. undefined on happy path AND on
+  // client-disconnect (signal.aborted) AND on the ANTHROPIC_NO_ENVELOPE branch.
+  let caughtErr: Error | undefined;
 
   try {
     for await (const ev of events) {
@@ -248,16 +267,31 @@ export async function* canonicalToAnthropicSse(
       // frames IS the terminator semantics for an aborted-but-not-signal path.
       return;
     }
+    // CR-03 (05-VERIFICATION.md gaps[2]): capture the upstream error so the
+    // finally below can surface it to the route's sseCleanup. Set BEFORE
+    // yielding the error frame so the finally always sees it (defensive
+    // ordering — yield does not throw under normal generator semantics, but
+    // this keeps the assignment unambiguous). Skipped for signal.aborted +
+    // ANTHROPIC_NO_ENVELOPE branches above (client-disconnects, not upstream
+    // errors).
+    caughtErr = err instanceof Error ? err : new Error(String(err));
     // FINDING 1.1 / Example C — SINGLE error frame, then stream ends. NO data-DONE
     // follow-up. The distinguishing feature vs midStreamErrorFrameLines (OpenAI).
     yield anthropicErrorFrame(env);
   } finally {
     // Plan 05-02 Task 3: surface captured final token totals + canonical
     // msg_<ulid> to the route's sseCleanup so it can populate request_log.
+    //
+    // CR-03 (05-VERIFICATION.md gaps[2]): pass caughtErr (set in catch) to the
+    // route's sseCleanup so it can override status_class / error_code /
+    // error_message. undefined on happy path; non-undefined on mid-stream
+    // upstream throw. upstreamMessageId continues to flow alongside (it was
+    // captured at message_start and is still meaningful for mid-stream errors).
     opts.onCleanup?.({
       tokensIn: capturedInputTokens,
       tokensOut: capturedOutputTokens,
       upstreamMessageId: capturedUpstreamMessageId,
+      error: caughtErr,
     });
   }
 }
