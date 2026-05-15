@@ -1085,25 +1085,48 @@ else
 fi
 
 # ── SC-P5-E: /readyz reflects postgres pause/unpause ────────────────────────
+# Gates on body.postgres.status (not the overall HTTP code) so the assertion
+# works correctly under --profile ollama where llamacpp is permanently down
+# and /readyz always returns 503 from the overall not_ready gate.
 echo ""
 echo "[smoke-test-router] SC-P5-E: /readyz transitions on postgres pause/unpause ..."
-READYZ_BEFORE=$(curl -s -o /dev/null -w '%{http_code}' "${ROUTER_URL}/readyz")
-[[ "${READYZ_BEFORE}" == "200" ]] && pass "SC-P5-E: /readyz starts at 200 (healthy stack)" || fail "SC-P5-E: /readyz starts at ${READYZ_BEFORE} (expected 200)"
+READYZ_BEFORE_BODY=$(curl -s "${ROUTER_URL}/readyz" || true)
+READYZ_BEFORE_PG=$(echo "${READYZ_BEFORE_BODY}" | python3 -c '
+import json, sys
+try:
+  d = json.load(sys.stdin)
+  print((d.get("postgres") or {}).get("status") or "")
+except Exception:
+  print("")
+')
+if [[ "${READYZ_BEFORE_PG}" == "alive" ]]; then
+  pass "SC-P5-E: postgres.status=alive (healthy stack)"
+else
+  fail "SC-P5-E: postgres.status=${READYZ_BEFORE_PG} at start (expected alive) — body: ${READYZ_BEFORE_BODY:0:200}"
+fi
 
 docker compose pause postgres >/dev/null 2>&1
 # Wait up to 25s (≈ 2 × scheduler interval) for the probe to mark postgres down
-READYZ_PAUSED_CODE="000"
+READYZ_PAUSED_PG="unknown"
 for attempt in $(seq 1 25); do
   sleep 1
-  READYZ_PAUSED_CODE=$(curl -s -o /dev/null -w '%{http_code}' "${ROUTER_URL}/readyz")
-  [[ "${READYZ_PAUSED_CODE}" == "503" ]] && break
+  _BODY=$(curl -s "${ROUTER_URL}/readyz" || true)
+  READYZ_PAUSED_PG=$(echo "${_BODY}" | python3 -c '
+import json, sys
+try:
+  d = json.load(sys.stdin)
+  print((d.get("postgres") or {}).get("status") or "")
+except Exception:
+  print("")
+')
+  [[ "${READYZ_PAUSED_PG}" == "down" ]] && break
 done
-if [[ "${READYZ_PAUSED_CODE}" == "503" ]]; then
-  pass "SC-P5-E: /readyz -> 503 within ${attempt}s of postgres pause"
+if [[ "${READYZ_PAUSED_PG}" == "down" ]]; then
+  pass "SC-P5-E: postgres.status -> down within ${attempt}s of postgres pause"
 else
-  fail "SC-P5-E: /readyz still ${READYZ_PAUSED_CODE} after 25s of postgres pause"
+  fail "SC-P5-E: postgres.status still '${READYZ_PAUSED_PG}' after 25s of postgres pause (expected down)"
 fi
-READYZ_PAUSED_BODY=$(curl -s "${ROUTER_URL}/readyz")
+READYZ_PAUSED_BODY=$(curl -s "${ROUTER_URL}/readyz" || true)
 if echo "${READYZ_PAUSED_BODY}" | grep -q '"postgres":'; then
   pass "SC-P5-E: /readyz response includes \"postgres\" field"
 else
@@ -1111,16 +1134,24 @@ else
 fi
 
 docker compose unpause postgres >/dev/null 2>&1
-READYZ_UNPAUSED_CODE="000"
+READYZ_UNPAUSED_PG="unknown"
 for attempt in $(seq 1 25); do
   sleep 1
-  READYZ_UNPAUSED_CODE=$(curl -s -o /dev/null -w '%{http_code}' "${ROUTER_URL}/readyz")
-  [[ "${READYZ_UNPAUSED_CODE}" == "200" ]] && break
+  _BODY=$(curl -s "${ROUTER_URL}/readyz" || true)
+  READYZ_UNPAUSED_PG=$(echo "${_BODY}" | python3 -c '
+import json, sys
+try:
+  d = json.load(sys.stdin)
+  print((d.get("postgres") or {}).get("status") or "")
+except Exception:
+  print("")
+')
+  [[ "${READYZ_UNPAUSED_PG}" == "alive" ]] && break
 done
-if [[ "${READYZ_UNPAUSED_CODE}" == "200" ]]; then
-  pass "SC-P5-E: /readyz -> 200 within ${attempt}s of postgres unpause"
+if [[ "${READYZ_UNPAUSED_PG}" == "alive" ]]; then
+  pass "SC-P5-E: postgres.status -> alive within ${attempt}s of postgres unpause"
 else
-  fail "SC-P5-E: /readyz still ${READYZ_UNPAUSED_CODE} after 25s of postgres unpause"
+  fail "SC-P5-E: postgres.status still '${READYZ_UNPAUSED_PG}' after 25s of postgres unpause (expected alive)"
 fi
 
 # ── OBS-05 final check: every long-running service is healthy ───────────────
