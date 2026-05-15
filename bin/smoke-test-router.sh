@@ -698,13 +698,17 @@ else
 import json, os
 try:
   d = json.loads(os.environ["SCP4A_RESP"])
-  assert d["id"].startswith("msg_"), f"id does not start with msg_: {d.get(\"id\")}"
-  assert d["type"] == "message", f"type is not message: {d.get(\"type\")}"
-  assert d["usage"]["input_tokens"] > 0, "input_tokens not > 0"
-  assert d["usage"]["output_tokens"] > 0, "output_tokens not > 0"
-  print(f"OK id={d[\"id\"][:14]}... in={d[\"usage\"][\"input_tokens\"]} out={d[\"usage\"][\"output_tokens\"]}")
+  msg_id = d.get("id") or ""
+  msg_type = d.get("type") or ""
+  tokens_in = d.get("usage", {}).get("input_tokens", 0)
+  tokens_out = d.get("usage", {}).get("output_tokens", 0)
+  assert msg_id.startswith("msg_"), "id does not start with msg_: " + msg_id
+  assert msg_type == "message", "type is not message: " + msg_type
+  assert tokens_in > 0, "input_tokens not > 0"
+  assert tokens_out > 0, "output_tokens not > 0"
+  print("OK id=" + msg_id[:14] + "... in=" + str(tokens_in) + " out=" + str(tokens_out))
 except Exception as e:
-  print(f"BAD:{e}")
+  print("BAD:" + str(e))
 ')
   case "${SCP4A_CHECK}" in
     OK*)   pass "SC-P4-A: /v1/messages non-stream (${SCP4A_CHECK#OK })" ;;
@@ -774,10 +778,11 @@ else
 import json, os
 try:
   d = json.loads(os.environ["SCP4C_BODY_RESP"])
-  assert isinstance(d.get("input_tokens"), int) and d["input_tokens"] > 0, f"bad input_tokens: {d}"
-  print(f"OK input_tokens={d[\"input_tokens\"]}")
+  tok = d.get("input_tokens")
+  assert isinstance(tok, int) and tok > 0, "bad input_tokens: " + str(d)
+  print("OK input_tokens=" + str(tok))
 except Exception as e:
-  print(f"BAD:{e}")
+  print("BAD:" + str(e))
 ')
   case "${SCP4C_CHECK}" in
     OK*)
@@ -883,12 +888,15 @@ else
 import json, os
 try:
   d = json.loads(os.environ["SCP4E_BODY_RESP"])
-  assert d["type"] == "error", f"envelope type: {d.get(\"type\")}"
-  assert d["error"]["type"] == "invalid_request_error", f"error.type: {d[\"error\"].get(\"type\")}"
-  assert "vision" in d["error"]["message"].lower(), f"message missing vision: {d[\"error\"].get(\"message\")}"
+  env_type = d.get("type") or ""
+  err_type = (d.get("error") or {}).get("type") or ""
+  err_msg = (d.get("error") or {}).get("message") or ""
+  assert env_type == "error", "envelope type: " + env_type
+  assert err_type == "invalid_request_error", "error.type: " + err_type
+  assert "vision" in err_msg.lower(), "message missing vision: " + err_msg
   print("OK")
 except Exception as e:
-  print(f"BAD:{e}")
+  print("BAD:" + str(e))
 ')
   case "${SCP4E_CHECK}" in
     OK*)   pass "SC-P4-E: vision-on-non-vision-model → 400 + invalid_request_error envelope (VISION-02)" ;;
