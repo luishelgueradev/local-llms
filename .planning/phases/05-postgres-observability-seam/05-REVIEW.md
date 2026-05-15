@@ -1,8 +1,8 @@
 ---
 phase: 05-postgres-observability-seam
-reviewed: 2026-05-14T18:00:00Z
+reviewed: 2026-05-15T00:00:00Z
 depth: standard
-files_reviewed: 46
+files_reviewed: 47
 files_reviewed_list:
   - bin/restore-drill.sh
   - bin/smoke-test-router.sh
@@ -52,338 +52,527 @@ files_reviewed_list:
   - router/tests/unit/bufferedWriter.test.ts
   - router/tests/unit/metricsRegistry.test.ts
 findings:
-  critical: 3
-  warning: 7
+  critical: 1
+  warning: 8
   info: 5
-  total: 15
+  total: 14
 status: issues_found
 ---
 
 # Phase 5: Code Review Report
 
-**Reviewed:** 2026-05-14T18:00:00Z
+**Reviewed:** 2026-05-15T00:00:00Z
 **Depth:** standard
-**Files Reviewed:** 46
+**Files Reviewed:** 47
 **Status:** issues_found
 
 ## Summary
 
-Phase 5 ships the Postgres + observability seam: request_log + usage_daily schema with Drizzle, a buffered writer, prom-client metrics, X-Agent-Id middleware, /readyz postgres probe extension, daily aggregation scheduler, restore drill, and pg redaction. The implementation is generally solid — token redaction is rigorous (Bearer/Authorization/apiKey patterns), the bufferedWriter implements all D-A1..D-A7 invariants with sound microtask flush dispatch, the X-Agent-Id regex is ReDoS-safe (anchored, bounded, no nested quantifiers), and the usage_daily UPSERT is parameterized via Drizzle's `sql\`\`` tag.
+The post-gap-closure code closes the three previously identified BLOCKERs (CR-01 hot-reload `pg` probe re-add, CR-02 stream pre-stream observability, CR-03 mid-stream upstream `status_class` fidelity) cleanly and adds correct test coverage, including a CR-03 server_error gate test in `chat-completions.stream.test.ts` and `messages.stream.test.ts` that asserts wire 200 + recorded server_error + redacted error_message + preserved upstream_message_id.
 
-Three load-bearing defects need fixing before this code can be relied on:
+However, adversarial review surfaced one BLOCKER and several WARNINGs that pre-date the gap-closure (or sit just outside its diff scope) but live inside the reviewed file set:
 
-1. **Hot-reload silently kills the postgres /readyz probe** — `index.ts` `onReload` rebuilds the URL set from registry models and calls `liveness.start(urls)`, but never includes `POSTGRES_PROBE_URL`. The liveness scheduler's `start()` removes timers for URLs absent from the new set, so after the first models.yaml change postgres probing stops and `/readyz` will report it as "down — never probed" until the next router restart.
-2. **Stream pre-stream errors emit NO observability record** — both `chat-completions.ts` and `messages.ts` stream branches handle adapter-rejection by `return reply.code(status).send(env)`, which neither throws (so `setErrorHandler` doesn't fire) nor satisfies the `body.stream !== true` guard in the `finally` block, so no metric is observed and no `request_log` row is written for upstream-rejection-before-first-chunk on streaming requests.
-3. **Mid-stream upstream errors are recorded as `success`** — the translator catches the error, emits an SSE error frame, and returns. The route's `sseCleanup` then runs with `reply.statusCode === 200` and `controller.signal.aborted === false`, producing `status_class='success'`, `error_code=null`, `error_message=null`. The wire is correct; the audit trail is misleading.
+- **CR-01 (BLOCKER)** — `bufferedWriter.drain()` is structurally inert: `stopped` is set BEFORE the awaited `flush()` runs, and `flush()` early-returns when `stopped===true`. The intended "final flush before shutdown" never executes; ALL non-empty buffers at SIGTERM are dropped to the `log_buffer_shutdown_drop` warn path. The unit tests encode this broken behavior as the expected behavior, so the regression is not visible in green tests.
+- **WARNINGs (8)** — `Promise.race` timer leaks in the postgres probe and bufferedWriter drain (`setTimeout` not cleared on the winning branch); D-A1 capacity invariant silently violated by `unshift` after a failed flush; `usage_daily` SQL hardcodes the `StatusClass` enum values, drifting silently when new values are added; non-stream branch loses tokens on post-adapter throws; setErrorHandler route gating uses exact equality vs the protocol detection's `startsWith`; smoke test has SQL-injection-shaped psql interpolation; `pg_restore` log-tee buries pg_restore stderr; healthcheck filter substring-matches.
+- **INFOs (5)** — Cosmetic, documentation, and naming nits.
 
-The remaining warnings cover the bufferedWriter's documented-but-still-buggy capacity-invariant violation under failed-flush + concurrent-push, mis-classified status for pre-stream/validation errors via `_t0=undefined`, the brittle `pg-backup` startup race in the restore drill, and a few quality items in the shell scripts.
+The CR-02 / CR-03 / CR-01-hotreload diff itself is well-structured, idempotent, and fits the existing shape. The BLOCKER below sits in `bufferedWriter.ts` which is the load-bearing seam for the entire DATA-04 contract — drain must work for SC2 to mean what its smoke test claims it means.
 
 ## Critical Issues
 
-### CR-01: Hot-reload of models.yaml silently drops the postgres /readyz probe
+### CR-01: `bufferedWriter.drain()` does not flush — final shutdown drops ALL buffered rows silently
 
-**File:** `router/src/index.ts:74-80`
-**Issue:** `watchRegistry.onReload` rebuilds the URL set from `next.models` only:
+**File:** `router/src/db/bufferedWriter.ts:147-167` (interaction with `flush()` at lines 98-117 and `stopped` flag at lines 96, 99, 127, 151)
+
+**Issue:**
+`drain()` sets `stopped = true` BEFORE invoking `flush()` inside the `Promise.race`:
+
 ```ts
-onReload: (next) => {
-  app.log.info({ models: next.models.length, names: ... }, 'registry reloaded');
-  const urls = Array.from(new Set(next.models.map((m) => m.backend_url)));
-  app.liveness.start(urls);
-},
-```
-`liveness.start()` (router/src/backends/liveness.ts:101-119) explicitly **deletes timers and cache entries for URLs no longer in the new set** (the "hot-reload shrinkage" logic). After the first models.yaml edit, `POSTGRES_PROBE_URL` ("postgres://pool") is absent from `urls`, so the postgres probe timer is cleared, the cache entry is deleted, and `/readyz` (router/src/routes/readyz.ts:81-96) sees `liveness.get(POSTGRES_PROBE_URL) === undefined`, classifies postgres as `status: 'down', error: 'never probed'`, and returns 503. The router has to be restarted to recover.
-
-This is the *exact* postgres reachability signal that gates the 200/503 contract; losing it after every YAML edit defeats Plan 05-04 D-G2.
-
-**Fix:** Re-add the postgres probe URL when rebuilding the list, mirroring the boot wiring at `router/src/app.ts:308-312`:
-```ts
-onReload: (next) => {
-  app.log.info({ models: next.models.length, names: ... }, 'registry reloaded');
-  const backendUrls = Array.from(new Set(next.models.map((m) => m.backend_url)));
-  // Preserve the postgres probe across hot-reloads — boot wiring at app.ts:308-312
-  // already includes it; the scheduler's start() will tear it down if we don't.
-  const urls = pool ? [...backendUrls, POSTGRES_PROBE_URL] : backendUrls;
-  app.liveness.start(urls);
-},
-```
-This requires importing `POSTGRES_PROBE_URL` from `./app.js` and either capturing the pool reference in `main()` (already in scope at line 27) or moving the urls computation into a helper that `buildApp` returns. Add an integration test that hot-reloads the registry and asserts the `/readyz` response still has `postgres` present + `alive` after the reload.
-
----
-
-### CR-02: Stream pre-stream errors skip recordOutcome — no metric + no request_log row
-
-**File:** `router/src/routes/v1/chat-completions.ts:210-217`, `router/src/routes/v1/messages.ts:238-245`
-**Issue:** Both stream branches wrap the adapter call in an inner try/catch and, on failure, call `reply.code(status).send(env)` directly:
-```ts
-upstream = await adapter.chatCompletionsCanonicalStream(canonical, controller.signal);
-} catch (err) {
-  req.raw.socket?.off('close', onClose);
-  const env = toOpenAIErrorEnvelope(err);
-  const status = mapToHttpStatus(err);
-  if (env === NO_ENVELOPE) return;
-  return reply.code(status).send(env);   // <-- returns; does NOT throw
+async drain(timeoutMs = 3_000): Promise<void> {
+  stopped = true;             // <-- stopped is now true
+  clearInterval(timer);
+  await Promise.race([
+    flush(),                  // <-- flush() runs with stopped=true
+    new Promise<void>((resolve) => { setTimeout(resolve, timeoutMs); }),
+  ]);
+  if (buf.length > 0) {
+    opts.logger.warn(
+      { event: 'log_buffer_shutdown_drop', buffered_at_shutdown: buf.length },
+      'drain timeout — dropping buffered rows',
+    );
+  }
 }
 ```
-Because this path returns rather than throws:
-- `app.setErrorHandler` does **not** fire (so the pre-resolve fallback `recordOutcome` at app.ts:181-212 is not invoked).
-- The outer `try { ... } catch (err) { ... }` at chat-completions.ts:300 is bypassed.
-- The `finally` block at chat-completions.ts:314 *does* run, but its `safeRecord(...)` call is gated by `if (body.stream !== true)` (line 325), so it is skipped on streaming requests.
 
-Net effect: any upstream/SDK error that surfaces **before the first chunk** on a streaming request produces a correct HTTP error envelope on the wire but **zero rows in request_log** and **zero metric observations**. D-D4's "every completed request after bearer auth produces a request_log row" is violated. Worst case is the regression where Phase 5 metrics for a degraded backend look healthier than reality — exactly the wrong tilt for an observability seam.
+`flush()`'s first line gates on `stopped`:
 
-**Fix:** Call `safeRecord` from inside the inner catch on both routes before returning. Example for `chat-completions.ts`:
 ```ts
-} catch (err) {
-  req.raw.socket?.off('close', onClose);
-  const env = toOpenAIErrorEnvelope(err);
-  const status = mapToHttpStatus(err);
-  caughtErr = err instanceof Error ? err : new Error(String(err));
-  safeRecord({
-    protocol: 'openai',
-    route: req.url.split('?')[0] ?? req.url,
-    backend: entry.backend,
-    model: entry.name,
-    statusClass: deriveStatusClass(status, false),
-    httpStatus: status,
-    durationMs: performance.now() - (req._t0 ?? performance.now()),
-    errorCode: mapErrorToCode(err),
-    errorMessage: caughtErr.message,
-    agentId: req.agentId,
-    requestId: req.id,
-    timestamp: new Date(),
-  });
-  if (env === NO_ENVELOPE) return;
-  return reply.code(status).send(env);
+const flush = async (): Promise<void> => {
+  if (flushing || buf.length === 0 || stopped) return;   // <-- early-return on stopped
+  ...
+};
+```
+
+So the awaited `flush()` inside `drain()` returns immediately without doing any work. The setTimeout 3s timer wins the race trivially because flush resolved at zero, but `buf.length` is still whatever it was before drain was called. Every non-empty buffer at SIGTERM is dropped to `log_buffer_shutdown_drop`.
+
+This contradicts the file header invariant **D-A4**: "drain(3_000) on SIGTERM raced against setTimeout(timeoutMs). Logs `log_buffer_shutdown_drop` warn when buf has leftover rows." — the warn is supposed to fire only when the race timeout beats a real flush, not because `flush()` short-circuits unconditionally.
+
+This regression is masked by the existing tests because they encode the broken behavior as expected:
+- `tests/unit/bufferedWriter.test.ts:248-310` (Test 6) explicitly notes "after the in-flight insert took the batch, the buf is empty. Drain in this state should NOT emit the shutdown-drop warn" — the test relies on the row-trigger / interval flush having already drained the buffer BEFORE drain was called.
+- The deliberate "leftover row" branch starts a w2 writer, lets one tick fire (flush starts → batch=2 rows → in-flight), then pushes row 3 AFTER tick, then drains. The shutdown-drop warn is observed because flush() can't run (the existing flush's `flushing=true` lock holds), AND the race times out. Drain never gets a clean shot.
+
+The smoke-test SC-P5-D ("row-count delta == 3") doesn't exercise drain — it relies on the 1s interval flush firing before assertion. So the bug is invisible end-to-end.
+
+**Fix:**
+
+The correct semantics: `drain` must (1) prevent NEW pushes (stopped check in push() — already correct), (2) issue a final flush that bypasses the `stopped` early-return, and (3) race the result against a timeout. Two clean options:
+
+**Option A (smallest diff)** — split the stopped-gate into two flags:
+
+```ts
+let stopped = false;       // gates push() — accepts no new rows
+let drained = false;       // gates flush() — once true, no more flushes
+// ...
+const flush = async (): Promise<void> => {
+  if (flushing || buf.length === 0 || drained) return;  // <-- check drained, NOT stopped
+  flushing = true;
+  // ... existing splice/insert/unshift logic ...
+};
+// ...
+async drain(timeoutMs = 3_000): Promise<void> {
+  stopped = true;            // gate push()
+  clearInterval(timer);
+  await Promise.race([
+    flush(),                 // runs because drained still false
+    new Promise<void>((resolve) => { setTimeout(resolve, timeoutMs); }),
+  ]);
+  drained = true;            // any future flush() (e.g. row-trigger microtask leftover) is no-op
+  if (buf.length > 0) {
+    opts.logger.warn(
+      { event: 'log_buffer_shutdown_drop', buffered_at_shutdown: buf.length },
+      'drain timeout — dropping buffered rows',
+    );
+  }
 }
 ```
-Apply the symmetric fix in `messages.ts:238-245` (protocol='anthropic', toAnthropicErrorEnvelope, ANTHROPIC_NO_ENVELOPE). Then drop the `body.stream !== true` guard in the `finally` block if `safeRecord` becomes the only call site — `safeRecord` is already idempotent via `recorded`. Add an integration test that wires a stream request to a backend that rejects synchronously and asserts (a) the wire is a JSON envelope at the mapped status, and (b) the bufferedWriter receives exactly one push with the correct status_class.
 
----
+**Option B** — pass an explicit "force" flag to flush:
 
-### CR-03: Mid-stream upstream errors recorded as status_class='success'
-
-**File:** `router/src/translation/openai-out.ts:418-429`, `router/src/translation/anthropic-out.ts:237-253`, `router/src/routes/v1/chat-completions.ts:235-255`, `router/src/routes/v1/messages.ts:261-286`
-**Issue:** When upstream errors after `message_start` has shipped:
-1. `canonicalToOpenAISse`'s `catch` branch yields the error frame + `[DONE]` and returns (translator finishes "normally" as far as the caller is concerned).
-2. The `finally` block calls `opts.onCleanup({tokensIn, tokensOut})`.
-3. The route's `sseCleanup` runs with `reply.statusCode === 200` (SSE headers already flushed) and `controller.signal.aborted === false`.
-4. `deriveStatusClass(200, false)` → `'success'`. `errorCode` is set only on `controller.signal.aborted`. `errorMessage` is never set on this path.
-
-Result: the wire shows an error to the client but `request_log` records `status_class='success'`, `error_code=null`, `error_message=null`, and the prom counter `router_requests_total{status_class="success"}` is incremented. The observability seam reports success for what was, from the model serving standpoint, a failure. The `chat-completions.stream.test.ts` "emits D-C2 error frame on real upstream error" test confirms the wire shape but does not inspect the recorded outcome.
-
-**Fix:** Surface the error state from the translator's catch into `onCleanup`. Widen the callback shape:
 ```ts
-onCleanup?: (final?: { tokensIn: number; tokensOut: number; error?: Error }) => void;
+const flush = async (force = false): Promise<void> => {
+  if (flushing || buf.length === 0 || (stopped && !force)) return;
+  // ...
+};
+async drain(timeoutMs = 3_000): Promise<void> {
+  stopped = true;
+  clearInterval(timer);
+  await Promise.race([flush(true), /* timeout */]);
+  // ...
+}
 ```
-Capture the caught error in `openai-out.ts:418-429` / `anthropic-out.ts:237-253` and pass it to `opts.onCleanup({tokensIn, tokensOut, error: err as Error})` in the finally block (instead of just `{tokensIn, tokensOut}`). Then in each route's `sseCleanup`, set status_class to `'server_error'` (or use `deriveStatusClass(mapToHttpStatus(final.error), false)`) and populate `errorCode: mapErrorToCode(final.error)` + `errorMessage: final.error.message` when `final?.error` is present. Add a `recordOutcome` integration test that fires a mid-stream upstream error and asserts `pushed[0].status_class === 'server_error'` (or 'client_error' depending on the upstream class) and that `error_message` is redacted-truncated and present.
+
+After fixing, update `tests/unit/bufferedWriter.test.ts` Test 6 to assert that drain DOES flush remaining rows when called with a non-empty buffer + an idle flush slot (the load-bearing assertion that the fix has actually closed the gap).
 
 ---
 
 ## Warnings
 
-### WR-01: bufferedWriter capacity invariant can be violated by unshift after flush failure with concurrent pushes
+### WR-01: `Promise.race` setTimeout leaks in postgres probe — accumulating timers on every probe tick
 
-**File:** `router/src/db/bufferedWriter.ts:104-113, 130-134`
-**Issue:** The flush flow:
-1. `splice(0, Math.min(buf.length, MAX_BATCH_ROWS))` removes up to 1000 rows into `batch`, emptying `buf` toward 0.
-2. While the insert promise is in flight (network round-trip), `push()` can append up to `capacity` more rows, triggering drop-oldest only when `buf.length >= capacity`.
-3. If the insert fails, `buf.unshift(...batch)` prepends the original rows. Now `buf.length` can be up to `batch.length + capacity` (e.g., 1000 + 10_000 = 11_000), exceeding the documented capacity invariant.
+**File:** `router/src/app.ts:267-272`
 
-The header comment (lines 30-36) acknowledges this as a "trade-off" but the code does not enforce the cap after unshift. With `flushIntervalMs=1_000ms` and a typical 1–5s round-trip on a degraded Postgres, the buffer can carry 1.1x–1.5x its declared capacity for whole flush cycles. The droppedCounter is also NOT incremented even though older rows ARE de-facto pushed past the documented eviction policy on subsequent pushes — every push when `buf.length >= capacity` evicts the front-most row (which is now one of the unshift'd OLD rows), so failed-flush rows lose to new pushes silently.
+**Issue:**
+The postgres probe uses `Promise.race([pool.query('SELECT 1'), setTimeout(...)])` but the timer is not cleared when `pool.query` wins:
 
-**Fix:** Right after `buf.unshift(...batch)`, trim the buffer back to capacity and count the trimmed rows:
+```ts
+await Promise.race([
+  pool.query('SELECT 1'),
+  new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error('pg-probe-timeout-1s')), 1_000),
+  ),
+]);
+```
+
+Every probe (10s default interval) creates a new 1s timer that holds the event loop until it fires (and then rejects, which is swallowed because the race already settled — but the rejected promise leaves an unhandled rejection trace if the runtime is configured to surface them). Over a long-running router these timers accumulate transiently AND delay process exit by up to 1s on shutdown (Node will wait for the timer to fire even if no listeners care about its result).
+
+Same shape exists in `bufferedWriter.ts:153-158` for drain (less impactful — drain runs once at shutdown, but the 3s setTimeout pins the process for an additional 3s after a successful flush).
+
+**Fix:**
+
+```ts
+const t = setTimeout(() => reject(new Error('pg-probe-timeout-1s')), 1_000);
+try {
+  await Promise.race([pool.query('SELECT 1'), new Promise<never>((_, reject) => {/* armed by t */})]);
+} finally {
+  clearTimeout(t);
+}
+```
+
+Or use `AbortSignal.timeout(1000)` and pass it to `pool.query` (pg supports `query({...}, signal)` since pg@8.13). Cleaner.
+
+For the bufferedWriter drain, mirror the same pattern — keep a handle to the setTimeout and clearTimeout it once the flush settles or the timer fires.
+
+---
+
+### WR-02: D-A1 capacity invariant violated by `buf.unshift(...batch)` after flush failure
+
+**File:** `router/src/db/bufferedWriter.ts:113`
+
+**Issue:**
+On flush failure, `buf.unshift(...batch)` restores the failed rows to the head of the FIFO, but does NOT respect the capacity cap:
+
 ```ts
 } catch (err) {
-  opts.logger.warn({ event: 'log_buffer_flush_error', err, count: batch.length }, 'flush failed');
+  // ...
   buf.unshift(...batch);
-  if (buf.length > capacity) {
-    const overflow = buf.length - capacity;
-    buf.splice(capacity, overflow);  // evict tail (newer rows preserved, or use shift loop if you prefer old-first)
-    opts.droppedCounter.inc(overflow);
+}
+```
+
+Sequence that violates D-A1:
+1. buf is at capacity (10_000 rows).
+2. Interval tick fires; flush() splices 1_000 rows out of buf → buf.length=9_000, batch.length=1_000.
+3. While the insert is in-flight, push() runs ~1_001 times (real production rate). Each push past 10_000 drops the oldest. Now buf.length=10_000 again, droppedCounter incremented ~1.
+4. Insert rejects. Catch runs `buf.unshift(...batch)`. Now buf.length = 10_000 + 1_000 = **11_000**, exceeding the documented 10_000 cap.
+5. The `droppedCounter` was never incremented for the implicit overflow — D-A1's "drop-oldest at capacity" invariant is silently broken.
+
+The next push() call DOES check `buf.length >= capacity` and drops oldest, but only one row per push. The buffer can stay over capacity for many pushes before steady-state.
+
+**Fix:**
+
+After unshift, restore the cap by trimming from the tail (newest) OR head (oldest, matching D-A1 drop-oldest semantics) and incrementing droppedCounter for each evicted row:
+
+```ts
+} catch (err) {
+  opts.logger.warn(/* ... */);
+  buf.unshift(...batch);
+  // Restore D-A1 capacity invariant: drop excess from the head (oldest first).
+  while (buf.length > capacity) {
+    buf.shift();
+    opts.droppedCounter.inc();
   }
 }
 ```
-Decide explicitly whether to drop the head (the unshift'd OLDEST) or the tail (the most recent pushes) and document it. The current implicit behavior (drop-oldest on next push) loses retried rows first, which is the opposite of "rows STAY in buffer for the next interval tick retry" claimed in D-A7.
+
+Add a unit test seeding the race: fill buf to capacity, fire a flush, push during the in-flight insert, reject the insert, assert `buf.length <= capacity` AND `droppedCounter` was incremented for the displaced rows.
 
 ---
 
-### WR-02: latency_ms is 0 for pre-preHandler errors because _t0 is never set
+### WR-03: `usage_daily` aggregation hardcodes the `StatusClass` enum — silent drift when a new status is added
 
-**File:** `router/src/app.ts:205-211`, `router/src/middleware/agentId.ts:54`
-**Issue:** `req._t0` is captured at the **preHandler** hook (agentId.ts:54), which Fastify v5 runs *after* validation (`preParsing` → `preValidation` → validator → `preHandler`). When request body validation fails (most common 400 path) or the bearer onRequest hook short-circuits, `agentIdPreHandler` never runs, `req._t0` is `undefined`, and the fallback `performance.now() - (req._t0 ?? performance.now())` evaluates to 0. The `request_log.latency_ms` column is NOT NULL, so `Math.round(0) = 0` is inserted. Every validation-rejected request reports `latency_ms=0` in the audit trail — making any p50/p95 latency query on validation-heavy clients meaningless.
+**File:** `router/src/db/usageDaily.ts:118-119`
 
-**Fix:** Move the `req._t0 = performance.now()` capture to the earliest hook that always runs. Two clean options:
-- Set it in `bearerOnRequest` (auth/bearer.ts:23) before any other work — covers all routes including public ones, and runs in `onRequest` which fires before validation.
-- Add a tiny `onRequest` hook in `buildApp` that does `req._t0 = performance.now()` unconditionally, registered before `makeBearerHook`.
+**Issue:**
+The error-bucket SQL hardcodes the `StatusClass` values:
 
-The second is cleaner and keeps `bearerOnRequest`'s contract focused.
+```sql
+count(*) FILTER (WHERE status_class IN ('client_error','server_error','disconnect'))::int AS error_count
+```
 
----
+The TypeScript source of truth lives in `router/src/metrics/recordOutcome.ts:36`:
 
-### WR-03: Schema-class migration errors leak the pool sockets before process exit
-
-**File:** `router/src/db/migrate.ts:54-56`, `router/src/index.ts:114-129`
-**Issue:** When `migrate()` throws a schema-class error (e.g., drift between schema and a manually-edited table), `runMigrations` rethrows so `main()` rejects and the catch in `main().catch(...)` writes a structured fatal line and calls `process.exit(1)`. The pool is never `pool.end()`ed. On hard-exit this is fine; on `SIGTERM` after partial migration failure (less common), pg sockets dangle.
-
-The bigger concern is that the `code` introspection at migrate.ts:35 only recognizes a fixed set of pg error code prefixes. The pg driver may surface connection errors via `cause` (nested AggregateError, drizzle-orm wraps via `DatabaseError`). If the underlying ECONNREFUSED is buried inside `err.cause.code`, the schema-class branch fires unintentionally and crashes the process even though Postgres is just temporarily unreachable — directly contradicting D-B5 "lazy connect; non-blocking-on-boot".
-
-**Fix:** Walk `err.cause` chains when classifying:
 ```ts
-function isConnectionClassErr(err: unknown): boolean {
-  let cur: unknown = err;
-  for (let depth = 0; depth < 8 && cur; depth++) {
-    const code = (cur as { code?: string }).code;
-    if (code === 'ECONNREFUSED' || code === 'ETIMEDOUT' || code === 'ENOTFOUND' ||
-        (typeof code === 'string' && code.startsWith('08'))) return true;
-    cur = (cur as { cause?: unknown }).cause;
-  }
-  return false;
-}
-```
-Add a `main().catch` handler that calls `await pool.end()` (best-effort with a 1s race) before `process.exit(1)`.
-
----
-
-### WR-04: restore-drill.sh's pg-backup auto-start race can mask a real failure
-
-**File:** `bin/restore-drill.sh:285-289`
-**Issue:** When pg-backup is not running, the script does:
-```bash
-docker compose up -d pg-backup >/dev/null 2>&1 || true
-sleep 2
-```
-`|| true` swallows any actual failure (e.g. image pull failure, port conflict, exit-on-bind-mount-error). The subsequent `docker compose exec -T pg-backup pg_restore ...` then fails because the container never started, but the error reported is "pg_restore failed" without context. The 2s sleep is also unreliable — the postgres image entrypoint typically needs longer than 2s before `pg_restore --host=postgres` can establish a session.
-
-**Fix:** Replace with a wait-for-healthy loop and surface the start failure:
-```bash
-if ! docker compose up -d pg-backup; then
-  fail "could not start pg-backup container — check docker compose logs pg-backup"
-  exit 1
-fi
-for i in $(seq 1 15); do
-  if docker compose ps --services --filter status=running 2>/dev/null | grep -q '^pg-backup$'; then
-    break
-  fi
-  sleep 1
-done
+export type StatusClass = 'success' | 'client_error' | 'server_error' | 'disconnect';
 ```
 
----
+If a future change adds (e.g.) `'rate_limited'` to `StatusClass` and routes it via recordOutcome, those rows will land in `request_log` with `status_class='rate_limited'` but be dropped from `usage_daily.error_count` AND from `success_count` — they vanish from the rollup entirely. No error surfaces; downstream dashboards silently underreport totals.
 
-### WR-05: restore-drill.sh accepts path-traversal DUMP_FILE that escapes /backups
+**Fix:**
 
-**File:** `bin/restore-drill.sh:97-114, 148, 295-301`
-**Issue:** `DUMP_FILE` from positional CLI arg is concatenated as `BACKUP_DIR/$DUMP_FILE` for the host-side existence check and then as `/backups/$DUMP_FILE` inside the pg-backup container. Bash does not normalize the path. If `DUMP_FILE='../../../../etc/passwd'`:
-- Host check resolves to `/srv/local-llms/postgres-backups/../../../../etc/passwd` → `/etc/passwd` — the `[[ -f ]]` test passes if root readable on the host filesystem from the operator's vantage.
-- Inside the pg-backup container, `/backups/../../../etc/passwd` resolves to whatever `/etc/passwd` is in the container.
+Two options:
 
-Since the script is destructive and requires an interactive `RESTORE` confirmation (or `--yes`), the threat model is "local operator with privileged shell" — but the script presents itself as a managed runbook and path-traversal opens a footgun where a typo (`router-2026-05-14T12.dump/../router-old.dump`) reads something the operator did not intend. pg_restore would error harmlessly on `/etc/passwd` so this is "footgun" not "exploit".
-
-**Fix:** Validate `DUMP_FILE` shape early, before any docker exec:
-```bash
-if [[ "${DUMP_FILE}" != "${DUMP_FILE##*/}" ]] || [[ "${DUMP_FILE}" == *".."* ]]; then
-  echo "[restore-drill] ERROR: <dump-filename> must be a bare filename (no slashes, no ..)" >&2
-  exit 1
-fi
+**Option A** — derive error_count by exclusion (more robust):
+```sql
+count(*) FILTER (WHERE status_class != 'success')::int AS error_count
 ```
+This treats anything-not-success as an error and survives type expansion. Document the inverse contract in `recordOutcome.ts`.
 
----
-
-### WR-06: makeBearerHook constant-time false branch leaks length information via padBuf
-
-**File:** `router/src/auth/bearer.ts:18-22, 46-57`
-**Issue:** The comment says "ensures the comparison still runs in constant time" and the implementation does:
+**Option B** — surface the SQL as a constant in `recordOutcome.ts` and import it:
 ```ts
-const padBuf = randomBytes(expectedBuf.length);
+export const STATUS_CLASS_ERROR_VALUES = ['client_error', 'server_error', 'disconnect'] as const satisfies readonly StatusClass[];
+```
+And construct the IN list from that constant. TypeScript's `satisfies readonly StatusClass[]` will fail to compile if a future StatusClass is added without updating the error list — the drift becomes a compile-time error.
+
+Option A is simpler; Option B is more explicit. Either closes the gap.
+
+---
+
+### WR-04: Non-stream branch loses tokens when `reply.send` throws after `canonicalResult` is captured
+
+**File:** `router/src/routes/v1/chat-completions.ts:418-419` and `router/src/routes/v1/messages.ts:441-442`
+
+**Issue:**
+The outer-finally records `tokensIn: caughtErr ? undefined : canonicalResult?.usage.input_tokens`. If `caughtErr` is set (anything thrown during `try`), tokens are dropped. But the non-stream branch order is:
+
+```ts
+canonicalResult = await adapter.chatCompletionsCanonical(canonical, controller.signal);
+req.raw.socket?.off('close', onClose);
+return reply.send(canonicalToOpenAIResponse(canonicalResult, { displayModel: entry.name }));
+```
+
+If `canonicalToOpenAIResponse` or `reply.send` throws AFTER `canonicalResult` was set (e.g., serialization error, TCP write error), the catch sets `caughtErr` → finally records with `tokensIn: undefined / tokensOut: undefined`. The upstream actually returned a valid completion AND the router billed VRAM/throughput for it, but `request_log` claims no tokens were exchanged. Audit trail loses the most expensive rows.
+
+Same pattern in `messages.ts:441-442`.
+
+**Fix:**
+
+Always populate from `canonicalResult` when it's defined, regardless of `caughtErr`:
+
+```ts
+tokensIn: canonicalResult?.usage.input_tokens,
+tokensOut: canonicalResult?.usage.output_tokens,
+```
+
+The `caughtErr ? undefined :` ternary was conservative defense, but `canonicalResult?` already short-circuits to undefined when the adapter call itself threw. The ternary only matters for "adapter succeeded but downstream serialization threw" — and in THAT path we DO want the tokens recorded.
+
+For Anthropic, also keep `upstreamMessageId: canonicalResult?.id` (already correct).
+
+---
+
+### WR-05: `setErrorHandler` route gating asymmetric vs protocol detection — exact equality vs startsWith
+
+**File:** `router/src/app.ts:189` (uses `startsWith`) vs `router/src/app.ts:194-195` (uses `===`)
+
+**Issue:**
+```ts
+const isAnthropicRoute = route.startsWith('/v1/messages');     // line 189 — startsWith
 // ...
-if (suppliedBuf.length === expectedBuf.length) {
-  ok = timingSafeEqual(suppliedBuf, expectedBuf);
-} else {
-  const sized = Buffer.alloc(expectedBuf.length);
-  suppliedBuf.copy(sized, 0, 0, Math.min(suppliedBuf.length, expectedBuf.length));
-  timingSafeEqual(sized, padBuf);  // result discarded
-  ok = false;
-}
+const isRecordedRoute =
+  (route === '/v1/chat/completions' || route === '/v1/messages') && status !== 401;   // line 194 — exact
 ```
-The length-mismatch branch does extra work (`Buffer.alloc`, `copy`, then `timingSafeEqual`) that the length-match branch skips. The two branches are not the same number of operations — under a sufficiently precise oscilloscope/eBPF attacker, this leaks the high bit "supplied.length == expected.length". That's not catastrophic for a single-secret deployment (attacker still needs ~32 bytes of brute-force to find the matching length AND value), but the "constant time" promise in the comment is overstated.
 
-**Fix:** Either (a) drop the timing-safe pretense and just `if (auth !== expectedConst) throw` since this is a single-secret bearer and the threat model is realistic, or (b) make both branches do the same `Buffer.alloc + copy + timingSafeEqual` work. For (b):
+A request to `/v1/chat/completions/` (trailing slash) — which Fastify by default treats as 404 — would match neither route literal in line 194, so the centralized error handler skips recording. Pre-resolve errors on a malformed route would land in pino logs but NOT in `request_log`. Marginal — trailing slashes won't typically reach this path on the OpenAI surface, and the OpenAI SDK never appends one — but the asymmetry is the bug: protocol detection is permissive, recording gate is strict.
+
+The asymmetry also means the comment on line 192-194 ("D-D4 — coverage policy. Record /v1/chat/completions and /v1/messages outcomes (but NOT /v1/messages/count_tokens ...)") is partially betrayed by `route.startsWith('/v1/messages')` evaluating true for `/v1/messages/count_tokens` — meaning isAnthropicRoute=true for count_tokens, but isRecordedRoute=false — so count_tokens errors get the Anthropic envelope (correct) AND get skipped from recording (correct), but only by coincidence of two different gates lining up.
+
+**Fix:**
+
+Strip a trailing slash and use a small explicit set:
+
 ```ts
-const sized = Buffer.alloc(expectedBuf.length);
-suppliedBuf.copy(sized, 0, 0, Math.min(suppliedBuf.length, expectedBuf.length));
-const cmpResult = timingSafeEqual(sized, expectedBuf);
-ok = cmpResult && suppliedBuf.length === expectedBuf.length;
+const cleanRoute = route.replace(/\/$/, '');
+const isAnthropicRoute = cleanRoute.startsWith('/v1/messages');
+const isRecordedRoute =
+  (cleanRoute === '/v1/chat/completions' || cleanRoute === '/v1/messages') && status !== 401;
 ```
-Note also that the `randomBytes(expectedBuf.length)` at module load is a *per-process* pad, not per-comparison — it does not get refreshed between requests. The branches are still not equivalent so the fix should match per-request shape.
+
+Now both gates use the same normalized route. The intent (record only on /v1/chat/completions and exactly /v1/messages, NOT /v1/messages/count_tokens) is explicit.
 
 ---
 
-### WR-07: usageDaily.ts sentinel '_no_agent_' literal not parameterized
+### WR-06: `smoke-test-router.sh` SQL-injection-shaped psql interpolation in SC-P5-B
 
-**File:** `router/src/db/usageDaily.ts:103, 116, 128`
-**Issue:** The SQL embeds `'_no_agent_'` as a raw literal inside the `sql\`\`` template. The comment at lines 100-103 acknowledges this is intentional ("keeps the sentinel as a SQL literal (not a bound parameter)"). That's fine for THIS sentinel because it's hard-coded in the codebase, NOT user input — but the comment alone doesn't prevent a future maintainer from duplicating the pattern with a user-derived value. The `usage_daily.agent_id.default` is a sibling declaration at `router/src/db/schema/usage_daily.ts:30` so the two literals must be kept in sync manually. If they drift (e.g., someone changes `usage_daily` schema default to `'no-agent'` but forgets `usageDaily.ts`), the UPSERT `ON CONFLICT` will create duplicate buckets for "no-agent" rows.
+**File:** `bin/smoke-test-router.sh:923-924`
 
-**Fix:** Export the sentinel from schema and reference it:
-```ts
-// router/src/db/schema/usage_daily.ts
-export const NO_AGENT_SENTINEL = '_no_agent_';
-agent_id: text('agent_id').notNull().default(NO_AGENT_SENTINEL),
-
-// router/src/db/usageDaily.ts
-import { NO_AGENT_SENTINEL } from './schema/usage_daily.js';
-// ... in the SQL: COALESCE(agent_id, ${sql.raw(`'${NO_AGENT_SENTINEL}'`)}) AS agent_id
+**Issue:**
+```bash
+DB_AGENT=$(docker compose exec -T postgres psql -U app -d router -tAc \
+  "SELECT agent_id FROM request_log WHERE agent_id = '${AGENT_ID}' ORDER BY ts DESC LIMIT 1" 2>/dev/null | tr -d '[:space:]')
 ```
-Or, more simply, use a bound parameter for the sentinel — Postgres handles `COALESCE(col, $1)` correctly. Document either choice in a single place so the two never drift.
+
+`AGENT_ID="claude-code:smoke-${RANDOM}"` is currently safe-by-construction (only digits in `RANDOM`), so no real injection risk today. But the pattern is the SQL-injection anti-pattern: string interpolation into a SQL literal. If a future maintainer changes the AGENT_ID generator to include a quote, a smoke run could DROP TABLE.
+
+**Fix:**
+
+Use psql's parameter binding via `-v`:
+
+```bash
+DB_AGENT=$(docker compose exec -T postgres psql -U app -d router -tAc \
+  -v aid="${AGENT_ID}" \
+  "SELECT agent_id FROM request_log WHERE agent_id = :'aid' ORDER BY ts DESC LIMIT 1" \
+  2>/dev/null | tr -d '[:space:]')
+```
+
+The `:'aid'` syntax safely quotes the variable. Or pass via stdin and use `\set`. Cheap insurance against future regression.
+
+---
+
+### WR-07: `restore-drill.sh` pg_restore log capture buries pg_restore live progress and is not cleaned up on early exit
+
+**File:** `bin/restore-drill.sh:295-310`
+
+**Issue:**
+```bash
+if ! docker compose exec -T pg-backup pg_restore \
+    --host=postgres --username=app --dbname=router --no-owner --no-privileges \
+    "/backups/${DUMP_FILE}" 2>&1 | tee /tmp/restore-drill.log >/dev/null; then
+  echo "[restore-drill] pg_restore log (last 20 lines):" >&2
+  tail -20 /tmp/restore-drill.log >&2 || true
+  fail "pg_restore failed"
+  exit 1
+fi
+pass "pg_restore completed"
+rm -f /tmp/restore-drill.log
+```
+
+`set -uo pipefail` is set (line 49), so the pipe DOES preserve pg_restore's exit status — the `if ! ...` check is correct. But two issues remain:
+
+1. `pg_restore` writes useful diagnostic information to stderr DURING execution (table-by-table progress). Redirecting `2>&1` then `>/dev/null` means the operator sees nothing live; the user only sees the final 20 lines on failure. On long restores (~minutes), the operator has no visibility of progress.
+2. `/tmp/restore-drill.log` is shared across concurrent runs (rare here) and not cleaned up if the script exits early between the `tee` and the `rm -f` (e.g., SIGINT during the sanity SELECT on line 315).
+
+**Fix:**
+
+```bash
+LOG_FILE=$(mktemp -t restore-drill.XXXXXX.log)
+trap 'rm -f "${LOG_FILE}"' EXIT
+if ! docker compose exec -T pg-backup pg_restore \
+    --host=postgres --username=app --dbname=router --no-owner --no-privileges \
+    --verbose \
+    "/backups/${DUMP_FILE}" 2>&1 | tee "${LOG_FILE}"; then
+  echo "[restore-drill] pg_restore log (last 20 lines):" >&2
+  tail -20 "${LOG_FILE}" >&2 || true
+  fail "pg_restore failed"
+  exit 1
+fi
+```
+
+Removing `>/dev/null` makes progress visible. `--verbose` makes per-table progress explicit. `mktemp` + EXIT trap eliminates the cross-run collision and guarantees cleanup on any exit path.
+
+---
+
+### WR-08: `bin/smoke-test-router.sh` healthcheck filter substring-matches "gpu-preflight"
+
+**File:** `bin/smoke-test-router.sh:1086`
+
+**Issue:**
+```bash
+UNHEALTHY_LINES=$(docker compose ps --format '{{.Name}} {{.Health}}' 2>/dev/null | grep -vE 'healthy|gpu-preflight' || true)
+```
+
+`grep -vE 'healthy|gpu-preflight'` excludes any line containing "healthy" anywhere in name OR health, AND any line containing "gpu-preflight" anywhere. A future service named e.g. `router-healthy-canary` would be incorrectly excluded. The intent is to exclude the one-shot `gpu-preflight` service AND match `Health == healthy` for the rest.
+
+**Fix:**
+
+Anchor the filter to whitespace-separated fields exactly:
+
+```bash
+UNHEALTHY_LINES=$(docker compose ps --format '{{.Name}} {{.Health}}' 2>/dev/null \
+  | awk '$1 != "gpu-preflight" && $2 != "healthy"' || true)
+```
+
+This treats `Name` and `Health` as discrete fields, no substring confusion.
 
 ---
 
 ## Info
 
-### IN-01: truncateAndRedact appends '...' AFTER hitting maxLen, producing output up to maxLen+3 chars
+### IN-01: `chat-completions.ts` and `messages.ts` outer-finally CR-02/CR-03 comments are accurate but very long
 
-**File:** `router/src/metrics/recordOutcome.ts:98-107`
-**Issue:** `truncateAndRedact` slices to `maxLen` then appends `'...'`, producing up to `maxLen+3 == 503` chars. The `error_message` column is `text` so storage is fine, but the comment "truncated to 500 chars" (request_log schema, recordOutcome header doc) is misleading. The unit test asserts `out.length <= 503` which matches the code but not the spec wording.
+**File:** `router/src/routes/v1/chat-completions.ts:384-403`, `router/src/routes/v1/messages.ts:409-428`
 
-**Fix:** Either (a) clarify the spec to "≤ 500 + 3 ellipsis", or (b) slice to `maxLen - 3` before adding `'...'` so the total stays at `maxLen`.
+**Issue:**
+The 20-line block comment explaining the `body.stream !== true || caughtErr` re-instatement is essential context but reads as a "deviation log" in production code. Future readers will skim it.
 
----
+**Fix:**
 
-### IN-02: deriveStatusClass returns 'server_error' for 1xx/3xx fall-through
+Move the deep-dive prose into `05-PATTERNS.md` (or similar) and leave a 2-line summary comment in the route:
 
-**File:** `router/src/metrics/recordOutcome.ts:115-121`
-**Issue:** The defensive `return 'server_error'` at the end is unreachable in practice (the route's `reply.statusCode` is always 2xx/4xx/5xx) but misclassifies 1xx/3xx as server_error if ever reached. Not a bug today; a footgun for future code that emits 3xx redirects (Phase 6 Traefik / OAuth proxy).
+```ts
+// Outer-finally records ONLY for non-stream paths, OR stream-branch synchronous
+// throws BEFORE reply.sse spawns. Stream success/error path records via sseCleanup.
+// See .planning/phases/05-postgres-observability-seam/05-PATTERNS.md §"deferred record-outcome".
+```
 
-**Fix:** Either throw on unreachable cases (`throw new Error(`unexpected http_status ${httpStatus}`)`) or return a distinct sentinel like `'unknown'` so the misclassification is visible in metrics.
-
----
-
-### IN-03: Smoke test SC5 regex misses some token shapes
-
-**File:** `bin/smoke-test-router.sh:374-376`
-**Issue:** The shaped-leak grep regex is `bearer [A-Za-z0-9._+/=-]{16,}`. If the project ever issues tokens containing other base64url-tolerable characters (e.g. `~`) or uses URL-encoded `+` (`%2B`) in the token surface, the regex misses. Today's token shape (`local-llms_t1t2t3...`) is safely inside the class, so this is informational.
-
-**Fix:** Broaden to `[[:graph:]]{16,}` if the project standardizes on bearer tokens of unspecified character class, or document the class explicitly.
+The `safeRecord` idempotency means the precise reasoning is not load-bearing for correctness.
 
 ---
 
-### IN-04: postgres-probe latency_ms includes the rejected Promise.race timeout race
+### IN-02: `chat-completions.ts:289-301` CR-03 override uses non-null assertions on a pattern that could be type-narrowed
 
-**File:** `router/src/app.ts:265-281`
-**Issue:** The `pgProbe` measures `latencyMs = performance.now() - t0` from BEFORE `Promise.race`. On a timeout case (1s elapsed, reject fires), `latencyMs ≈ 1000`. On a fast-fail case (pool throws ECONNREFUSED at 5ms), `latencyMs ≈ 5`. Both behaviors are reasonable, but the timeout latency reports as 1000ms which is indistinguishable from a slow-but-completed query. `/readyz` exposes this as `postgres.latency_ms: 1001` (line 369 of readyz.test.ts asserts this). Operationally that's fine; just note it.
+**File:** `router/src/routes/v1/chat-completions.ts:289-301`, `router/src/routes/v1/messages.ts:319-331`
 
-**Fix:** None required. If you want sharper signal, add a small `timedOut` boolean in the probe result and bubble it through readyz, or use a smaller timeout (e.g., 500ms) so the cap is more distinctive.
+**Issue:**
+```ts
+const hasUpstreamError = final?.error !== undefined;
+const errStatus = hasUpstreamError
+  ? mapToHttpStatus(final!.error)
+  : reply.statusCode;
+```
+
+`final!.error` uses two non-null assertions where TypeScript could narrow if you bind `final.error` first:
+
+```ts
+const upstreamError = final?.error;
+const hasUpstreamError = upstreamError !== undefined;
+const errStatus = upstreamError ? mapToHttpStatus(upstreamError) : reply.statusCode;
+const statusClass = upstreamError
+  ? deriveStatusClass(errStatus, false)
+  : deriveStatusClass(reply.statusCode, controller.signal.aborted);
+const errorCode = upstreamError
+  ? mapErrorToCode(upstreamError)
+  : controller.signal.aborted ? 'client_disconnect' : undefined;
+const errorMessage = upstreamError?.message;
+```
+
+No behavior change; cleaner type-narrowing. Same pattern in `messages.ts`.
 
 ---
 
-### IN-05: Several tests import POSTGRES_PROBE_URL from app.ts — circular dependency hazard
+### IN-03: `restore-drill.sh:181` size-formatting fallback chain is brittle
 
-**File:** `router/src/routes/readyz.ts:23`, `router/src/app.ts:129`
-**Issue:** `readyz.ts` imports `POSTGRES_PROBE_URL` from `../app.js`. `app.ts` imports `registerReadyz` from `./routes/readyz.js`. This creates an import cycle that works today because both symbols are referenced after module initialization, but the cycle is fragile (any top-level side-effect import inserted into readyz.ts could trigger an init-order TDZ error).
+**File:** `bin/restore-drill.sh:181`
 
-**Fix:** Move `POSTGRES_PROBE_URL` to its own constants file (e.g., `router/src/db/probeUrl.ts`) and import it from both `app.ts` and `readyz.ts`. Trivial change, removes the cycle.
+**Issue:**
+```bash
+$(stat -c '%s bytes' "${DUMP_PATH}" 2>/dev/null || stat -f '%z bytes' "${DUMP_PATH}" 2>/dev/null || echo 'unknown')
+```
+
+The Linux `stat -c` and BSD `stat -f` chain works in practice but the third fallback `'unknown'` masks a real error if both fail (e.g., file vanished between checks). Cosmetic; only surfaces in the human-readable header line.
+
+**Fix:**
+
+```bash
+SIZE=$(wc -c < "${DUMP_PATH}" 2>/dev/null || echo "?")
+echo "[restore-drill]  Dump size : ${SIZE} bytes"
+```
+
+`wc -c` is POSIX and works identically on Linux + BSD.
 
 ---
 
-_Reviewed: 2026-05-14T18:00:00Z_
+### IN-04: `usageDaily.ts` `previousUtcDay()` could be one-line shorter and clearer
+
+**File:** `router/src/db/usageDaily.ts:55-59`
+
+**Issue:**
+```ts
+function previousUtcDay(now: Date): Date {
+  const ms = now.getTime() - 24 * 60 * 60 * 1000;
+  const d = new Date(ms);
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+}
+```
+
+Works but does an extra `new Date` allocation. Equivalent:
+
+```ts
+function previousUtcDay(now: Date): Date {
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 1));
+}
+```
+
+JavaScript's `Date.UTC` normalizes negative day-of-month to the previous month/year automatically.
+
+---
+
+### IN-05: `app.ts:204` records pre-resolve errors with `model: 'unknown'` / `backend: 'unknown'` — sentinel values pollute metric labels
+
+**File:** `router/src/app.ts:204`
+
+**Issue:**
+The centralized error handler records pre-resolve errors (e.g., `RegistryUnknownModelError`, `InvalidAgentIdError`) with `backend: 'unknown'` / `model: 'unknown'`. These become permanent labels on `router_requests_total`, `router_request_duration_seconds`, etc. Cardinality is bounded (1 per error type), but the `'unknown'` sentinel will show up forever in any Grafana dashboard filtering by backend.
+
+**Fix:**
+
+Document this in a comment so Phase 6+ dashboards can explicitly filter `backend!="unknown"` when they care about real-backend metrics. No code change required; add ~2 lines:
+
+```ts
+// model/backend = 'unknown' for pre-resolve errors (RegistryUnknownModelError,
+// InvalidAgentIdError, zod validation). Phase 6 dashboards should filter
+// {backend!="unknown",model!="unknown"} when computing per-backend rates.
+```
+
+---
+
+_Reviewed: 2026-05-15T00:00:00Z_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: standard_
