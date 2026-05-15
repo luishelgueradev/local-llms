@@ -579,6 +579,15 @@ except Exception:
     sleep 1
   done
 
+  # WR-02 fix: Guard B1/B2/B3 on LLAMACPP_HEALTHY. If compose --profile llamacpp
+  # up -d --wait failed above, LLAMACPP_HEALTHY=false and the fail() already told
+  # the operator what went wrong. Running B-section assertions anyway would cascade
+  # false failures (empty curl output → python parse error → inflated FAILURES count)
+  # that obscure the real signal. Skip all three assertions instead.
+  if [[ "${LLAMACPP_HEALTHY}" != "true" ]]; then
+    skip "Phase 3.B assertions B1/B2/B3: skipped because compose --profile llamacpp up -d --wait failed"
+  else
+
   # Assertion B1 (SC1 -- half 2): POST /v1/chat/completions with the llamacpp model serves tokens
   CHAT_BODY_2=$(curl -sf -X POST \
     -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
@@ -637,6 +646,8 @@ else:
       fi
     fi
   fi
+
+  fi  # end LLAMACPP_HEALTHY guard
 
   # Tear down
   docker compose --profile llamacpp down --remove-orphans 2>&1 | tail -2
