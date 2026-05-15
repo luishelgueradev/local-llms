@@ -126,7 +126,7 @@ Plans:
   3. A `pg_dump` cron job runs daily and a tested restore drill (drop database → restore → re-query) reads back identical data; the restore procedure is documented in the project README.
   4. `GET /metrics` on the router exposes Prometheus-format request rate, time-to-first-token, latency, and per-backend counters (without bearer auth — but only the metrics endpoint is unauthenticated, no other surface is).
   5. `docker compose ps` shows healthy state for every service via real healthchecks (not just process-up), and an `X-Agent-Id` request header is reflected into structured pino logs and the `request_log.agent_id` column.
-**Plans:** 5 plans
+**Plans:** 6 plans
 Plans:
 **Wave 1**
 - [x] 05-01-PLAN.md — Postgres service + Drizzle schema + boot-time migrator + buffered writer foundation + onClose drain (DATA-01, DATA-02, DATA-03, DATA-04, OBS-05; D-A1..A7, D-B1..B8, D-E1..E4, D-G1)
@@ -142,6 +142,9 @@ Plans:
 
 **Wave 5** *(gap closure — depends_on Wave 1 (Plan 01 schema) + Wave 2 (Plan 02 routes + recordOutcome) + Wave 4 (Plan 04 readyz pg probe); fixes the three BLOCKER gaps from 05-VERIFICATION.md — CR-01 hot-reload postgres probe regression + CR-02 stream pre-stream observability + CR-03 mid-stream upstream status_class fidelity)*
 - [x] 05-05-PLAN.md — Gap closure: onReload re-adds POSTGRES_PROBE_URL + safeRecord from inner pre-stream catch (drop body.stream finally guard) + widen translator onCleanup with error field + sseCleanup overrides status_class/error_code/error_message on mid-stream upstream throw + coverage-matrix regression gate in recordOutcome.test.ts (DATA-03, DATA-04, OBS-01, OBS-05, ROUTE-09; CR-01, CR-02, CR-03; T-5-30..T-5-34)
+
+**Wave 6** *(post-UAT gap closure — depends_on Waves 1–5; fixes the live-UAT residuals from 05-UAT.md + the deferred bufferedWriter.drain item from 05-VERIFICATION.md)*
+- [ ] 05-06-PLAN.md — Post-UAT polish: bin/smoke-test-router.sh fixes (Python 3.12 f-string syntax in SC-P4-A/C/E + SC-P5-E gates on body.postgres.status + OBS-05 excludes pg-backup + SC-P4-D skips on model_not_found) + bufferedWriter.drain() flush-before-stopped fix with failing-first regression test + 05-VERIFICATION.md status close (DATA-03, DATA-05, OBS-05)
 
 ### Phase 6: Traefik + TLS + Open WebUI
 **Goal:** Make the router a real HTTPS endpoint with the four-network topology, then bring up Open WebUI on the same proxy so human chats flow through the same router as agents — same logs, same metering, same Anthropic translation.

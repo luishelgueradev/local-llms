@@ -145,32 +145,19 @@ blocked: 0
 These are real Phase 5 code defects that were not captured in any plan's summary or verifier report. They block production deployment from a clean state.
 
 - truth: "router image builds clean and starts on a fresh `docker compose build router`"
-  status: failed
-  reason: "tsup config bundled `pino` (and all other deps) into the ESM output; pino does `require('os')` internally which crashes under ESM-bundled mode with `Error: Dynamic require of 'os' is not supported`. Router would crash-loop on any fresh build."
+  status: fixed
+  reason: "tsup config bundled `pino` into ESM output; pino does internal `require()` which crashed with `Error: Dynamic require of 'os' is not supported`. Fixed inline (commit 8f68d3e) — tsup.config.ts now reads `Object.keys(pkg.dependencies)` into `external`; pino@^10.3.1 promoted to direct dep."
   severity: blocker
   test: out-of-band
   root_cause: "router/tsup.config.ts did not configure `external` for runtime dependencies. tsup defaults to bundling all imports."
-  artifacts:
-    - path: "router/tsup.config.ts"
-      issue: "Missing `external` config — all deps got inlined"
-    - path: "router/package.json"
-      issue: "pino was only a transitive dep via fastify but is imported directly in src/index.ts:1; should be an explicit dependency"
-  missing:
-    - "Fix applied during UAT: tsup.config.ts now reads `Object.keys(pkg.dependencies)` and sets `external` to keep every runtime dep out of the bundle."
-    - "Fix applied during UAT: pino@^10.3.1 added as a direct dependency in router/package.json."
   debug_session: ""
 
 - truth: "router runtime image contains the Drizzle migration files (db/migrations/) at /app/db/migrations"
-  status: failed
-  reason: "Dockerfile's `runtime` stage did not COPY the `db/` directory. After fixing the tsup bundling, the next crash was `Error: Can't find meta/_journal.json file` from drizzle's migrator looking for ./db/migrations at runtime."
+  status: fixed
+  reason: "Dockerfile's runtime stage did not COPY db/. Drizzle migrator crashed with `Can't find meta/_journal.json file`. Fixed inline (commit 8f68d3e) — added `COPY db ./db` to runtime stage."
   severity: blocker
   test: out-of-band
-  root_cause: "Plan 05-01 added Drizzle migrations under router/db/migrations but the Dockerfile was never updated to copy that directory into the runtime image."
-  artifacts:
-    - path: "router/Dockerfile"
-      issue: "Runtime stage missing `COPY db ./db`"
-  missing:
-    - "Fix applied during UAT: added `COPY db ./db` to the runtime stage of router/Dockerfile."
+  root_cause: "Plan 05-01 added Drizzle migrations under router/db/migrations but Dockerfile was never updated."
   debug_session: ""
 
 ## Test-environment defects (NOT Phase 5 code issues — recorded for completeness)
