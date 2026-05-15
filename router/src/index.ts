@@ -84,6 +84,20 @@ async function main(): Promise<void> {
       // restart. `pool` is in closure scope from the outer-scope `const pool` above.
       const urls = pool ? [...backendUrls, POSTGRES_PROBE_URL] : backendUrls;
       app.liveness.start(urls);
+      // IN-01 (03-REVIEW.md): semaphoreMap is NOT rebuilt here. It is built once
+      // at buildApp() time from the initial registry snapshot (app.ts). Within Phase 3
+      // this is safe because the zod schema restricts backend to ['ollama', 'llamacpp']
+      // (LocalBackendEnum) — both semaphores are always present at boot.
+      //
+      // IMPORTANT: If a future phase widens LocalBackendEnum (e.g. adds 'vllm' in
+      // Phase 7), adding a new backend entry to models.yaml via hot-reload will cause
+      // opts.semaphores.get('vllm') to throw Error("No semaphore for backend \"vllm\""),
+      // producing 500 responses for that backend until the router restarts.
+      //
+      // Resolution before widening the enum: either (a) rebuild semaphoreMap here
+      // by passing a rebuild callback out of buildApp(), or (b) require a router
+      // restart whenever a new backend TYPE is introduced (only model variants of
+      // existing backends can be hot-reloaded safely).
     },
     onError: (err) => {
       // D-C3 — keep previous registry, log at error, do not crash.
