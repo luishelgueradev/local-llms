@@ -107,7 +107,12 @@ function sanitizeAnthropicVersion(raw: string | string[] | undefined): string | 
   if (typeof first !== 'string' || first.length === 0) return null;
   // \x20-\x7E = printable ASCII (space through tilde). \t = HTAB. Everything
   // else (including CR/LF and high-bit bytes) is stripped.
-  return first.slice(0, 64).replace(/[^\x20-\x7E\t]/g, '');
+  // IN-03: treat empty string post-sanitization the same as absent — a header
+  // consisting only of non-printable bytes within 64 chars would otherwise
+  // produce an empty `anthropic-version: ` response header, which some strict
+  // HTTP clients or intermediaries may reject.
+  const stripped = first.slice(0, 64).replace(/[^\x20-\x7E\t]/g, '');
+  return stripped === '' ? null : stripped;
 }
 
 /**
