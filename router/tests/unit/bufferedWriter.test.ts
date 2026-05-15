@@ -312,6 +312,9 @@ describe('makeBufferedWriter', () => {
   // ------------------------------------------------------------------------
   // Test 7: push() after drain() is a no-op (idempotent stop)
   // ------------------------------------------------------------------------
+  // Test 7 gates the stopped-flag contract — push() after drain() must be a
+  // no-op. Test 8 (below) gates the orthogonal drain-flushes-buffer contract.
+  // Both must hold simultaneously after the Task 6 fix.
   it('7. push() after drain() is a no-op (stopped flag set; mirrors semaphore.ts safeRelease)', async () => {
     const { db, inserts, droppedCounter, logger } = makeDeps();
     const w = makeBufferedWriter({
@@ -333,5 +336,59 @@ describe('makeBufferedWriter', () => {
     // Even after another interval cycle, nothing flushes (interval cleared).
     await vi.advanceTimersByTimeAsync(2_000);
     expect(inserts.length).toBe(1); // unchanged
+  });
+
+  // ------------------------------------------------------------------------
+  // Test 8: drain() flushes a non-empty buffer end-to-end (D-A4 invariant)
+  // ------------------------------------------------------------------------
+  // This test FAILS against the broken drain() where stopped=true is set
+  // BEFORE awaiting flush(), causing flush() to early-return on stopped===true.
+  // It passes after the Task 6 fix (Option B: flush({ force: true })).
+  it('8. drain() flushes a non-empty buffer end-to-end before resolving (D-A invariant — no silent SIGTERM data loss)', async () => {
+    const { db, inserts, droppedCounter, logger } = makeDeps();
+    const w = makeBufferedWriter({
+      // biome-ignore lint/suspicious/noExplicitAny: mock db
+      db: db as any,
+      droppedCounter,
+      logger,
+      flushIntervalMs: 1_000, // interval must NOT fire on its own at 0ms
+    });
+
+    // Push 3 rows — no interval has fired yet.
+    w.push(row(1));
+    w.push(row(2));
+    w.push(row(3));
+    expect(inserts.length).toBe(0); // no flush triggered yet
+    expect(w.size).toBe(3);         // buffer holds all three
+
+    // Call drain without awaiting — drain() should trigger the flush directly.
+    const drainPromise = w.drain(3_000);
+
+    // Advance 0ms to flush microtasks scheduled during drain().
+    await vi.advanceTimersByTimeAsync(0);
+
+    // drain() MUST have triggered a flush immediately (not waiting for the
+    // 1s interval). Broken drain() sets stopped=true first → flush()
+    // short-circuits → inserts.length stays 0.
+    expect(inserts.length).toBe(1);
+    expect((inserts[0]?.rows ?? []).length).toBe(3);
+
+    // Resolve the insert so drain() can complete.
+    inserts[0]?.resolve();
+
+    // drain() must resolve cleanly within the 3s budget.
+    await drainPromise;
+
+    // All rows were flushed — buffer must be empty.
+    expect(w.size).toBe(0);
+
+    // The shutdown-drop warn must NOT have fired (nothing was dropped).
+    const shutdownDropWarn = (logger.warn as ReturnType<typeof vi.fn>).mock.calls.find(
+      (c: unknown[]) =>
+        typeof c[0] === 'object' &&
+        c[0] !== null &&
+        (c[0] as { event?: string }).event === 'log_buffer_shutdown_drop',
+    );
+    expect(shutdownDropWarn).toBeUndefined();
   });
 });
