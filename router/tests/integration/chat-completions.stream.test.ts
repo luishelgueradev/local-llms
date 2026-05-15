@@ -133,7 +133,7 @@ describe('POST /v1/chat/completions stream=true (SC1, OAI-04, OAI-05 stream half
   });
 });
 
-describe('POST /v1/chat/completions stream=true — abort + error paths (SC3 mocked, D-C2, RESEARCH Pitfall 2 + 8)', () => {
+describe('POST /v1/chat/completions stream=true — abort signal wiring (SC3 real-abort proven by bash smoke, not vitest)', () => {
   it('route passes AbortSignal to adapter.chatCompletionsStream (SC3 abort chain unit-level)', async () => {
     // Verify that the route handler correctly wires the AbortController signal to the
     // adapter's chatCompletionsStream call. This is the critical link in the SC3 abort chain:
