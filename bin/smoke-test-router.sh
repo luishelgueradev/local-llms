@@ -837,21 +837,45 @@ print(json.dumps({
   if [[ -z "${SCP4D_RESP}" ]]; then
     fail "SC-P4-D: empty vision response (router or model unreachable)"
   else
-    SCP4D_CHECK=$(SCP4D_RESP="${SCP4D_RESP}" python3 -c '
+    # Pre-check: if the response is an error envelope citing model_not_found /
+    # not loaded, treat as skip (operator did not pull the vision model) rather
+    # than fail — mirrors the pre-flight ollama-list check above.
+    SCP4D_PREFLIGHT=$(SCP4D_RESP="${SCP4D_RESP}" python3 -c '
+import json, os
+try:
+  d = json.loads(os.environ["SCP4D_RESP"])
+  if isinstance(d, dict) and d.get("type") == "error":
+    err = d.get("error") or {}
+    etype = err.get("type") or ""
+    emsg = (err.get("message") or "").lower()
+    if etype == "model_not_found" or "not found" in emsg or "not loaded" in emsg or "pull" in emsg:
+      print("SKIP_MODEL_NOT_PULLED")
+    else:
+      print("OK")
+  else:
+    print("OK")
+except Exception:
+  print("OK")
+')
+    if [[ "${SCP4D_PREFLIGHT}" == "SKIP_MODEL_NOT_PULLED" ]]; then
+      skip "SC-P4-D: vision model returned model_not_found from router; run: docker compose exec ollama ollama pull ${VISION_MODEL}"
+    else
+      SCP4D_CHECK=$(SCP4D_RESP="${SCP4D_RESP}" python3 -c '
 import json, os
 try:
   d = json.loads(os.environ["SCP4D_RESP"])
   text = d["content"][0]["text"]
-  assert len(text) > 10, f"response too short: {len(text)} chars"
-  print(f"OK text_len={len(text)}")
+  assert len(text) > 10, "response too short: " + str(len(text)) + " chars"
+  print("OK text_len=" + str(len(text)))
 except Exception as e:
-  print(f"BAD:{e}")
+  print("BAD:" + str(e))
 ')
-    case "${SCP4D_CHECK}" in
-      OK*)   pass "SC-P4-D: vision URL → /api/chat happy path (${SCP4D_CHECK#OK })" ;;
-      BAD:*) fail "SC-P4-D: ${SCP4D_CHECK#BAD:} — raw: ${SCP4D_RESP:0:200}" ;;
-      *)     fail "SC-P4-D: unexpected python output: ${SCP4D_CHECK}" ;;
-    esac
+      case "${SCP4D_CHECK}" in
+        OK*)   pass "SC-P4-D: vision URL → /api/chat happy path (${SCP4D_CHECK#OK })" ;;
+        BAD:*) fail "SC-P4-D: ${SCP4D_CHECK#BAD:} — raw: ${SCP4D_RESP:0:200}" ;;
+        *)     fail "SC-P4-D: unexpected python output: ${SCP4D_CHECK}" ;;
+      esac
+    fi
   fi
 fi
 
