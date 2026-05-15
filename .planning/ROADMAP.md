@@ -144,7 +144,7 @@ Plans:
 - [x] 05-05-PLAN.md — Gap closure: onReload re-adds POSTGRES_PROBE_URL + safeRecord from inner pre-stream catch (drop body.stream finally guard) + widen translator onCleanup with error field + sseCleanup overrides status_class/error_code/error_message on mid-stream upstream throw + coverage-matrix regression gate in recordOutcome.test.ts (DATA-03, DATA-04, OBS-01, OBS-05, ROUTE-09; CR-01, CR-02, CR-03; T-5-30..T-5-34)
 
 **Wave 6** *(post-UAT gap closure — depends_on Waves 1–5; fixes the live-UAT residuals from 05-UAT.md + the deferred bufferedWriter.drain item from 05-VERIFICATION.md)*
-- [ ] 05-06-PLAN.md — Post-UAT polish: bin/smoke-test-router.sh fixes (Python 3.12 f-string syntax in SC-P4-A/C/E + SC-P5-E gates on body.postgres.status + OBS-05 excludes pg-backup + SC-P4-D skips on model_not_found) + bufferedWriter.drain() flush-before-stopped fix with failing-first regression test + 05-VERIFICATION.md status close (DATA-03, DATA-05, OBS-05)
+- [x] 05-06-PLAN.md — Post-UAT polish: bin/smoke-test-router.sh fixes (Python 3.12 f-string syntax in SC-P4-A/C/E + SC-P5-E gates on body.postgres.status + OBS-05 excludes pg-backup + SC-P4-D skips on model_not_found) + bufferedWriter.drain() flush-before-stopped fix with failing-first regression test + 05-VERIFICATION.md status close (DATA-03, DATA-05, OBS-05)
 
 ### Phase 6: Traefik + TLS + Open WebUI
 **Goal:** Make the router a real HTTPS endpoint with the four-network topology, then bring up Open WebUI on the same proxy so human chats flow through the same router as agents — same logs, same metering, same Anthropic translation.
