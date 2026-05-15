@@ -13,7 +13,9 @@
 //   D-A3  Multi-row parameterized INSERT via Drizzle .values(batch). Batch
 //         size capped at 1_000 rows to stay well under Postgres's 65_535
 //         parameter limit (RESEARCH Assumption A9).
-//   D-A4  drain(3_000) on SIGTERM raced against setTimeout(timeoutMs).
+//   D-A4  drain(3_000) on SIGTERM: flush({ force: true }) called from drain()
+//         bypasses the stopped early-return so buffered rows are inserted
+//         before the race resolves. Raced against setTimeout(timeoutMs).
 //         Logs `log_buffer_shutdown_drop` warn when buf has leftover rows.
 //   D-A5  In-process — NOT a worker_thread.
 //   D-A6  Single shared FIFO across all backends.
@@ -95,8 +97,15 @@ export function makeBufferedWriter(opts: MakeBufferedWriterOpts): BufferedWriter
   let flushing = false; // re-entrancy lock (RESEARCH Pitfall 1)
   let stopped = false;
 
-  const flush = async (): Promise<void> => {
-    if (flushing || buf.length === 0 || stopped) return;
+  // Option B (force-flag through flush): the `force` parameter bypasses the
+  // stopped-flag early-return so that drain() can flush a non-empty buffer
+  // even after stopped=true is set. This is the minimal-surface-area fix —
+  // it separates the push-stopping gate (stopped===true → no new rows) from
+  // the flush-stopping gate (stopped && !force → skip flush). The original
+  // race shape (flush vs setTimeout) is preserved verbatim.
+  const flush = async (flushOpts?: { force?: boolean }): Promise<void> => {
+    const force = flushOpts?.force === true;
+    if (flushing || buf.length === 0 || (stopped && !force)) return;
     flushing = true;
     const batch = buf.splice(0, Math.min(buf.length, MAX_BATCH_ROWS));
     try {
@@ -148,10 +157,15 @@ export function makeBufferedWriter(opts: MakeBufferedWriterOpts): BufferedWriter
       // Idempotent: subsequent push() calls become no-ops; subsequent drain()
       // is allowed (the second call also waits flush + race, which is cheap
       // when buf is already empty).
+      //
+      // D-A4 (Option B fix): stopped=true is set first to gate push() — no new
+      // rows enter while draining. flush({ force: true }) bypasses the
+      // (stopped && !force) early-return so buffered rows are inserted before
+      // the race resolves. The original race shape is preserved verbatim.
       stopped = true;
       clearInterval(timer);
       await Promise.race([
-        flush(),
+        flush({ force: true }),
         new Promise<void>((resolve) => {
           setTimeout(resolve, timeoutMs);
         }),

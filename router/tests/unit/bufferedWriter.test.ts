@@ -166,7 +166,13 @@ describe('makeBufferedWriter', () => {
     expect(w.size).toBe(10);
     expect(droppedCounter.inc).toHaveBeenCalledTimes(2);
 
-    await w.drain(100);
+    // Cleanup: drain races flush (which now fires with force=true) vs the
+    // 100ms timeout. Under fake timers we must advance time to let the
+    // timeout win — otherwise drain hangs waiting for the never-resolved
+    // insert. This is a necessary cleanup-pattern adjustment for the Task 6
+    // drain() fix (Option B force-flag); the D-A1 assertions above are
+    // unaffected.
+    await Promise.all([w.drain(100), vi.advanceTimersByTimeAsync(101)]);
   });
 
   // ------------------------------------------------------------------------
