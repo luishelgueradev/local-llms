@@ -916,13 +916,14 @@ print(json.dumps({
   }]
 }))
 ')
-SCP4E_STATUS=$(curl -s -o /tmp/.scp4e-body -w '%{http_code}' -X POST "${ROUTER_URL}/v1/messages" \
+SCP4E_TMP=$(mktemp)
+SCP4E_STATUS=$(curl -s -o "${SCP4E_TMP}" -w '%{http_code}' -X POST "${ROUTER_URL}/v1/messages" \
   -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
   -H 'Content-Type: application/json' \
   -H 'anthropic-version: 2023-06-01' \
   -d "${SCP4E_BODY}" 2>/dev/null || true)
-SCP4E_BODY_RESP=$(cat /tmp/.scp4e-body 2>/dev/null || true)
-rm -f /tmp/.scp4e-body
+SCP4E_BODY_RESP=$(cat "${SCP4E_TMP}" 2>/dev/null || true)
+rm -f "${SCP4E_TMP}"
 if [[ "${SCP4E_STATUS}" != "400" ]]; then
   fail "SC-P4-E: expected 400 (capability gate), got ${SCP4E_STATUS} — body: ${SCP4E_BODY_RESP:0:200}"
 else
