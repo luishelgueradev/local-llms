@@ -227,17 +227,46 @@ services:
       - OPENWEBUI_DATABASE_URL=postgresql://app:${POSTGRES_PASSWORD}@postgres:5432/openwebui
       # OLLAMA_URL removed: parsed from env.ts but never consumed — backend URLs
       # are authoritative from models.yaml backend_url fields (03-REVIEW WR-04).
-    ports:
-      # localhost-only — D-A4. Phase 6 (Traefik) removes this.
-      - "127.0.0.1:3000:3000"
+    # ── No host ports (EDGE-03 / Phase 6 D-A4) ───────────────────────────────
+    # Phase 6 (06-02): the `ports: ["127.0.0.1:3000:3000"]` line that lived here
+    # since Phase 2 D-A4 is REMOVED. External reach is now Tailscale Serve →
+    # Traefik (loopback :80) → Docker DNS http://router:3000 on the `app`
+    # network. The router-dev: service (profile=dev) keeps its host port for
+    # local iteration without Tailscale roundtrip (06-RESEARCH Pattern 6).
     networks:
-      - app       # later: webui (Phase 6)
+      - app       # Traefik discovers router-edge here (Pitfall 12 disambiguated via the label below)
       - backend   # talks to ollama (and Phase 3+ runtimes)
       - data      # Phase 5 (D-E1) — talks to postgres on the internal data plane
+      - edge      # Phase 6 (06-02 EDGE-02 / Phase 1 D-13 / ROADMAP SC2) — router is the only service on all four
     volumes:
       # Bind-mount the registry so fs.watch (plan 02-05) sees host edits —
       # RESEARCH Pitfall 7. Named volumes are unreliable for fs.watch across drivers.
       - ./router/models.yaml:/app/models.yaml:ro
+    # ── Traefik discovery labels (Phase 6 06-02 — D-B1 attachment, EDGE-01) ──
+    # All six labels below are load-bearing. NEVER add a `compress` or
+    # `buffering` middleware here — would break SSE streaming on
+    # /v1/chat/completions + /v1/messages (PITFALLS Pitfall 4 / EDGE-04).
+    labels:
+      # Gate: only services with traefik.enable=true are routed (the Docker
+      # provider in traefik/traefik.yml runs with exposedByDefault=false).
+      - "traefik.enable=true"
+      # Pitfall 12 — router is on 4 networks; force Traefik to use `app` for
+      # HTTP traffic (backend + data are internal: true and would fail; edge
+      # would technically work but app is the canonical service-to-service
+      # plane). This LABEL is belt-and-suspenders alongside the static-config
+      # providers.docker.network=local-llms_app in traefik/traefik.yml.
+      - "traefik.docker.network=${COMPOSE_PROJECT_NAME:-local-llms}_app"
+      # router-edge: Host(`router.<tailnet>.ts.net`) on the :80 entrypoint;
+      # TLS terminates upstream at Tailscale Serve (D-A2).
+      - "traefik.http.routers.router-edge.rule=Host(`router.${TAILNET_HOSTNAME}.ts.net`)"
+      - "traefik.http.routers.router-edge.entrypoints=web"
+      # D-B1 attachment — metrics-blackhole rewrites external /metrics paths
+      # to /__metrics_blocked__ so the upstream Fastify returns its native 404.
+      # The middleware is defined in traefik/dynamic/middlewares.yml (file
+      # provider — hence the @file qualifier).
+      - "traefik.http.routers.router-edge.middlewares=metrics-blackhole@file"
+      # Router listens on 3000 inside the container (env PORT=3000).
+      - "traefik.http.services.router-edge.loadbalancer.server.port=3000"
     healthcheck:
       # node:22-bookworm-slim does NOT ship curl; use node -e fetch instead
       # (RESEARCH §Open Question 2). Same rationale as Phase 1's `ollama list`
