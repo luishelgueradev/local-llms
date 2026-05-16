@@ -10,6 +10,19 @@ backends:
     base_url: http://llamacpp:8080/v1
     concurrency: 2
     queue_max_wait_ms: 30000
+  vllm:
+    # base_url: documentation only — NOT used at runtime (see registry.ts BackendsSection comment).
+    # Phase 7 (Plan 07-03): vLLM chat container exposes OpenAI-compat at :8000/v1.
+    base_url: http://vllm:8000/v1
+    concurrency: 2
+    queue_max_wait_ms: 30000
+  vllm-embed:
+    # base_url: documentation only — NOT used at runtime (see registry.ts BackendsSection comment).
+    # Phase 7 (Plan 07-03): separate vLLM container running --task embed; cheaper than
+    # chat so higher concurrency is acceptable.
+    base_url: http://vllm-embed:8000/v1
+    concurrency: 4
+    queue_max_wait_ms: 30000
 
 models:
   - name: llama3.2:3b-instruct-q4_K_M
@@ -41,3 +54,37 @@ models:
     concurrency: 2
     max_model_len: 8192
     profile: ollama
+
+  # Phase 7 (Plan 07-03) — vLLM chat model with AWQ Marlin quant + native tool calling.
+  - name: qwen2.5-7b-instruct-awq
+    backend: vllm
+    backend_url: http://vllm:8000/v1
+    backend_model: Qwen/Qwen2.5-7B-Instruct-AWQ
+    capabilities: [chat, tools]
+    vram_budget_gb: 7.2
+    concurrency: 2
+    max_model_len: 8192
+    profile: vllm
+
+  # Phase 7 (Plan 07-03) — bge-m3 embeddings served by Ollama (1024-dim, multilingual).
+  - name: bge-m3-ollama
+    backend: ollama
+    backend_url: http://ollama:11434/v1
+    backend_model: bge-m3
+    capabilities: [embeddings]
+    vram_budget_gb: 2.5
+    concurrency: 4
+    max_model_len: 8192
+    profile: ollama
+
+  # Phase 7 (Plan 07-03) — bge-m3 embeddings served by vLLM (cross-validates dispatch
+  # heterogeneity at the dimensions level — same model, different backend).
+  - name: bge-m3-vllm
+    backend: vllm-embed
+    backend_url: http://vllm-embed:8000/v1
+    backend_model: BAAI/bge-m3
+    capabilities: [embeddings]
+    vram_budget_gb: 2.5
+    concurrency: 4
+    max_model_len: 8192
+    profile: vllm
