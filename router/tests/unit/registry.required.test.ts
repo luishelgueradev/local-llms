@@ -115,6 +115,32 @@ models:
     expect(reg.models[0]?.backend).toBe('llamacpp');
   });
 
+  it('parses a registry with backend: vllm (Phase 7 widening)', () => {
+    const reg = loadRegistryFromString(`
+models:
+  - name: qwen2.5-7b-instruct-awq
+    backend: vllm
+    backend_url: http://vllm:8000/v1
+    backend_model: Qwen/Qwen2.5-7B-Instruct-AWQ
+    capabilities: [chat, tools]
+    vram_budget_gb: 7.2
+    `);
+    expect(reg.models[0]?.backend).toBe('vllm');
+  });
+
+  it('parses a registry with backend: vllm-embed (Phase 7 widening — separate variant)', () => {
+    const reg = loadRegistryFromString(`
+models:
+  - name: bge-m3-vllm
+    backend: vllm-embed
+    backend_url: http://vllm-embed:8000/v1
+    backend_model: BAAI/bge-m3
+    capabilities: [embeddings]
+    vram_budget_gb: 2.5
+    `);
+    expect(reg.models[0]?.backend).toBe('vllm-embed');
+  });
+
   it('parses a registry with both ollama AND llamacpp entries', () => {
     const reg = loadRegistryFromString(TWO_ENTRY_YAML);
     expect(reg.models).toHaveLength(2);

@@ -223,6 +223,62 @@ export function llamacppModelsListHandler(opts: {
 }
 
 /**
+ * Factory: emit an OpenAI-shape non-streaming chat completion for vLLM backend (Phase 7).
+ * Parallel to llamacppNonStreamHandler — same body, different default URL and owned_by.
+ */
+export function vllmNonStreamHandler(opts: {
+  url?: string;
+  model?: string;
+  content?: string;
+  promptTokens?: number;
+  completionTokens?: number;
+  delayMs?: number;
+} = {}) {
+  const url = opts.url ?? 'http://vllm:8000/v1/chat/completions';
+  const model = opts.model ?? 'Qwen/Qwen2.5-7B-Instruct-AWQ';
+  const content = opts.content ?? 'Hello from msw (vllm)';
+  const pt = opts.promptTokens ?? 12;
+  const ct = opts.completionTokens ?? 4;
+  const delay = opts.delayMs ?? 0;
+  return http.post(url, async () => {
+    if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+    return HttpResponse.json({
+      id: 'chatcmpl-msw-vllm',
+      object: 'chat.completion',
+      created: Math.floor(Date.now() / 1000),
+      model,
+      choices: [{
+        index: 0,
+        message: { role: 'assistant', content },
+        finish_reason: 'stop',
+      }],
+      usage: { prompt_tokens: pt, completion_tokens: ct, total_tokens: pt + ct },
+    });
+  });
+}
+
+/**
+ * Factory: emit an OpenAI-shape /v1/models response for vLLM backend (Phase 7).
+ * Supports empty modelIds: [] for the "empty data" probeLiveness probe test case.
+ */
+export function vllmModelsListHandler(opts: {
+  url?: string;
+  modelIds?: string[];
+} = {}) {
+  const url = opts.url ?? 'http://vllm:8000/v1/models';
+  const modelIds = opts.modelIds ?? ['Qwen/Qwen2.5-7B-Instruct-AWQ'];
+  return http.get(url, async () => HttpResponse.json({
+    object: 'list',
+    data: modelIds.map((id) => ({
+      id,
+      object: 'model',
+      created: 1715517600,
+      owned_by: 'vllm',
+    })),
+  }));
+}
+
+/**
  * Factory: emit an Ollama-native /api/chat response (Plan 04-05 / VISION-03).
  *
  * Wire shape per FINDING 4.3 / RESEARCH Example D:

@@ -63,11 +63,11 @@ models:
     `)).toThrow();
   });
 
-  it('rejects when backend is unknown (Phase 3 enum is ["ollama","llamacpp"])', () => {
+  it('rejects when backend is unknown (Phase 7 enum is ["ollama","llamacpp","vllm","vllm-embed"])', () => {
     expect(() => loadRegistryFromString(`
 models:
   - name: x
-    backend: vllm
+    backend: definitely-not-a-backend
     backend_url: http://x/v1
     backend_model: m
     capabilities: [chat]
