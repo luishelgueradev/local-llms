@@ -22,8 +22,8 @@
 # Traefik labels: traefik.http.routers.router-edge.middlewares=metrics-blackhole@file
 #
 # What is intentionally NOT in this file:
-#   - No `compress` middleware (Pitfall 4 — would break SSE streaming).
-#   - No `buffering` middleware (same SSE-streaming reason).
+#   - No response-body gzip middleware (Pitfall 4 — would break SSE streaming).
+#   - No write-buffer middleware (same SSE-streaming reason).
 #   - No basic-auth middleware here (lives on the traefik: Docker labels — see above).
 
 http:

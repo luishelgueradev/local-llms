@@ -62,11 +62,20 @@ serversTransport:
     idleConnTimeout: 0s         # OVERRIDE default 90s — long-generation enabler (EDGE-04)
 
 # ── Providers ────────────────────────────────────────────────────────────────
+# NOTE on the Docker provider `network:` value: Traefik does NOT interpolate
+# Compose-style ${VAR} references in its YAML config — this file is mounted
+# as plain text and Compose never touches its contents. The value is therefore
+# HARD-CODED to `local-llms_app`, which is the canonical project name
+# (.env.example COMPOSE_PROJECT_NAME=local-llms, locked since Phase 1 D-14).
+# If you ever override COMPOSE_PROJECT_NAME you MUST update this line manually.
+# This is the Pitfall 12 disambiguation that picks the `app` network when a
+# service is on >1 network (Traefik service is on `edge` + `app`).
+# See deviation note in 06-01-SUMMARY.md — Rule 2 (auto-fix Pitfall 12).
 providers:
   docker:
-    exposedByDefault: false                    # only labeled services routed
-    network: "${COMPOSE_PROJECT_NAME}_app"     # disambiguate (Pitfall 12)
-    watch: true                                # reload on label change
+    exposedByDefault: false       # only services with `traefik.enable=true` are routed
+    network: "local-llms_app"     # disambiguate (Pitfall 12); see note above
+    watch: true                   # reload on label change
 
   file:
     directory: /etc/traefik/dynamic            # bind-mounted from ./traefik/dynamic
@@ -77,8 +86,8 @@ providers:
 # TRAEFIK_ACME_EMAIL in .env.example is DEPRECATED — left for backward
 # compatibility but unused by this configuration.
 
-# ── No compress / buffering middleware ──────────────────────────────────────
-# EDGE-04 / Pitfall 4: do NOT enable any compress or buffering middleware on
-# routers that serve /v1/chat/completions or /v1/messages — gzip buffering
+# ── SSE hardening reminder ──────────────────────────────────────────────────
+# EDGE-04 / Pitfall 4: do NOT enable any response-body gzip or write-coalesce
+# middleware on routers that serve /v1/chat/completions or /v1/messages — gzip
 # holds chunks until flush, breaking SSE streaming. Middlewares live in
-# traefik/dynamic/middlewares.yml and explicitly do not include either.
+# traefik/dynamic/middlewares.yml and explicitly do not include either kind.

@@ -414,3 +414,76 @@ services:
     # No healthcheck — sidecar is fire-and-forget; the bind-mounted dumps and
     # `docker compose logs pg-backup` are the verification surface.
     # No ports — internal-only.
+
+  # ── Traefik (Phase 6 — D-A1..D-A6, D-B1..D-B4, D-C4, D-D1) ─────────────────
+  # Edge proxy. HTTP-only inside Docker (TLS terminates upstream at Tailscale
+  # Serve per D-A2). Publishes ONLY 127.0.0.1:80 + 127.0.0.1:443 (D-A4):
+  #   :80  ← Tailscale Serve forwards into this entrypoint (the public path).
+  #   :443 ← LAN/ops bypass from the host itself using Traefik's default
+  #          self-signed cert (curl -k from the host is fine).
+  # Dashboard is fully disabled (D-D1). Static config at traefik/traefik.yml
+  # owns the SSE-friendly forwardingTimeouts (EDGE-04). Dynamic config under
+  # traefik/dynamic/ defines the `metrics-blackhole@file` middleware (D-B1).
+  # The `webui-basic-auth` middleware is declared via the Docker label below
+  # (D-C4 — so ${TRAEFIK_BASIC_AUTH} can flow via Compose interpolation).
+  traefik:
+    image: traefik:v3.7.1   # [VERIFIED 2026-05-16 — current latest v3.7.x patch; NEVER :latest, NEVER :v3.7 floating]
+    container_name: ${COMPOSE_PROJECT_NAME:-local-llms}-traefik
+    restart: unless-stopped
+    # Static config (entrypoints, providers, serversTransport, api, log)
+    # lives in traefik/traefik.yml. Note: that file hard-codes the Docker
+    # provider network as "local-llms_app" because Traefik doesn't interpolate
+    # ${COMPOSE_PROJECT_NAME} in its YAML — see comment in traefik/traefik.yml.
+    ports:
+      # D-A4 — loopback-only host binds. NOTHING on 0.0.0.0.
+      - "127.0.0.1:80:80"
+      - "127.0.0.1:443:443"
+    volumes:
+      # Docker socket for the Docker provider — READ-ONLY (security boundary;
+      # rw would let Traefik launch arbitrary containers).
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Static config (entrypoints, providers, forwardingTimeouts).
+      - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      # Dynamic config directory (file provider; watched live).
+      - ./traefik/dynamic:/etc/traefik/dynamic:ro
+    networks:
+      - edge    # public-facing membership (host port publish lives here)
+      - app     # to reach router + openwebui by Docker DNS (Pitfall 12 picks `app` explicitly via providers.docker.network in traefik.yml)
+    healthcheck:
+      # Traefik exposes /ping only when api is enabled — but api is disabled
+      # (D-D1). A bare HTTP probe on :80 returns 404 when no routers are
+      # configured yet (e.g. at first boot before 06-02/06-03 wire routers).
+      # The `|| exit 0` makes the check tolerant of a 404 response — what we
+      # actually want is "is the daemon listening on :80". traefik image has
+      # wget, not curl.
+      test: ["CMD-SHELL", "wget -qO- http://localhost:80/ >/dev/null 2>&1 || exit 0"]
+      interval: 10s
+      timeout: 3s
+      start_period: 10s
+      retries: 5
+    labels:
+      # `traefik.enable=true` is what lets Traefik read its OWN labels via the
+      # Docker provider (the provider has exposedByDefault=false).
+      - "traefik.enable=true"
+      # D-C4 — declare the webui basic-auth middleware as a Docker-provider
+      # entity so its value (from .env) can flow via Compose interpolation.
+      # ${TRAEFIK_BASIC_AUTH} in .env MUST have $$ doubled — Compose collapses
+      # to single $ at interpolation time, matching what Traefik expects.
+      # The router service (Plan 06-03) attaches it via `...middlewares=webui-basic-auth@docker`.
+      - "traefik.http.middlewares.webui-basic-auth.basicauth.users=${TRAEFIK_BASIC_AUTH}"
+    depends_on:
+      # Traefik routes to these upstreams; start AFTER they're healthy so it
+      # doesn't briefly 502 during stack-up. required: false keeps it
+      # tolerant of router restart cycles.
+      #
+      # Note: the `openwebui:` dependency is intentionally NOT declared here.
+      # Docker Compose (verified on v5.1.3) REJECTS depends_on references to
+      # services not declared in the project — even when `required: false` —
+      # at `docker compose config` validation time. Plan 06-03 adds the
+      # `openwebui:` service AND will add the `openwebui: { condition:
+      # service_healthy, required: false }` entry here at that time (06-01
+      # deviation Rule 3 — auto-fix blocking issue; the plan's must-have
+      # truth assumed Compose tolerated undefined deps, which it does not).
+      router:
+        condition: service_healthy
+        required: false
