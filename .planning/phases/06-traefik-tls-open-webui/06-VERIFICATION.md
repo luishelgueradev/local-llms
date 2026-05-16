@@ -1,9 +1,15 @@
 ---
 phase: 06-traefik-tls-open-webui
-verified: 2026-05-16T14:50:00Z
-status: gaps_found
-score: 9/11 verifiable assertions passed; 1 BLOCKER (D-C6 network-level bypass possible); 1 deferred (browser UAT needs host libs / Tailscale Services)
+verified: 2026-05-16T15:25:00Z
+status: human_verify_pending
+score: 10/11 verifiable assertions passed; 1 deferred (browser UAT needs host libs / Tailscale Services). D-C6 BLOCKER closed by Plan 06-05 (commit c5b4947) + independently re-verified post-execution.
 overrides_applied: 0
+re_verification:
+  previous_status: gaps_found
+  previous_score: 9/11 + 1 BLOCKER
+  gaps_closed:
+    - "D-C6 — webui-app isolated internal network introduced (compose.yml commits c5b4947 + edc8e2f). OWUI dropped from app, attached to webui-app (data + webui-app only). Router gains webui-app (now on 5 networks). Traefik gains webui-app (now on 3 networks). Ollama dual-network app+backend UNCHANGED (Phase 1 D-13 preserved). Post-execution re-verification: `docker compose exec openwebui curl http://ollama:11434/api/tags` returns curl exit 6 (Could not resolve host: ollama) — bypass route structurally eliminated. Allowed path OWUI→router:3000/v1/models still returns 200 + JSON model list."
+  gaps_remaining: []
 human_verification:
   - test: "Browser sanity check via playwright-cli (chat.<tailnet>.ts.net basic-auth → model picker → streaming chat)"
     expected: "Browser passes basic-auth challenge; OWUI model picker lists registry models (llama3.2:3b-instruct-q4_K_M, qwen2.5-7b-instruct-q4km, llama3.2-vision); 'hello' message streams response."
@@ -73,7 +79,7 @@ re_verification:
 | 10 | WEBUI-03 | `WEBUI_AUTH=False` + basic-auth gate | ✅ pass — 401 without creds, 200 with |
 | 11 | WEBUI-04 | Shared Postgres `openwebui` DB | ✅ pass — Alembic migrations completed |
 | 12 | WEBUI-05 | OWUI auto-discovery via /v1/models | ⚠ partial — couldn't verify externally; OWUI's `/api/models` requires its own auth (`{"detail":"401 Unauthorized"}`). Live browser test deferred. |
-| 13 | **D-C6** | **No OWUI bypass connections** | ❌ **FAIL** — see "Gaps Found" frontmatter. |
+| 13 | **D-C6** | **No OWUI bypass connections** | ✅ **CLOSED** by Plan 06-05 — webui-app isolated network. `docker compose exec openwebui curl http://ollama:11434/api/tags` returns `curl: (6) Could not resolve host: ollama` (DNS plane elimination). Re-verified 2026-05-16T15:25:00Z. |
 
 ---
 
