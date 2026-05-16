@@ -1,0 +1,84 @@
+# traefik/traefik.yml — Phase 6 static configuration
+# Loaded at container start; changes require `docker compose restart traefik`.
+#
+# This file is loaded via the bind-mount in compose.yml:
+#   ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+# Dynamic config (middlewares, additional routers) lives under traefik/dynamic/
+# and is watched via the file provider below (watch=true), so middleware edits
+# do NOT require a container restart.
+#
+# Architectural anchors (see .planning/phases/06-traefik-tls-open-webui/06-CONTEXT.md):
+#   D-A2  HTTP-only — TLS terminates upstream at Tailscale Serve (no certResolvers here).
+#   D-A4  Traefik publishes ONLY 127.0.0.1:80 + 127.0.0.1:443 (see compose.yml).
+#   D-A5  HTTP→HTTPS redirect lives at Tailscale Serve, not in this entrypoint block.
+#   D-D1  api.dashboard=false + api.insecure=false — nothing to expose, nothing to leak.
+#   EDGE-04 / Pitfall 3  serversTransport.forwardingTimeouts.idleConnTimeout: 0s
+#                        (overrides Traefik's 90s default which would kill 120s+ gens).
+#   Pitfall 12  providers.docker.network disambiguates when a service is on >1 network.
+
+global:
+  checkNewVersion: false
+  sendAnonymousUsage: false
+
+# ── API & Dashboard ─────────────────────────────────────────────────────────
+# D-D1: dashboard fully disabled in prod. Nothing to expose.
+api:
+  dashboard: false
+  insecure: false
+
+# ── Logs ────────────────────────────────────────────────────────────────────
+log:
+  level: INFO
+  format: json     # pino-compatible-ish; future Loki-friendly
+
+# Access log is OFF in v1 — bearer tokens MUST NOT leak through the default
+# access-log format. Phase 9 may revisit with `headers.defaultMode: drop` if
+# access logs are wanted for ops.
+accessLog: {}
+
+# ── EntryPoints ─────────────────────────────────────────────────────────────
+# Single HTTP-only entrypoint (TLS lives at Tailscale upstream — D-A2).
+# Tailscale Serve forwards into http://127.0.0.1:80; the host's :443 publish
+# in compose.yml serves Traefik's default self-signed certificate for LAN/ops
+# debug only (curl -k from the host). Inside Docker we never speak TLS.
+entryPoints:
+  web:
+    address: ":80"
+    # No HTTP→HTTPS redirect block here — D-A5 places it at Tailscale Serve.
+    # No TLS block here — D-A2 places TLS at Tailscale Serve.
+
+# ── ServersTransport (SSE-friendly defaults) ─────────────────────────────────
+# EDGE-04 / Pitfall 3 anchor.
+#   - responseHeaderTimeout defaults to 0 already in v3.7.1, but pin it
+#     explicitly as defense against future default changes.
+#   - idleConnTimeout defaults to 90s in v3.7.1 — load-bearing override so
+#     long generations (120s+) over SSE don't get truncated by Traefik
+#     closing the upstream connection during a quiet period between deltas.
+#   - dialTimeout: 30s is the documented default; pinned explicit.
+serversTransport:
+  forwardingTimeouts:
+    dialTimeout: 30s            # default; backend liveness threshold
+    responseHeaderTimeout: 0s   # explicit; 0 = no header timeout (default but pinned)
+    idleConnTimeout: 0s         # OVERRIDE default 90s — long-generation enabler (EDGE-04)
+
+# ── Providers ────────────────────────────────────────────────────────────────
+providers:
+  docker:
+    exposedByDefault: false                    # only labeled services routed
+    network: "${COMPOSE_PROJECT_NAME}_app"     # disambiguate (Pitfall 12)
+    watch: true                                # reload on label change
+
+  file:
+    directory: /etc/traefik/dynamic            # bind-mounted from ./traefik/dynamic
+    watch: true                                # reload on file change
+
+# ── No cert-resolvers block ─────────────────────────────────────────────────
+# D-A2: Traefik does NOT manage certs. Tailscale terminates TLS upstream.
+# TRAEFIK_ACME_EMAIL in .env.example is DEPRECATED — left for backward
+# compatibility but unused by this configuration.
+
+# ── No compress / buffering middleware ──────────────────────────────────────
+# EDGE-04 / Pitfall 4: do NOT enable any compress or buffering middleware on
+# routers that serve /v1/chat/completions or /v1/messages — gzip buffering
+# holds chunks until flush, breaking SSE streaming. Middlewares live in
+# traefik/dynamic/middlewares.yml and explicitly do not include either.

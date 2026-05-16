@@ -1,0 +1,41 @@
+# traefik/dynamic/middlewares.yml — Phase 6 dynamic middleware definitions
+#
+# File-provider config. Loaded by Traefik with `watch: true` (see traefik.yml
+# providers.file.directory=/etc/traefik/dynamic). Edits to this file apply
+# within ~2 s without a container restart.
+#
+# Architectural anchors (see .planning/phases/06-traefik-tls-open-webui/06-CONTEXT.md):
+#   D-B1  /metrics blackhole at the Traefik edge for router.<tailnet>.ts.net.
+#         Closes the Phase 5 D-C5 CRITICAL carry-forward TODO in
+#         router/src/auth/bearer.ts:5-12. Uses ReplacePathRegex rewriting
+#         ^/metrics → /__metrics_blocked__ so the upstream Fastify returns
+#         its native 404 — chosen over the `errors` middleware and the
+#         IPAllowList patterns per 06-RESEARCH.md Pattern 3 (cleanest;
+#         no extra service stanza needed).
+#   D-C4  The Open WebUI BasicAuth middleware is NOT declared in this file.
+#         It is declared via a Docker label on the traefik service in
+#         compose.yml so its value (${TRAEFIK_BASIC_AUTH}) can flow in via
+#         Compose interpolation. Compose collapses `$$` → `$` at render time,
+#         which is what Traefik's BasicAuth middleware expects.
+#
+# Plan 06-02 will reference `metrics-blackhole@file` from the router service
+# Traefik labels: traefik.http.routers.router-edge.middlewares=metrics-blackhole@file
+#
+# What is intentionally NOT in this file:
+#   - No `compress` middleware (Pitfall 4 — would break SSE streaming).
+#   - No `buffering` middleware (same SSE-streaming reason).
+#   - No basic-auth middleware here (lives on the traefik: Docker labels — see above).
+
+http:
+  middlewares:
+
+    # ── /metrics blackhole (D-B1, EDGE bonus, Phase 5 D-C5 carry-forward) ──
+    # Rewrites external GET /metrics (and any /metrics/anything suffix) to
+    # /__metrics_blocked__, a path the router does not register. Fastify
+    # returns its native 404 with the standard `{"statusCode":404,...}` body.
+    # The internal Prometheus scrape (Phase 7) reaches the router directly
+    # via Docker DNS (router:3000/metrics) and bypasses Traefik entirely.
+    metrics-blackhole:
+      replacePathRegex:
+        regex: "^/metrics(/.*)?$"
+        replacement: "/__metrics_blocked__"
