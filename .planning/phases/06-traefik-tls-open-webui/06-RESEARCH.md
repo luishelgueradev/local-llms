@@ -626,24 +626,24 @@ If this table contains items: the planner should confirm A1+A2 with the user bef
 
 ---
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Does the operator's tailnet already have `svc:router` and `svc:chat` defined?**
    - What we know: the user picked the Tailscale-only posture (D-A1) and host-side daemon (D-A6), so `tailscaled` is up.
    - What's unclear: whether the operator has already run the admin-console step.
-   - Recommendation: Planner adds "Prereq check: tailscale serve status shows `svc:router` and `svc:chat` advertised" to the smoke-test, and the README's Phase 6 section starts with the admin-console step. If not done, smoke fails clearly with "create services in admin console first".
+   - **RESOLVED:** User confirmed tailnet admin access during planning. Planner adds "Prereq check: `tailscale serve status` shows `svc:router` and `svc:chat` advertised" to the smoke-test, and the README's Phase 6 section starts with the admin-console step. Smoke fails clearly with "create services in admin console first" if absent.
 
 2. **What is the operator's `TAILNET_HOSTNAME` value?**
    - This is the tailnet name (e.g. `my-corp` for `*.my-corp.ts.net`). Needed for the smoke commands.
-   - Recommendation: Add `TAILNET_HOSTNAME=` to `.env.example` (Phase 6 vars block). Compose substitutes into Traefik `Host:` rules.
+   - **RESOLVED:** Add `TAILNET_HOSTNAME=` to `.env.example` (Phase 6 vars block, Plan 06-01 Task 1). Operator fills with `tailscale status --json | jq -r '.MagicDNSSuffix'`. Compose substitutes into Traefik `Host:` rules.
 
 3. **Do we need a separate `OAUTH_SESSION_TOKEN_ENCRYPTION_KEY` / `OAUTH_CLIENT_INFO_ENCRYPTION_KEY`?**
    - What we know: OWUI v0.9 doc recommends these for "production" but they default to `WEBUI_SECRET_KEY`.
    - What's unclear: whether single-user single-host deployments benefit.
-   - Recommendation: Skip in Phase 6; revisit in Phase 9 (operations hardening). For now `WEBUI_SECRET_KEY` doubles as both.
+   - **RESOLVED:** Skip in Phase 6; deferred to Phase 9 (operations hardening). For now `WEBUI_SECRET_KEY` doubles as both. Captured in Phase 6 deferred ideas + Phase 9 backlog.
 
 4. **Should Traefik dashboard be re-enabled later behind a third Tailscale Service `svc:traefik`?**
-   - Decision-deferred (D-D1 says no in Phase 6). If the operator wants it, the pattern is: define `svc:traefik` in admin console, advertise on host, add `--api.dashboard=true --api.insecure=false` to Traefik static config, add a router with basic-auth middleware in dynamic config.
+   - **RESOLVED:** No — D-D1 says dashboard fully disabled in Phase 6 (`--api=false`). If the operator wants it post-v1, the documented pattern is: define `svc:traefik` in admin console, advertise on host, add `--api.dashboard=true --api.insecure=false` to Traefik static config, add a router with basic-auth middleware in dynamic config. Captured in 06-CONTEXT.md `<deferred>` for future reference.
 
 ---
 
