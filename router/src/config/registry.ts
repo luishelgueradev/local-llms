@@ -6,10 +6,15 @@ import { RegistryUnknownModelError } from '../errors/envelope.js';
 
 /**
  * Phase 3 widens the backend enum and makes capabilities + vram_budget_gb REQUIRED
- * for local backends. Phase 8 widens to include 'ollama-cloud' with a discriminated
- * union so cloud entries may omit vram_budget_gb.
+ * for local backends. Phase 7 widens to include 'vllm' + 'vllm-embed' for the dual
+ * chat/embed vLLM service split (CLOSED R-1 of Plan 07-01 + D-B5(a)): two distinct
+ * backend values so (1) each gets its own BackendSemaphore (chat and embed concurrency
+ * caps are independent), and (2) the per-backend VRAM-envelope superRefine sums them
+ * separately rather than over-accounting both vllm instances against a single budget.
+ * Phase 8 widens to include 'ollama-cloud' with a discriminated union so cloud entries
+ * may omit vram_budget_gb.
  */
-export const LocalBackendEnum = z.enum(['ollama', 'llamacpp']);
+export const LocalBackendEnum = z.enum(['ollama', 'llamacpp', 'vllm', 'vllm-embed']);
 // Phase 8 widens to include 'ollama-cloud' (with a discriminated union to allow cloud entries to skip vram_budget_gb).
 
 export const ModelEntrySchema = z.object({
