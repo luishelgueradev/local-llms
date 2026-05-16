@@ -503,16 +503,109 @@ services:
     depends_on:
       # Traefik routes to these upstreams; start AFTER they're healthy so it
       # doesn't briefly 502 during stack-up. required: false keeps it
-      # tolerant of router restart cycles.
-      #
-      # Note: the `openwebui:` dependency is intentionally NOT declared here.
-      # Docker Compose (verified on v5.1.3) REJECTS depends_on references to
-      # services not declared in the project — even when `required: false` —
-      # at `docker compose config` validation time. Plan 06-03 adds the
-      # `openwebui:` service AND will add the `openwebui: { condition:
-      # service_healthy, required: false }` entry here at that time (06-01
-      # deviation Rule 3 — auto-fix blocking issue; the plan's must-have
-      # truth assumed Compose tolerated undefined deps, which it does not).
+      # tolerant of restart cycles.
       router:
         condition: service_healthy
         required: false
+      # 06-03 — `openwebui:` is now declared below, so this dep entry is wired
+      # (06-01 had to defer it because Compose v5.1.3 rejects depends_on refs to
+      # undeclared services at `docker compose config` validation time, even
+      # with `required: false` — see 06-01-SUMMARY.md deviation Rule 3).
+      openwebui:
+        condition: service_healthy
+        required: false
+
+  # ── Open WebUI (Phase 6 — D-C1..D-C8, WEBUI-01..WEBUI-05) ──────────────────
+  # Pinned to v0.9.0 per CLAUDE.md "What NOT to Use" (NEVER :main, NEVER :latest,
+  # NEVER :v0.9 floating — pin exact patch). User chat surface; auto-discovers
+  # models from router's GET /v1/models. ALL configuration via env at first boot
+  # (D-C1 / 06-RESEARCH §Pattern 5).
+  #
+  # CRITICAL — WEBUI_AUTH=False is IRREVERSIBLE from boot zero (D-C3 / Pitfall 10).
+  # The `openwebui` Postgres DB was created EMPTY in Phase 5 D-B6 (precondition
+  # verified); once OWUI's first-boot writes any user/admin row, the env var no
+  # longer takes effect. Edge auth lives entirely at Traefik (basic-auth
+  # middleware `webui-basic-auth@docker`).
+  #
+  # CRITICAL — OPENAI_API_BASE_URLS is PLURAL (the v0.9 env-var name) and has
+  # NO /v1 suffix — OWUI appends /v1/... itself; doubling would yield /v1/v1/models
+  # → 404 → empty model list (Pitfall 5).
+  #
+  # CRITICAL — networks are [app, data] ONLY. NOT `backend` (anti-pattern: OWUI
+  # bypass to GPU runtimes). NOT `edge` (Traefik reaches OWUI via the `app`
+  # network — the `traefik.docker.network` label below disambiguates per
+  # Pitfall 12, matching 06-02's pattern on the router service).
+  #
+  # CRITICAL — zero host port mappings (EDGE-03). All access via Traefik on
+  # the `chat.<TAILNET_HOSTNAME>.ts.net` Tailscale Serve hostname.
+  openwebui:
+    image: ghcr.io/open-webui/open-webui:v0.9.0   # [VERIFIED 2026-05-16 — pinned patch; NEVER :latest, NEVER :main per CLAUDE.md]
+    container_name: ${COMPOSE_PROJECT_NAME:-local-llms}-openwebui
+    restart: unless-stopped
+    environment:
+      # ── Auth posture (PersistentConfig — irreversible after first boot) ────
+      - WEBUI_AUTH=False                            # D-C3 — IRREVERSIBLE; requires empty openwebui DB at first boot (Phase 5 D-B6 verified)
+      - ENABLE_SIGNUP=False                         # belt-and-suspenders; moot under WEBUI_AUTH=False (06-RESEARCH §Pattern 5)
+      # ── Connector to the router (sole provider) ───────────────────────────
+      # PLURAL env-var names — OWUI 0.9 canonical form (Pitfall 5/6).
+      # NO /v1 suffix — OWUI appends /v1/... itself; doubling → /v1/v1/models 404.
+      - OPENAI_API_BASE_URLS=http://router:3000     # D-C2 — single-provider; if multi were needed the separator is `;` (Pitfall 6)
+      - OPENAI_API_KEYS=${ROUTER_BEARER_TOKEN}      # D-C1 — bearer flows to router via OWUI's OpenAI connector
+      - ENABLE_OPENAI_API=True                      # default; explicit for clarity (Pattern 5)
+      - ENABLE_OLLAMA_API=False                     # D-C6 / Pitfall 8 — prevents OWUI from auto-detecting the Ollama peer on the app network (defense-in-depth)
+      # ── Persistence ────────────────────────────────────────────────────────
+      # D-C5 / WEBUI-04 — shared Postgres `openwebui` DB (created empty in Phase 5 D-B6 by postgres/initdb/01-init.sql).
+      # Phase 5 declared `OPENWEBUI_DATABASE_URL` as a SERVICE-level env on the router (compose.yml lines 226-227) — NOT a top-level
+      # `.env` variable. So `${OPENWEBUI_DATABASE_URL}` would interpolate to empty here; we materialize the same connection string
+      # inline from `${POSTGRES_PASSWORD}` (operator-provided in .env, present since Phase 1 D-14). Same shape Phase 5 used.
+      - DATABASE_URL=postgresql://app:${POSTGRES_PASSWORD}@postgres:5432/openwebui
+      - WEBUI_SECRET_KEY=${OWUI_SECRET_KEY}         # Pitfall 10 — pinned so DB backups round-trip across container recreates; auto-generation would rotate the key
+      # ── Cosmetic / OAuth-ready ─────────────────────────────────────────────
+      - WEBUI_NAME=local-llms                       # UI-SPEC.md §Branding Hooks
+      - WEBUI_URL=https://chat.${TAILNET_HOSTNAME}.ts.net   # OAuth callback target (deferred to Phase 9; declared now for future readiness)
+    volumes:
+      # D-C8 / Phase 1 D-02 layout — plain bind, NOT a named volume.
+      - ${HOST_DATA_ROOT:-/srv/local-llms}/openwebui:/app/backend/data
+    networks:
+      - app       # talks to router via `http://router:3000`; Traefik discovers webui-edge here (Pitfall 12 disambiguated via the label below)
+      - data      # talks to postgres on the internal data plane (openwebui DB created Phase 5 D-B6)
+    healthcheck:
+      # OWUI exposes GET /health publicly (no auth) returning {"status":"OK"}.
+      # Image ships curl. Listens on 8080 inside the container (default).
+      # [VERIFIED: docs.openwebui.com/reference/monitoring/]
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health || exit 1"]
+      interval: 15s
+      timeout: 3s
+      start_period: 30s    # OWUI 0.9 cold-boot can take 15-25s on first DB init (06-RESEARCH §Pattern 5)
+      retries: 5
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: false      # D-E4 spirit — tolerates restart cycles (Phase 5 pattern)
+      router:
+        condition: service_healthy
+        required: false      # OWUI can boot even if router lags briefly; auto-discovery retries on internal cadence
+    # ── Traefik discovery labels (D-C4 attachment; 6 total, ordered for diffability) ──
+    # NEVER add `compress` or `buffering` middleware here — would break SSE on
+    # any future streaming route OWUI proxies (EDGE-04 / Pitfall 4).
+    # NEVER add `ports:` — zero host port mappings (EDGE-03).
+    labels:
+      # Gate: only services with traefik.enable=true are routed (Docker provider
+      # in traefik/traefik.yml runs with exposedByDefault=false).
+      - "traefik.enable=true"
+      # Pitfall 12 — openwebui is on 2 networks (app + data); force Traefik to
+      # use `app` for HTTP traffic. `data` is internal:true and would fail anyway,
+      # but explicit > implicit (matches 06-02's pattern on the router service).
+      - "traefik.docker.network=${COMPOSE_PROJECT_NAME:-local-llms}_app"
+      # webui-edge: Host(`chat.<tailnet>.ts.net`) on the :80 entrypoint;
+      # TLS terminates upstream at Tailscale Serve (D-A2).
+      - "traefik.http.routers.webui-edge.rule=Host(`chat.${TAILNET_HOSTNAME}.ts.net`)"
+      - "traefik.http.routers.webui-edge.entrypoints=web"
+      # D-C4 attachment — webui-basic-auth middleware was declared via Docker
+      # label on the `traefik:` service itself in Plan 06-01 (so ${TRAEFIK_BASIC_AUTH}
+      # could flow via Compose interpolation; file-provider YAML cannot consume
+      # Compose env vars). The `@docker` qualifier targets the Docker provider's
+      # registry where that label lives.
+      - "traefik.http.routers.webui-edge.middlewares=webui-basic-auth@docker"
+      # OWUI listens on 8080 inside the container (default; no PORT env override).
+      - "traefik.http.services.webui-edge.loadbalancer.server.port=8080"
