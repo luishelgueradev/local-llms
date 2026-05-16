@@ -10,7 +10,7 @@ Add the embedding endpoint (`POST /v1/embeddings`) and vLLM (heavy AWQ backend w
 
 **Surface delivered:**
 - **`POST /v1/embeddings`** (OAI-02 + EMBED-01) — OpenAI-compatible embedding endpoint on the existing Fastify router, routed via the registry to either Ollama or vLLM. EMBED-02 passthrough to Ollama Cloud comes in Phase 8.
-- **`vllm/vllm-openai:v0.20.2-cu129-ubuntu2404`** as a new Compose service (Compose `profiles: [vllm]`). CUDA 12.9 image confirmed by host driver `595.97` (Phase 1 preflight state `.preflight-state.json`, line 4) ≥ 555.x requirement. `--gpu-memory-utilization 0.45` + `--max-model-len 8192` + `ipc: host` + `shm_size: 16gb`. Healthcheck `start_period: 600s` (cold start JIT compile + AWQ kernel load).
+- **`vllm/vllm-openai:v0.21.0-cu129 (upgraded from CLAUDE.md's v0.20.2 pin after Phase 7 research — v0.21.0 has explicit Blackwell sm_120 scope for RTX 5060 Ti; see 07-RESEARCH.md Pitfall V-1)`** as a new Compose service (Compose `profiles: [vllm]`). CUDA 12.9 image confirmed by host driver `595.97` (Phase 1 preflight state `.preflight-state.json`, line 4) ≥ 555.x requirement. `--gpu-memory-utilization 0.45` + `--max-model-len 8192` + `ipc: host` + `shm_size: 16gb`. Healthcheck `start_period: 600s` (cold start JIT compile + AWQ kernel load).
 - **`Qwen/Qwen2.5-7B-Instruct-AWQ`** as the vLLM chat backend model (`backend: vllm` in `models.yaml`). ~4.5 GB weights + ~2.5 GB KV cache @ 8192 ctx fits cleanly in vLLM's 0.45 × 16 GB = 7.2 GB share. Tool-calling native (Phase 4 round-trip preserved). HuggingFace cache mounted at `${HOST_DATA_ROOT}/models-hf/` (Phase 1 D-02 layout).
 - **`bge-m3` on Ollama AND `BAAI/bge-m3` on vLLM** — same embedding model on both backends (1024-dim, multilingual, hybrid sparse+dense). Cross-validates dispatch heterogeneity at the dimensions level. Spanish-native (project-relevant). `models.yaml` declares two entries (`bge-m3-ollama`, `bge-m3-vllm`) both with `capability: embeddings`.
 - **`utkuozdemir/nvidia_gpu_exporter:1.3.0`** as a new Compose service. Lightweight (~10MB), wraps `nvidia-smi`. WSL2-friendly (no DCGM runtime needed). Scraped by Prometheus.
@@ -43,7 +43,7 @@ Add the embedding endpoint (`POST /v1/embeddings`) and vLLM (heavy AWQ backend w
 
 ### vLLM backend (BCKND-03)
 
-- **D-A1:** **vLLM image: `vllm/vllm-openai:v0.20.2-cu129-ubuntu2404`** — pinned. Driver `595.97` from `.preflight-state.json` ≥ 555.x → cu129 build is the right pick. No fallback to cu126/cu124 needed.
+- **D-A1:** **vLLM image: `vllm/vllm-openai:v0.21.0-cu129 (upgraded from CLAUDE.md's v0.20.2 pin after Phase 7 research — v0.21.0 has explicit Blackwell sm_120 scope for RTX 5060 Ti; see 07-RESEARCH.md Pitfall V-1)`** — pinned. Driver `595.97` from `.preflight-state.json` ≥ 555.x → cu129 build is the right pick. No fallback to cu126/cu124 needed.
 - **D-A2:** **Model: `Qwen/Qwen2.5-7B-Instruct-AWQ`** as the canonical vLLM chat model. AWQ Marlin kernel (fastest in vLLM as of 2026). Tool-calling native (preserves Phase 4 tool round-trip in this backend too).
 - **D-A3:** **Compose flags:** `--model Qwen/Qwen2.5-7B-Instruct-AWQ --quantization awq_marlin --max-model-len 8192 --gpu-memory-utilization 0.45 --enable-auto-tool-choice --tool-call-parser hermes` (or `qwen2_5` — planner verifies which is canonical for Qwen2.5 in vLLM 0.20.x).
 - **D-A4:** **Compose-level config:** `ipc: host`, `shm_size: 16gb`, `deploy.resources.reservations.devices` (via `x-gpu` anchor). Healthcheck: `curl -fsS http://localhost:8000/health || exit 1` with `start_period: 600s` (JIT compile + AWQ kernel load is slow on first boot).
@@ -129,7 +129,7 @@ Add the embedding endpoint (`POST /v1/embeddings`) and vLLM (heavy AWQ backend w
 - `.planning/REQUIREMENTS.md` — v1 requirement IDs this phase covers: **BCKND-03, OAI-02, EMBED-01, OBS-02, OBS-03, OBS-04, OBS-05** (verify via roadmap-get-phase before planning; ROADMAP Phase 7 line lists). Note: EMBED-02 (Ollama Cloud passthrough) is deferred to Phase 8.
 - `.planning/ROADMAP.md` §"Phase 7" — Goal + 5 Success Criteria.
 - `.planning/STATE.md` — preflight state location, current focus.
-- `CLAUDE.md` — vLLM stack pin verbatim (`vllm/vllm-openai:v0.20.2-cu129-ubuntu2404`), AWQ quant flag (`awq_marlin`), `ipc: host` + `shm_size: 16gb`, `--gpu-memory-utilization 0.45` + `--max-model-len 8192` defaults. WSL2 driver requirement (driver ≥ 555.x for cu129 — preflight confirms 595.97 ≥ 555.x ✓).
+- `CLAUDE.md` — vLLM stack pin verbatim (`vllm/vllm-openai:v0.21.0-cu129 (upgraded from CLAUDE.md's v0.20.2 pin after Phase 7 research — v0.21.0 has explicit Blackwell sm_120 scope for RTX 5060 Ti; see 07-RESEARCH.md Pitfall V-1)`), AWQ quant flag (`awq_marlin`), `ipc: host` + `shm_size: 16gb`, `--gpu-memory-utilization 0.45` + `--max-model-len 8192` defaults. WSL2 driver requirement (driver ≥ 555.x for cu129 — preflight confirms 595.97 ≥ 555.x ✓).
 
 ### Research (READ BEFORE PLANNING — research flag is YES per ROADMAP)
 - `.planning/research/SUMMARY.md` §"Phase 7" — vLLM + embeddings + GPU telemetry rationale, AWQ model fit, KV cache budgeting at `max-model-len × max-num-seqs × dtype`.
@@ -238,7 +238,7 @@ Add the embedding endpoint (`POST /v1/embeddings`) and vLLM (heavy AWQ backend w
 - **vLLM Compose service skeleton (planner refines):**
   ```yaml
   vllm:
-    image: vllm/vllm-openai:v0.20.2-cu129-ubuntu2404
+    image: vllm/vllm-openai:v0.21.0-cu129 (upgraded from CLAUDE.md's v0.20.2 pin after Phase 7 research — v0.21.0 has explicit Blackwell sm_120 scope for RTX 5060 Ti; see 07-RESEARCH.md Pitfall V-1)
     container_name: ${COMPOSE_PROJECT_NAME:-local-llms}-vllm
     profiles: [vllm]
     <<: *gpu
