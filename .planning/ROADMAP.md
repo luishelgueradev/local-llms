@@ -157,10 +157,22 @@ Plans:
   3. A 120s+ generation streamed through Traefik via `curl -N` from outside the host completes successfully without a 502 or stall, with deltas arriving < 1s apart — Traefik's `serversTransport.forwardingTimeouts.responseHeaderTimeout: 0s` and `idleConnTimeout: 0s` are configured and no `compress` middleware sits on `/v1/chat/completions` or `/v1/messages`.
   4. Open WebUI v0.9.0 runs on a separate subdomain (`chat.…`) behind Traefik with `WEBUI_AUTH=False` set from the very first boot plus a Traefik basic-auth middleware gating the unauth UI; Open WebUI uses the shared Postgres server with its own `openwebui` database isolated from `router`.
   5. Open WebUI is configured with a single OpenAI-compatible connection pointing at the router (no `/v1` suffix in the URL); it auto-discovers every available model via `/v1/models`; no OWUI bypass connections to backends exist.
-**Plans:** TBD
-**Research flag:** yes — needs `/gsd-research-phase` to nail down Traefik's SSE/timeout/forwardingTimeouts knobs, the Open WebUI 0.9 connector behavior with the no-`/v1`-suffix quirk, and the basic-auth middleware pattern; PITFALLS Pitfall 4 has multiple sources whose advice differs in detail.
-**UI hint:** yes
-**Phase 5 carry-forward:** CRITICAL Phase 6 follow-up — Traefik MUST add a path-blacklist middleware returning 404 for external `/metrics` requests (Phase 5 puts /metrics in the bearer skip-list on 127.0.0.1:3000; Phase 6 removes the loopback binding). Source: 05-CONTEXT.md D-C5, 05-RESEARCH.md Pitfall 11, TODO comment in router/src/auth/bearer.ts.
+**Plans:** 4 plans
+Plans:
+**Wave 1**
+- [ ] 06-01-PLAN.md — Traefik scaffolding: compose.yml traefik: service + traefik/traefik.yml + traefik/dynamic/middlewares.yml + .env.example mutations (TAILNET_HOSTNAME, OWUI_SECRET_KEY, deprecate TRAEFIK_ACME_EMAIL, refresh TRAEFIK_BASIC_AUTH recipe) (EDGE-01, EDGE-04, EDGE-05; D-A2, D-A4, D-A5, D-B1, D-C4, D-D1, D-D2)
+
+**Wave 2** *(blocked on Wave 1 — shares compose.yml; references metrics-blackhole@file middleware from Plan 01)*
+- [ ] 06-02-PLAN.md — Router compose mutations: remove 127.0.0.1:3000:3000 host port, add edge to networks, add 6 Traefik labels including metrics-blackhole@file middleware attachment; router-dev: keeps host port per Pattern 6 (EDGE-01, EDGE-02, EDGE-03, EDGE-06)
+
+**Wave 3** *(blocked on Wave 2 — shares compose.yml; consumes webui-basic-auth@docker middleware from Plan 01)*
+- [ ] 06-03-PLAN.md — Open WebUI service: ghcr.io/open-webui/open-webui:v0.9.0 with 10-env-var contract (WEBUI_AUTH=False, ENABLE_OLLAMA_API=False, OPENAI_API_BASE_URLS=http://router:3000 no /v1, OWUI_SECRET_KEY pinned), networks [app, data] only, Traefik labels for chat.<tailnet>.ts.net with basic-auth (WEBUI-01..05; D-C1..C8)
+
+**Wave 4** *(blocked on Waves 1–3; live verification + Pitfall 11 fix)*
+- [ ] 06-04-PLAN.md — bin/smoke-test-traefik.sh (12+ assertions covering EDGE-01..06 + WEBUI-01..05 + D-B1/D-B2 + 120s SSE EDGE-06) + bin/smoke-test-router.sh --profile {prod|dev} flag (Pitfall 11) + README §Phase 6 (Tailscale Services prereq + htpasswd recipe + smoke command + EDGE-05/06 evidence) + human-verify checkpoint against live stack
+**Research flag:** yes — `/gsd-research-phase` produced `06-RESEARCH.md` closing 5 open items: Tailscale Services CLI shape (D-A3 confirmation: `tailscale serve --service=svc:<name>` post-admin-console definition), OWUI 0.9 env vars (D-C1..C7 confirmation: plural `OPENAI_API_BASE_URLS`, semicolon separator, `ENABLE_OLLAMA_API` default + persistence), Traefik forwardingTimeouts (D-A2 SSE knobs: `idleConnTimeout: 0s` is the load-bearing override of the 90s default; `responseHeaderTimeout: 0s` is default but pin), `compress` middleware opt-in default in v3.7, path-blacklist idiom recommendation (`ReplacePathRegex` over plugin-blockpath).
+**UI hint:** yes — `06-UI-SPEC.md` produced; ui_surface: third-party-only; one branding-string env (`WEBUI_NAME=local-llms`); no shadcn registry; no custom CSS.
+**Phase 5 carry-forward:** CLOSED in this phase via Plan 06-01 (`metrics-blackhole` middleware definition) + Plan 06-02 (middleware attached to router-edge router). The TODO comment in `router/src/auth/bearer.ts:5-12` is structurally closed when Plan 06-04 smoke proves external `/metrics` → 404 live.
 
 ### Phase 7: Embeddings + vLLM + GPU Telemetry
 **Goal:** Add the embedding endpoint and vLLM (heavy backend with VRAM pre-allocation and JIT compile) to an already-observable stack so vLLM's wins are measurable and the embedding surface lands with full telemetry.
@@ -211,7 +223,7 @@ Plans:
 | 3. Multi-Backend Dispatch — llama.cpp + Registry Hardening | 5/5 | Complete | 2026-05-13 |
 | 4. Anthropic Surface — `/v1/messages`, Tool Calling, Vision | 5/5 | Complete | 2026-05-14 |
 | 5. Postgres + Observability Seam | 6/6 | Complete    | 2026-05-15 |
-| 6. Traefik + TLS + Open WebUI | 0/0 | Not started | - |
+| 6. Traefik + TLS + Open WebUI | 0/4 | Planned | - |
 | 7. Embeddings + vLLM + GPU Telemetry | 0/0 | Not started | - |
 | 8. Ollama Cloud Fallback + Resilience Hardening | 0/0 | Not started | - |
 | 9. Operations Hardening | 0/0 | Not started | - |
@@ -231,9 +243,11 @@ Plans:
 - "Mode: mvp" applies to every phase: each phase ships an end-to-end vertical slice that delivers an observable user-facing capability — not a pile of backend tasks waiting on integration.
 - **Phase 3 plans were revised 2026-05-12** in response to `gsd-plan-checker` blockers — see the Wave block above for the new layout (Wave 1: 03-02 owns models.yaml; Waves 2–5 serialize the rest to avoid file-level collisions on `router/models.yaml` and `router/src/app.ts`).
 - **Phase 5 plans added 2026-05-14** — 4 plans across 4 waves; Wave 2 (Plan 02) is the load-bearing observable slice (metrics + recordOutcome + agent-id); Wave 4 (Plan 04) closes SC2 via the pause-postgres-5s smoke regression gate.
+- **Phase 6 plans added 2026-05-16** — 4 plans across 4 waves; all four waves serialize on compose.yml file ownership (Wave 1 owns traefik: block + .env.example, Wave 2 owns router: mutations, Wave 3 owns openwebui: addition, Wave 4 owns smoke + README). Tailscale Services replaces Let's Encrypt-in-Traefik per 06-CONTEXT D-A2 — third path from EDGE-01's enumeration documented in research.
 
 ---
 *Roadmap created: 2026-05-10*
 *Phase 3 plans added: 2026-05-12*
 *Phase 3 revision 1 applied: 2026-05-12 — wave reorder + Blocker 4 (D-C3) + Warnings 5/6/7*
 *Phase 5 plans added: 2026-05-14*
+*Phase 6 plans added: 2026-05-16*
