@@ -17,6 +17,10 @@
 # Flags:
 #   -m MODEL | --model MODEL    Override model (default: llama3.2:3b-instruct-q4_K_M)
 #   --router-url URL            Override router URL (default: http://127.0.0.1:3000)
+#   --profile prod|dev          Pick the router profile (default: dev, backward compat).
+#                               `dev` keeps host-loopback probes (http://127.0.0.1:3000).
+#                               `prod` routes router probes via `docker compose exec -T router curl ...`
+#                               because Phase 6 (Plan 02) removed the prod router's host port.
 #   -h | --help                 Print usage and exit 0
 #
 # Exit codes:
@@ -45,6 +49,7 @@ readonly PROMPT_STREAM="Write a long detailed story about a dragon."
 # CLI
 MODEL="${DEFAULT_MODEL}"
 ROUTER_URL="${DEFAULT_ROUTER_URL}"
+PROFILE="dev"   # default = dev (backward compat — Phase 2-5 callers do not pass --profile)
 
 usage() {
   cat <<'USAGE'
@@ -52,12 +57,24 @@ Usage: bash bin/smoke-test-router.sh [options]
 
   -m MODEL | --model MODEL      Override model (default: llama3.2:3b-instruct-q4_K_M)
   --router-url URL              Override router URL (default: http://127.0.0.1:3000)
+  --profile prod|dev            Router profile (default: dev).
+                                  dev  — probes via host loopback (http://127.0.0.1:3000;
+                                         router-dev keeps its host port).
+                                  prod — probes via `docker compose exec -T router curl ...`
+                                         because Plan 06-02 removed the prod router's
+                                         host port (Pitfall 11). External-via-Tailscale
+                                         smoke lives in bin/smoke-test-traefik.sh.
   -h | --help                   Print this help and exit 0
 
 Purpose:
   End-to-end Phase 2–5 verification — asserts SC1..SC5 (Phase 2), multi-backend
   dispatch (Phase 3), Anthropic surface + vision (Phase 4), Postgres + Observability (Phase 5).
-  Run after `docker compose up -d --build router`.
+  Run after `docker compose up -d --build router` (dev) or `docker compose up -d` (prod).
+
+  Examples:
+    bash bin/smoke-test-router.sh                    # default — dev profile
+    bash bin/smoke-test-router.sh --profile dev      # explicit
+    bash bin/smoke-test-router.sh --profile prod     # Phase 6 prod path (Pitfall 11 fix)
 
   Exit 0 = all assertions pass.
   Exit 1 = one or more assertions failed; actionable diagnostic printed.
@@ -68,10 +85,73 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     -m|--model)        MODEL="${2:?--model requires an argument}"; shift 2 ;;
     --router-url)      ROUTER_URL="${2:?--router-url requires an argument}"; shift 2 ;;
+    --profile)
+      PROFILE="${2:?--profile requires an argument (prod|dev)}"
+      case "$PROFILE" in
+        prod|dev) ;;
+        *) echo "[smoke-test-router] ERROR: --profile must be 'prod' or 'dev', got: $PROFILE" >&2; exit 1 ;;
+      esac
+      shift 2
+      ;;
     -h|--help)         usage; exit 0 ;;
     *) echo "[smoke-test-router] ERROR: unknown option: $1" >&2; usage >&2; exit 1 ;;
   esac
 done
+
+# Profile-derived dispatch mode (Pitfall 11 fix).
+#   ROUTER_PROBE_MODE=host : curl directly at $ROUTER_URL (dev — router-dev:3000:3000 host port)
+#   ROUTER_PROBE_MODE=exec : curl inside the router container via `docker compose exec -T router curl ...`
+#                            (prod — Plan 06-02 removed the host port)
+if [[ "$PROFILE" == "prod" ]]; then
+  ROUTER_PROBE_MODE="exec"
+  # In exec mode, all router-bound curl calls target localhost INSIDE the router
+  # container. Rewrite ROUTER_URL so each call site's URL is correct unchanged.
+  if [[ "$ROUTER_URL" == "$DEFAULT_ROUTER_URL" ]]; then
+    ROUTER_URL="http://localhost:3000"
+  fi
+else
+  ROUTER_PROBE_MODE="host"
+fi
+
+# router_curl — wrapper used (in `prod` mode) to route curl through the router
+# container. Dev mode is a passthrough. Kept as an explicit helper so any new
+# call site added in future plans can opt in.
+#
+# Usage: router_curl <curl args...>
+# In exec mode, URLs MUST be http://localhost:3000/... (inside-container).
+# The default $ROUTER_URL is rewritten above to the in-container form, so the
+# existing curl call sites that pass "${ROUTER_URL}/..." need no per-call edits.
+router_curl() {
+  if [[ "$ROUTER_PROBE_MODE" == "exec" ]]; then
+    docker compose exec -T "${ROUTER_SVC}" curl "$@"
+  else
+    curl "$@"
+  fi
+}
+
+# In prod mode, install a `curl` shell function that intercepts router-bound
+# invocations (detected by the presence of $ROUTER_URL in the argv) and routes
+# them through `docker compose exec -T router curl ...`. Non-router curls
+# (e.g. probing Ollama directly) pass through to the binary unchanged via
+# `command curl`. The router_curl helper above remains the canonical opt-in
+# path; this shadow function makes the existing ~40 ${ROUTER_URL}/... call
+# sites work in prod mode without per-call rewrites.
+if [[ "$ROUTER_PROBE_MODE" == "exec" ]]; then
+  curl() {
+    local needs_exec=0
+    local arg
+    for arg in "$@"; do
+      case "$arg" in
+        "${ROUTER_URL}"*) needs_exec=1; break ;;
+      esac
+    done
+    if [[ $needs_exec -eq 1 ]]; then
+      docker compose exec -T "${ROUTER_SVC}" curl "$@"
+    else
+      command curl "$@"
+    fi
+  }
+fi
 
 # Locate repo root
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
