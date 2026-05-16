@@ -56,9 +56,13 @@ describe('VLLMOpenAIAdapter — probeLiveness', () => {
     expect(typeof res.latencyMs).toBe('number');
   });
 
-  it('returns { ok: false, error: <message> } when /v1/models returns 500', async () => {
+  it('returns { ok: false, error: <message> } when /v1/models returns 4xx (non-retried)', async () => {
+    // Use 400 not 500 — the OpenAI SDK retries 5xx by default which would push
+    // this test past vitest's 5s default timeout. 400 surfaces immediately as
+    // BadRequestError and exercises the same catch branch (ok=false + error
+    // string), which is the contract we care about for probeLiveness.
     server.use(
-      http.get(`${VLLM_BASE}/models`, () => new HttpResponse('upstream broken', { status: 500 })),
+      http.get(`${VLLM_BASE}/models`, () => new HttpResponse('bad request', { status: 400 })),
     );
     const adapter = makeAdapter();
     const ac = new AbortController();
