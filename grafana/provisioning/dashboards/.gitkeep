@@ -1,0 +1,15 @@
+# Plan 07-05 fills this directory with:
+#   - local-llms.yml  (dashboard provider — declares this dir as a Grafana
+#                      dashboard source)
+#   - local-llms.json (the actual dashboard with VRAM / TTFT / error-rate /
+#                      backend-selection panels per Phase 7 SC4)
+#
+# Until Plan 07-05 lands, this directory holds only this .gitkeep so:
+#   1. git tracks the empty directory;
+#   2. the compose.yml bind-mount source path exists at the dir level
+#      (the local-llms.json file-bind will create an empty file at
+#      `docker compose up` time if Plan 07-05 hasn't landed — Grafana will
+#      then fail to parse the empty JSON, but the datasource provisioned in
+#      ./datasources/datasource.yml will still be live, which is what
+#      Plan 07-02's "datasource alive without dashboard" success criterion
+#      asks for).

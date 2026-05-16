@@ -1,0 +1,19 @@
+# grafana/provisioning/datasources/datasource.yml — Phase 7 (OBS-04 + D-D4)
+# CLOSED R-5: apiVersion 1 is stable across Grafana 10.x → 13.x.
+# uid `prometheus-default` is referenced by the dashboard JSON in Plan 07-05
+# (Pitfall P-1 — pinning the UID prevents "no data" panels when a user creates
+# a same-name datasource via the UI).
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090       # Docker DNS on the `backend` network (Grafana joins backend per D-D6)
+    isDefault: true
+    uid: prometheus-default            # pin UID — dashboard JSON references this (Pitfall P-1)
+    editable: false                    # provisioned datasources should be read-only in UI
+    jsonData:
+      timeInterval: 15s                # matches prometheus.yml global scrape_interval
+      httpMethod: POST
