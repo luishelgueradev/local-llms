@@ -214,7 +214,13 @@ else
   ok "EDGE-04: no 'buffering' middleware in traefik/"
 fi
 
-# 6. EDGE-02: four-network topology preserved.
+# 6. EDGE-02: network topology preserved.
+# Phase 1 D-13 declares four networks: app, backend (internal), data (internal), edge.
+# Phase 6 Plan 05 (D-C6 closure) adds a fifth network: webui-app (internal) —
+# an isolated plane shared ONLY by router + openwebui + traefik so OWUI cannot
+# reach ollama:11434 at TCP level. The smoke accepts BOTH topologies during the
+# Phase 6 → Phase 7 window: the original 4-network shape (legacy) and the
+# 5-network shape (post-06-05). Any other set is a regression.
 NETWORKS_LIST=$(python3 - <<'PY' "$COMPOSE_CFG"
 import sys, yaml
 with open(sys.argv[1]) as f:
@@ -222,11 +228,17 @@ with open(sys.argv[1]) as f:
 print(",".join(sorted((cfg.get("networks") or {}).keys())))
 PY
 )
-if [[ "$NETWORKS_LIST" == "app,backend,data,edge" ]]; then
-  ok "EDGE-02: networks == [app, backend, data, edge]"
-else
-  fail "EDGE-02: networks mismatch (got: ${NETWORKS_LIST}, expected: app,backend,data,edge)"
-fi
+case "$NETWORKS_LIST" in
+  "app,backend,data,edge")
+    ok "EDGE-02: networks == [app, backend, data, edge] (Phase 1 D-13 topology)"
+    ;;
+  "app,backend,data,edge,webui-app")
+    ok "EDGE-02: networks == [app, backend, data, edge, webui-app] (Phase 6 Plan 05 D-C6 topology)"
+    ;;
+  *)
+    fail "EDGE-02: networks mismatch (got: ${NETWORKS_LIST}, expected: app,backend,data,edge OR app,backend,data,edge,webui-app)"
+    ;;
+esac
 
 # ============================================================================
 # Section 2 — Tailscale Services advertisement
@@ -408,6 +420,44 @@ print(json.dumps({
   fi
 
   rm -f "$STREAM_OUT" "$STREAM_TIMING"
+fi
+
+# ============================================================================
+# Section 5 — D-C6 anti-bypass regression gate (Plan 06-05 closes the BLOCKER)
+# ============================================================================
+# Asserts: from inside the openwebui container, http://ollama:11434/api/tags
+# MUST fail (connection refused, host not found, or timeout). PASS = curl exits
+# non-zero. FAIL = curl exits 0 (the regression case — the original BLOCKER
+# evidence from 06-VERIFICATION.md gaps_found[0]).
+#
+# Runs in BOTH --quick AND full modes (single curl, --max-time 3, ~3s wall).
+# Why this matters: D-C6 / ROADMAP SC5 says "no OWUI bypass connections to
+# backends EXIST" (not just "configured"). The pre-fix state had OWUI on the
+# `app` network with ollama; Plan 06-05 moved OWUI to an isolated `webui-app`
+# network so they no longer share a TCP plane. Any regression that re-adds
+# `app` to openwebui's networks list will be caught by this assertion.
+
+section "Section 5 — D-C6 anti-bypass regression gate"
+
+# 16. D-C6: from inside openwebui, http://ollama:11434/api/tags MUST fail.
+if docker compose exec -T openwebui curl --max-time 3 -fsS http://ollama:11434/api/tags >/dev/null 2>&1; then
+  fail "D-C6: OWUI → http://ollama:11434/api/tags SUCCEEDED — bypass route still exists. See 06-VERIFICATION.md gaps_found[0]. Verify openwebui is NOT on the \`app\` network (\`docker inspect ${COMPOSE_PROJECT_NAME:-local-llms}-openwebui --format '{{range \$n,\$c := .NetworkSettings.Networks}}{{\$n}} {{end}}'\`)."
+else
+  ok "D-C6: OWUI → http://ollama:11434/api/tags blocked at network plane (no shared network with ollama)"
+fi
+
+# 17. D-C6 corollary: the openwebui container is NOT on the `app` network.
+# Inspecting the container's NetworkSettings is the structural proof; the
+# curl above is the behavioral proof. Both together close the regression
+# surface — a future operator who re-adds `app` to openwebui without
+# rebuilding the container would still get caught by Assertion 16.
+OWUI_NETS=$(docker inspect --format='{{range $net, $cfg := .NetworkSettings.Networks}}{{$net}} {{end}}' \
+    "${COMPOSE_PROJECT_NAME:-local-llms}-openwebui" 2>/dev/null || true)
+APP_NET="${COMPOSE_PROJECT_NAME:-local-llms}_app"
+if echo "$OWUI_NETS" | grep -qE "(^|[[:space:]])${APP_NET}([[:space:]]|$)"; then
+  fail "D-C6 corollary: openwebui container is on the \`${APP_NET}\` network (should be on \`webui-app\` only). Networks: ${OWUI_NETS}"
+else
+  ok "D-C6 corollary: openwebui container is NOT on \`${APP_NET}\` (networks: ${OWUI_NETS})"
 fi
 
 # ============================================================================
