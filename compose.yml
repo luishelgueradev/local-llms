@@ -348,6 +348,200 @@ services:
       gpu-preflight:
         condition: service_completed_successfully
 
+  # ── nvidia_gpu_exporter (Phase 7 — OBS-03, D-C1..D-C4) ────────────────────
+  # Lightweight Prometheus exporter wrapping `nvidia-smi`. Pin updated from
+  # CONTEXT.md D-C1 (1.3.0) → 1.4.1 per 07-RESEARCH Pitfall G-2 (SIGTERM
+  # handler fix; clean Compose shutdown).
+  #
+  # NOT using the x-gpu anchor. The gpu-exporter image is a static Go binary
+  # (FROM scratch) and the NVIDIA Container Toolkit projection used by the
+  # other GPU services does NOT extend the binary's loader path the same
+  # way. Per the canonical INSTALL.md (07-RESEARCH §R-6 Option B), the
+  # exporter REQUIRES explicit bind-mounts of nvidia-smi + libnvidia-ml.so.1.
+  #
+  # WSL2 host bind-mount source paths (Pitfall G-3 + Rule 3 deviation):
+  # the canonical /usr/bin/nvidia-smi and /usr/lib/x86_64-linux-gnu/libnvidia-ml.so*
+  # paths do NOT exist on this WSL2 host — nvidia-smi + libnvidia-ml.so.1
+  # are projected from Windows into /usr/lib/wsl/lib/. We bind those WSL2
+  # source paths to the container's standard Linux locations so the exporter
+  # finds them at its expected dlopen path. On native-Linux hosts, swap the
+  # source side of these binds to /usr/bin/nvidia-smi and
+  # /usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1 (commented alternatives kept
+  # below for portability).
+  #
+  # Joins `backend` ONLY (D-C2). Prometheus scrapes via Docker DNS at
+  # nvidia_gpu_exporter:9835. No host port; no Traefik label.
+  nvidia_gpu_exporter:
+    image: utkuozdemir/nvidia_gpu_exporter:1.4.1   # [VERIFIED 2026-05-16 — Pitfall G-2 SIGTERM fix; pin update over CONTEXT.md D-C1's 1.3.0]
+    container_name: ${COMPOSE_PROJECT_NAME:-local-llms}-gpu-exporter
+    restart: unless-stopped
+    devices:
+      # R-6 INSTALL.md canonical device paths — present on both WSL2 + native Linux.
+      - /dev/nvidiactl:/dev/nvidiactl
+      - /dev/nvidia0:/dev/nvidia0
+    volumes:
+      # WSL2 host paths (this host) → container standard Linux paths.
+      # `nvidia-smi` is invoked by the exporter via PATH; the container's
+      # /usr/bin/nvidia-smi is the documented dlopen-able location.
+      - /usr/lib/wsl/lib/nvidia-smi:/usr/bin/nvidia-smi:ro
+      - /usr/lib/wsl/lib/libnvidia-ml.so.1:/usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1:ro
+      # Native-Linux alternatives (uncomment and remove the WSL2 entries above
+      # when redeploying on a non-WSL2 host) — Pitfall G-3:
+      # - /usr/bin/nvidia-smi:/usr/bin/nvidia-smi:ro
+      # - /usr/lib/x86_64-linux-gnu/libnvidia-ml.so:/usr/lib/x86_64-linux-gnu/libnvidia-ml.so:ro
+      # - /usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1:/usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1:ro
+    networks:
+      - backend       # Prometheus scrapes nvidia_gpu_exporter:9835 from `backend`
+    healthcheck:
+      # The exporter listens on 9835 by default. Image ships busybox-ish
+      # tooling; wget is present.
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9835/metrics >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+
+  # ── Prometheus (Phase 7 — OBS-02, D-D1..D-D2) ─────────────────────────────
+  # Pin: prom/prometheus:v3.10.0 (CLOSED R-4 — v3 scrape-config schema unchanged
+  # from v2; the CONTEXT.md skeleton is canonical-correct). 15s scrape_interval
+  # + 15d TSDB retention per D-D2.
+  #
+  # Scrapes (declared in prometheus/prometheus.yml — file-mounted):
+  #   - router:3000           /metrics  (Phase 5 surface; PUBLIC_PATHS skip-list)
+  #   - vllm:8000             /metrics  (vLLM native; `up` == 0 until --profile vllm)
+  #   - vllm-embed:8000       /metrics  (same; profile-gated)
+  #   - llamacpp:8080         /metrics  (Phase 3 --metrics flag)
+  #   - nvidia_gpu_exporter:9835 /metrics
+  #   - localhost:9090        Prometheus self-scrape
+  #
+  # Joins `backend` ONLY — internal:true blocks egress, which is correct.
+  # Grafana (on app+backend) reaches it by Docker DNS at prometheus:9090.
+  # NO host port (D-D6) — operator access is via Grafana panels.
+  #
+  # Pitfall P-2 — prom runs as UID 65534 (nobody). README documents:
+  #   sudo chown -R 65534:65534 ${HOST_DATA_ROOT}/prometheus
+  # bin/bootstrap-host.sh pre-creates the directory; the chown is a one-time
+  # operator step before first `docker compose up -d prometheus`.
+  prometheus:
+    image: prom/prometheus:v3.10.0   # [VERIFIED 2026-05-16 — current stable v3 GA; CLOSED R-4]
+    container_name: ${COMPOSE_PROJECT_NAME:-local-llms}-prometheus
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=15d"
+      - "--web.listen-address=:9090"
+      - "--web.enable-lifecycle"
+    volumes:
+      # Declarative scrape config; read-only so an in-container shell cannot
+      # mutate it without `docker cp`. The reload endpoint (--web.enable-lifecycle)
+      # still works because Prometheus reads the file fresh on POST /-/reload.
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # TSDB persistent volume — Phase 1 D-02 layout. UID 65534 ownership
+      # is documented above (Pitfall P-2).
+      - ${HOST_DATA_ROOT:-/srv/local-llms}/prometheus:/prometheus
+    networks:
+      - backend       # scrapes router/vllm/llamacpp/gpu-exporter on this plane
+    healthcheck:
+      # Prometheus exposes /-/ready when it has loaded the WAL and is serving
+      # queries. Image is `prom/prometheus` (busybox base — wget is available).
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9090/-/ready >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 3s
+      start_period: 30s
+      retries: 5
+
+  # ── Grafana (Phase 7 — OBS-04, D-D3..D-D8) ────────────────────────────────
+  # Pin: grafana/grafana-oss:12.4.3 — UPDATED from CONTEXT.md D-D3's stale
+  # 11.x suggestion per 07-RESEARCH Pitfall G-1 (11.x is ~14 months old as of
+  # 2026-05; provisioning schema is identical 11.x → 12.x → 13.x so no migration
+  # work). 12.4.3 is current 12-stable with the better Prometheus 3.x datasource
+  # plugin.
+  #
+  # Auth posture (D-D5):
+  #   - GF_AUTH_ANONYMOUS_ENABLED=false   (no anonymous dashboards)
+  #   - GF_AUTH_BASIC_ENABLED=true        (Grafana admin user)
+  #   - GF_USERS_ALLOW_SIGN_UP=false      (no self-registration)
+  #   - admin password from .env via GRAFANA_ADMIN_PASSWORD (Plan 07-01 added)
+  # Edge gate at Traefik via webui-basic-auth@docker — REUSE Phase 6 credential
+  # per D-D8 (single operator credential surface). Two layers (Traefik basic-auth
+  # at edge + Grafana admin user inside) is fine for a single-operator stack.
+  #
+  # Provisioning (D-D4): datasources/datasource.yml provisions the Prometheus
+  # datasource at boot with uid `prometheus-default` (Pitfall P-1 — dashboard JSON
+  # in Plan 07-05 references this UID). The dashboards/local-llms.json file is
+  # bind-mounted NOW so Plan 07-05 only needs to commit the JSON; Grafana boots
+  # cleanly with no dashboard yet (just the datasource), which is expected.
+  #
+  # Networks (D-D6): `app` (Traefik discovery — Pitfall 12 disambiguation via
+  # the docker.network label below) + `backend` (Docker DNS to prometheus:9090).
+  # NOT on `edge` (Traefik routes from edge → app for us).
+  #
+  # Tailscale Serve mapping for svc:grafana is a deferred operator step (third
+  # hostname after router + chat from Phase 6). Until then, Grafana reachable
+  # via 127.0.0.1:80 + Host: grafana.<tn>.ts.net header per Phase 6 D-A4 LAN
+  # bypass pattern (same as router-edge + webui-edge in Plan 06-02 / 06-03).
+  grafana:
+    image: grafana/grafana-oss:12.4.3   # [VERIFIED 2026-05-16 — Pitfall G-1; pin update over CONTEXT.md D-D3's stale 11.x]
+    container_name: ${COMPOSE_PROJECT_NAME:-local-llms}-grafana
+    restart: unless-stopped
+    environment:
+      # D-D5 — admin password from .env (Plan 07-01 added GRAFANA_ADMIN_PASSWORD)
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+      - GF_AUTH_BASIC_ENABLED=true
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_INSTALL_PLUGINS=                # explicitly empty — no third-party plugins
+      - GF_PATHS_PROVISIONING=/etc/grafana/provisioning
+    volumes:
+      # Grafana internal state (provisioned-dashboard clones, internal SQLite/
+      # session store, plugin cache). Phase 1 D-02 layout — plain bind, not
+      # named volume. bin/bootstrap-host.sh pre-creates the directory.
+      - ${HOST_DATA_ROOT:-/srv/local-llms}/grafana:/var/lib/grafana
+      # Declarative provisioning — read-only. Source of truth lives in git
+      # under grafana/provisioning/. Operator UI edits clone to Grafana's
+      # internal DB; reset = `docker compose down -v && up -d`.
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      # Dashboard JSON bind-mount — Plan 07-05 fills this file. Declared NOW
+      # so Plan 07-05 only commits the JSON; Grafana boots happily with the
+      # datasource alive and no dashboard until the JSON lands.
+      - ./grafana/provisioning/dashboards/local-llms.json:/etc/grafana/dashboards/local-llms.json:ro
+    networks:
+      - app          # D-D6 — Traefik discovery; Pitfall 12 disambiguation label below
+      - backend      # D-D6 — Docker DNS to prometheus:9090 for queries
+    healthcheck:
+      # Grafana exposes /api/health returning {"database":"ok","version":"...","commit":"..."}.
+      # Image ships wget.
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 3s
+      start_period: 30s
+      retries: 5
+    labels:
+      # Same Docker-provider attachment pattern as router-edge + webui-edge
+      # (Plan 06-02 / 06-03). Pitfall 12 disambiguation: grafana is on two
+      # networks (app + backend); pin Traefik to the `app` plane for HTTP routing.
+      - "traefik.enable=true"
+      - "traefik.docker.network=${COMPOSE_PROJECT_NAME:-local-llms}_app"
+      # D-D7 — Host(`grafana.<tailnet>.ts.net`) on the :80 entrypoint;
+      # TLS terminates upstream at Tailscale Serve (Phase 6 D-A2).
+      - "traefik.http.routers.grafana-edge.rule=Host(`grafana.${TAILNET_HOSTNAME}.ts.net`)"
+      - "traefik.http.routers.grafana-edge.entrypoints=web"
+      # D-D8 — REUSE Phase 6 webui-basic-auth credential (declared via Docker
+      # label on the traefik: service in Plan 06-01). Single operator credential
+      # surface across all three edge hostnames.
+      - "traefik.http.routers.grafana-edge.middlewares=webui-basic-auth@docker"
+      # Grafana listens on 3000 inside the container (default).
+      - "traefik.http.services.grafana-edge.loadbalancer.server.port=3000"
+    depends_on:
+      # Grafana datasource provisioning queries prometheus:9090 at boot. Boot
+      # AFTER prometheus is healthy so the first dashboard load doesn't get a
+      # transient connection-refused. required: false keeps Grafana tolerant
+      # of restart cycles (Phase 5 / Phase 6 pattern).
+      prometheus:
+        condition: service_healthy
+        required: false
+
   # ── Router (Phase 2 — D-A1, D-A4, ROUTE-01..ROUTE-08) ──────────────────────
   # The single externally-reachable model surface (localhost-only until Phase 6
   # puts Traefik in front). Joins app + backend; D-13 networks unchanged.
