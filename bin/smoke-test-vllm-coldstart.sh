@@ -151,8 +151,9 @@ if ! docker info >/dev/null 2>&1; then
   exit 1
 fi
 
-# jq + curl required
-for tool in jq curl; do
+# curl + python3 required (python3 used for JSON parsing in lieu of jq, which
+# is not on every Ubuntu/WSL2 host by default; python3 IS).
+for tool in curl python3; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     log_err "${tool} not found on host PATH (used to validate response)"
     exit 1
@@ -291,15 +292,27 @@ if [ "$HTTP_CODE" != "200" ]; then
   exit 4
 fi
 
-if ! jq -e '.choices[0].message.content | length > 0' "${RESP_FILE}" >/dev/null 2>&1; then
-  log_err "Chat response had empty content"
+if ! python3 -c '
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+    c = d["choices"][0]["message"]["content"]
+    sys.exit(0 if isinstance(c, str) and len(c) > 0 else 1)
+except Exception:
+    sys.exit(2)
+' "${RESP_FILE}" >/dev/null 2>&1; then
+  log_err "Chat response had empty / malformed content"
   cat "${RESP_FILE}" | sed 's/^/[smoke-vllm] (body) /' || true
   rm -f "${RESP_FILE}"
   log_err "Exit 4: chat-request semantic failure (escalate to VLLM_QUANT_OVERRIDE=awq)"
   exit 4
 fi
 
-CONTENT=$(jq -r '.choices[0].message.content' "${RESP_FILE}")
+CONTENT=$(python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+print(d["choices"][0]["message"]["content"])
+' "${RESP_FILE}")
 log "✓ Chat OK. Response content: $(echo "${CONTENT}" | head -c 120)"
 rm -f "${RESP_FILE}"
 
