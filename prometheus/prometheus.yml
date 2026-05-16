@@ -1,0 +1,38 @@
+# prometheus/prometheus.yml — Phase 7 (OBS-02 + D-D2)
+# CLOSED R-4: Prometheus v3.10 schema unchanged from v2 (07-RESEARCH §R-4).
+# Targets are Docker DNS names on the `backend` network. `up{job="vllm"} == 0`
+# until `docker compose --profile vllm up -d` is active — that is EXPECTED behavior.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: router
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['router:3000']
+        labels: {service: 'router', component: 'edge-router'}
+
+  - job_name: vllm
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['vllm:8000', 'vllm-embed:8000']
+        labels: {service: 'vllm', component: 'inference'}
+
+  - job_name: llamacpp
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['llamacpp:8080']
+        labels: {service: 'llamacpp', component: 'inference'}
+
+  - job_name: gpu
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['nvidia_gpu_exporter:9835']
+        labels: {service: 'nvidia_gpu_exporter', component: 'gpu'}
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']
+        labels: {service: 'prometheus', component: 'observability'}
