@@ -655,6 +655,176 @@ To re-run `01-init.sql` from scratch (DESTRUCTIVE — wipes ALL data): `docker c
 - **`/metrics` is unauth on loopback.** Phase 6 (Traefik) MUST add a path-matcher middleware returning 404 for external `/metrics` requests — flagged as a Phase 6 CRITICAL follow-up in `.planning/phases/05-postgres-observability-seam/05-CONTEXT.md` §Deferred.
 - **Backups are on-host.** Phase 9 (OPS-02) adds an off-host backup destination. Until then, a host disk failure loses both the live data and the backups.
 
+## Phase 6 — Traefik + TLS + Open WebUI
+
+Phase 6 puts a TLS edge in front of the router and adds Open WebUI as a chat surface.
+TLS terminates at **Tailscale Serve** (not Let's Encrypt-in-Traefik); Traefik handles
+HTTP routing on `127.0.0.1:80` and forwards to the router (`router.<tailnet>.ts.net`) and
+Open WebUI (`chat.<tailnet>.ts.net`). The chat surface is gated by Traefik basic-auth.
+
+### Prereq 1 — Define Tailscale Services in the admin console (one-time)
+
+The 2026 `--service=svc:foo` model requires admin-console-defined services
+BEFORE the host can advertise them. The CLI does NOT auto-create services.
+
+1. Navigate to <https://login.tailscale.com/admin> → **Services** → **Advertise** → **Define a Service**.
+2. Define a service named `router` with endpoint `tcp:443`.
+3. Define a second service named `chat` with endpoint `tcp:443`.
+4. If your tailnet has approval policy enabled: after step 5 below, return here and approve the host as the advertising node for both services.
+
+### Prereq 2 — Advertise from the host (one-time, after admin-console step)
+
+```bash
+sudo tailscale serve --service=svc:router --https=443 127.0.0.1:80
+sudo tailscale serve --service=svc:chat   --https=443 127.0.0.1:80
+tailscale serve status
+```
+
+`tailscale serve status` should list both `svc:router` and `svc:chat` as advertised.
+The certs are auto-provisioned by Tailscale; no Let's Encrypt configuration is needed
+inside Traefik.
+
+> **Pitfall.** Running `tailscale serve --service=svc:router ...` BEFORE the admin-console
+> step fails with "service not advertised". This is by design — Tailscale Services are NOT
+> auto-created from the CLI.
+
+### Prereq 3 — Populate `.env` with Phase 6 values
+
+```bash
+# Discover your tailnet hostname:
+tailscale status --json | jq -r '.MagicDNSSuffix' | sed 's/\.$//' | sed 's/\.ts\.net$//'
+
+# Generate OWUI signing key (pin once — do NOT rotate):
+openssl rand -hex 32
+
+# Generate the Traefik basic-auth hash for chat.<tailnet>.ts.net:
+htpasswd -nB admin
+# Paste the output VERBATIM (single $ signs, no doubling) into TRAEFIK_BASIC_AUTH.
+# (Empirical correction — Plan 06-01 verified Compose interpolation does NOT
+# re-interpolate substituted env-var values, so doubling $ to $$ is WRONG for
+# the .env→Compose-label path. Older recipes that recommended sed-doubling
+# are out-of-date for this codebase.)
+```
+
+Fill `.env` with:
+
+- `TAILNET_HOSTNAME=<your-tailnet>` — first segment of `*.ts.net` (e.g. `tailtest`).
+- `OWUI_SECRET_KEY=<openssl rand -hex 32>` — pinned forever; rotating it invalidates
+  every OWUI session and corrupts at-rest-encrypted DB fields. Backups depend on it.
+- `TRAEFIK_BASIC_AUTH=admin:$2y$05$...` — `htpasswd -nB admin` output, verbatim.
+- `TRAEFIK_BASIC_AUTH_USER=admin` — plain username (smoke-only — used by
+  `bin/smoke-test-traefik.sh` to exercise the basic-auth gate).
+- `TRAEFIK_BASIC_AUTH_PASS_PLAIN=<the password you typed into htpasswd>` — plain
+  password (smoke-only). MUST match the hash above. Rotate in lockstep.
+
+### Prereq 4 — OWUI first-boot warning (IRREVERSIBLE)
+
+`WEBUI_AUTH=False` is the Phase 6 stance — OWUI does not show a login page; access
+is gated entirely by Traefik basic-auth at the edge. **Open WebUI persists this stance
+in its database on first boot.** Once any user exists in the `openwebui.user` table
+(which happens on the first boot with `WEBUI_AUTH=True`), you **cannot** flip the
+flag back to `False` — OWUI will refuse to start with a "WEBUI_AUTH cannot be disabled
+after users exist" error.
+
+The Phase 5 `postgres/initdb/01-init.sql` creates the `openwebui` DB empty, so the
+precondition holds at first boot. **DO NOT boot OWUI with `WEBUI_AUTH=True` "just to test".**
+
+Recovery (DESTRUCTIVE — wipes ALL OWUI history):
+
+```bash
+docker compose down openwebui
+docker compose exec postgres psql -U app -c \
+  'DROP DATABASE openwebui; CREATE DATABASE openwebui OWNER app;'
+sudo rm -rf "${HOST_DATA_ROOT:-/srv/local-llms}/openwebui/"
+# Then re-bring-up with WEBUI_AUTH=False:
+docker compose up -d openwebui
+```
+
+### Bring it up
+
+```bash
+docker compose up -d
+# Wait ~60s for healthchecks:
+docker compose ps --format '{{.Name}} {{.Health}}'
+```
+
+Every long-running service should show `healthy` within 60s
+(`gpu-preflight` is a one-shot and exits 0 by design).
+
+### Smoke test
+
+```bash
+# Full suite (~3 min including the 120s+ SSE test for EDGE-06):
+bash bin/smoke-test-traefik.sh
+
+# Quick mode (~15s, skips the 120s SSE — useful for tight iteration):
+bash bin/smoke-test-traefik.sh --quick
+```
+
+The script asserts 16 gates across all 11 Phase 6 requirements (EDGE-01..06,
+WEBUI-01..05) plus D-B1/D-B2. Expected output ends with `PASS=N FAIL=0`; exit code 0.
+
+If the script exits 2 with "required env var ... is not set", populate the missing
+variable in `.env` (Prereq 3 above). If a live assertion fails, the diagnostic line
+points at the specific subsystem (Tailscale, Traefik labels, OWUI auto-discovery, etc.).
+
+### Manual evidence — EDGE-05 (HTTP→HTTPS redirect at Tailscale Serve)
+
+```bash
+# Plain HTTP at *.ts.net is refused by Tailscale Serve; expect 308/307/302/301:
+curl -i "http://router.${TAILNET_HOSTNAME}.ts.net/healthz"
+# Expected first line: HTTP/1.1 308 Permanent Redirect (or 301/302/307)
+# Expected: Location: https://router.<tailnet>.ts.net/healthz
+```
+
+### Manual evidence — EDGE-06 (120s+ SSE through Tailscale + Traefik)
+
+The big one. Proves Plan 06-01's `idleConnTimeout: 0s` knob in `traefik/traefik.yml`
+overrides Traefik's 90s default (which would otherwise 502 long generations):
+
+```bash
+curl -N --max-time 180 \
+  -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"llama3.2:3b-instruct-q4_K_M","messages":[{"role":"user","content":"count to 200 very slowly"}],"stream":true,"max_tokens":1200}' \
+  "https://router.${TAILNET_HOSTNAME}.ts.net/v1/chat/completions"
+```
+
+Expected: SSE deltas arrive < 1s apart throughout; total wall-clock > 120s;
+terminates with `data: [DONE]`; NO `HTTP/2 502` or `HTTP/1.1 502` frames.
+
+### Dev mode — bypass Tailscale + Traefik
+
+For tight router-code iteration, the `--profile dev` shortcut brings up `router-dev`
+with its host port (`127.0.0.1:3000`) preserved:
+
+```bash
+docker compose --profile dev up router-dev
+# Direct host loopback (no Tailscale, no Traefik):
+curl -fsS http://127.0.0.1:3000/healthz
+# Phase 2-5 smoke continues to work unchanged under --profile dev:
+bash bin/smoke-test-router.sh --profile dev
+# For Phase 6 prod path through the router container (Pitfall 11 fix):
+bash bin/smoke-test-router.sh --profile prod
+```
+
+### `/metrics` — external 404/401, internal Prometheus
+
+Phase 5's `/metrics` Prometheus endpoint is now blocked at the edge by Traefik's
+`metrics-blackhole` middleware (D-B1). Phase 7's Prometheus must scrape it via
+the `app` Docker network, NOT through Traefik:
+
+```bash
+# External: Traefik rewrites /metrics → /__metrics_blocked__; router 404s the path
+# (or 401s if no bearer is presented — both prove no metrics body leaks externally):
+curl -i "https://router.${TAILNET_HOSTNAME}.ts.net/metrics"
+# Expected: HTTP/1.1 401 OR HTTP/1.1 404
+
+# Internal (Phase 7 Prometheus scrape path):
+docker compose exec -T traefik wget -qO- http://router:3000/metrics | head -5
+# Expected: # HELP process_cpu_user_seconds_total ...
+```
+
 ## Anti-patterns rejected by this stack
 
 - `:latest` image tags anywhere — every image pinned to a specific tag.
