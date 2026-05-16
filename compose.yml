@@ -46,6 +46,12 @@ networks:
   data:
     internal: true
     # Router/webui ↔ postgres/valkey (Phase 5 attaches Postgres; Phase 8 Valkey).
+  webui-app:
+    internal: true
+    # Phase 6 Plan 05 (D-C6 closure per 06-VERIFICATION.md gaps_found[0] OPTION A):
+    # Isolated plane shared ONLY by router + openwebui + traefik. Ollama is NOT a member
+    # (preserves Phase 1 D-13 egress-via-app for `ollama pull`). OWUI on [data, webui-app];
+    # ollama on [app, backend]; intersection is empty → no TCP route OWUI → ollama:11434.
 
 services:
 
@@ -238,6 +244,7 @@ services:
       - backend   # talks to ollama (and Phase 3+ runtimes)
       - data      # Phase 5 (D-E1) — talks to postgres on the internal data plane
       - edge      # Phase 6 (06-02 EDGE-02 / Phase 1 D-13 / ROADMAP SC2) — router is the only service on all four
+      - webui-app # Phase 6 Plan 05 (D-C6 closure): the network OWUI uses to reach router; ollama not a member.
     volumes:
       # Bind-mount the registry so fs.watch (plan 02-05) sees host edits —
       # RESEARCH Pitfall 7. Named volumes are unreliable for fs.watch across drivers.
@@ -476,8 +483,9 @@ services:
       # Dynamic config directory (file provider; watched live).
       - ./traefik/dynamic:/etc/traefik/dynamic:ro
     networks:
-      - edge    # public-facing membership (host port publish lives here)
-      - app     # to reach router + openwebui by Docker DNS (Pitfall 12 picks `app` explicitly via providers.docker.network in traefik.yml)
+      - edge       # public-facing membership (host port publish lives here)
+      - app        # to reach router by Docker DNS (router stays on app; Pitfall 12 picks `app` explicitly via providers.docker.network in traefik.yml)
+      - webui-app  # Phase 6 Plan 05 (D-C6 closure): to reach openwebui (no longer on `app`); openwebui's traefik.docker.network label points here.
     healthcheck:
       # Traefik exposes /ping only when api is enabled — but api is disabled
       # (D-D1). A bare HTTP probe on :80 returns 404 when no routers are
@@ -567,8 +575,8 @@ services:
       # D-C8 / Phase 1 D-02 layout — plain bind, NOT a named volume.
       - ${HOST_DATA_ROOT:-/srv/local-llms}/openwebui:/app/backend/data
     networks:
-      - app       # talks to router via `http://router:3000`; Traefik discovers webui-edge here (Pitfall 12 disambiguated via the label below)
-      - data      # talks to postgres on the internal data plane (openwebui DB created Phase 5 D-B6)
+      - webui-app  # Phase 6 Plan 05 (D-C6 closure): replaces `app` — OWUI no longer shares a network with ollama; D-C6 satisfied at the TCP plane.
+      - data       # talks to postgres on the internal data plane (openwebui DB created Phase 5 D-B6)
     healthcheck:
       # OWUI exposes GET /health publicly (no auth) returning {"status":"OK"}.
       # Image ships curl. Listens on 8080 inside the container (default).
@@ -593,10 +601,12 @@ services:
       # Gate: only services with traefik.enable=true are routed (Docker provider
       # in traefik/traefik.yml runs with exposedByDefault=false).
       - "traefik.enable=true"
-      # Pitfall 12 — openwebui is on 2 networks (app + data); force Traefik to
-      # use `app` for HTTP traffic. `data` is internal:true and would fail anyway,
-      # but explicit > implicit (matches 06-02's pattern on the router service).
-      - "traefik.docker.network=${COMPOSE_PROJECT_NAME:-local-llms}_app"
+      # Pitfall 12 — openwebui is on 2 networks (webui-app + data); force Traefik
+      # to use `webui-app` for HTTP traffic — OWUI is no longer on `app` after
+      # Plan 06-05's D-C6 closure (06-VERIFICATION.md gaps_found[0] OPTION A).
+      # `data` is internal:true and would fail anyway. Traefik joins `webui-app`
+      # in this plan to keep webui-edge discovery alive on the new shared plane.
+      - "traefik.docker.network=${COMPOSE_PROJECT_NAME:-local-llms}_webui-app"
       # webui-edge: Host(`chat.<tailnet>.ts.net`) on the :80 entrypoint;
       # TLS terminates upstream at Tailscale Serve (D-A2).
       - "traefik.http.routers.webui-edge.rule=Host(`chat.${TAILNET_HOSTNAME}.ts.net`)"
