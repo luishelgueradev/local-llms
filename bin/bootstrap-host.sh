@@ -45,6 +45,13 @@ DIRS=(
   # torch.compile step (07-00-SUMMARY.md Wave 0 evidence) is amortized
   # across cold-starts instead of being re-paid every restart.
   "${HOST_DATA_ROOT}/vllm-compile-cache"
+  # Phase 7 (Plan 07-02) — observability state dirs. Both are bind-mounted by
+  # the prometheus: and grafana: services for persistent TSDB / Grafana state.
+  # Pre-create them here so the bind-mount sources exist on a fresh host AND
+  # have the right ownership (Pitfall P-2 — prom runs as uid 65534; chown
+  # handled in the targeted loop below).
+  "${HOST_DATA_ROOT}/prometheus"
+  "${HOST_DATA_ROOT}/grafana"
 )
 
 # Try without sudo first; fall back to sudo if the directory is not writable.
@@ -67,6 +74,8 @@ echo "  ${HOST_DATA_ROOT}/valkey"
 echo "  ${HOST_DATA_ROOT}/traefik/acme"
 echo "  ${HOST_DATA_ROOT}/traefik/logs"
 echo "  ${HOST_DATA_ROOT}/vllm-compile-cache"
+echo "  ${HOST_DATA_ROOT}/prometheus"
+echo "  ${HOST_DATA_ROOT}/grafana"
 
 # ── Set ownership to the invoking user (targeted — Phase 5 guard active) ─────
 #
@@ -88,7 +97,8 @@ for dir in \
   "${HOST_DATA_ROOT}/models-hf" \
   "${HOST_DATA_ROOT}/valkey" \
   "${HOST_DATA_ROOT}/traefik" \
-  "${HOST_DATA_ROOT}/vllm-compile-cache"; do
+  "${HOST_DATA_ROOT}/vllm-compile-cache" \
+  "${HOST_DATA_ROOT}/grafana"; do
   if [ -d "$dir" ]; then
     dir_uid=$(stat -c '%u' "$dir" 2>/dev/null || echo "0")
     if [ "$dir_uid" != "$(id -u)" ]; then
@@ -108,6 +118,14 @@ sudo chown 70:70 "${HOST_DATA_ROOT}/postgres-data" 2>/dev/null \
 sudo chown 70:70 "${HOST_DATA_ROOT}/postgres-backups" 2>/dev/null \
   && echo "[bootstrap]   chown 70:70 ${HOST_DATA_ROOT}/postgres-backups" \
   || echo "[bootstrap]   chown 70:70 ${HOST_DATA_ROOT}/postgres-backups — skipped (may not exist yet)"
+
+# Phase 7 Plan 07-02 — Prometheus dir: owned by uid 65534 (prom/prometheus
+# runs as `nobody`). Pre-set ownership so the TSDB write on first `compose up`
+# does not fail with "opening storage failed: permission denied" (Pitfall P-2).
+# Same pattern as the postgres 70:70 chown above (Phase 5 idiom).
+sudo chown 65534:65534 "${HOST_DATA_ROOT}/prometheus" 2>/dev/null \
+  && echo "[bootstrap]   chown 65534:65534 ${HOST_DATA_ROOT}/prometheus" \
+  || echo "[bootstrap]   chown 65534:65534 ${HOST_DATA_ROOT}/prometheus — skipped (may not exist yet)"
 
 # ── Copy .env.example → .env if missing (D-14) ───────────────────────────────
 if [ ! -f "$REPO_ROOT/.env" ]; then
