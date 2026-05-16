@@ -40,6 +40,11 @@ DIRS=(
   "${HOST_DATA_ROOT}/valkey"
   "${HOST_DATA_ROOT}/traefik/acme"
   "${HOST_DATA_ROOT}/traefik/logs"
+  # Phase 7 (Plan 07-01) — vLLM torch.compile AOT cache. Bind-mounted at
+  # /root/.cache/vllm in the vllm: and vllm-embed: services so the 264s
+  # torch.compile step (07-00-SUMMARY.md Wave 0 evidence) is amortized
+  # across cold-starts instead of being re-paid every restart.
+  "${HOST_DATA_ROOT}/vllm-compile-cache"
 )
 
 # Try without sudo first; fall back to sudo if the directory is not writable.
@@ -61,6 +66,7 @@ echo "  ${HOST_DATA_ROOT}/postgres-backups"
 echo "  ${HOST_DATA_ROOT}/valkey"
 echo "  ${HOST_DATA_ROOT}/traefik/acme"
 echo "  ${HOST_DATA_ROOT}/traefik/logs"
+echo "  ${HOST_DATA_ROOT}/vllm-compile-cache"
 
 # ── Set ownership to the invoking user (targeted — Phase 5 guard active) ─────
 #
@@ -81,7 +87,8 @@ for dir in \
   "${HOST_DATA_ROOT}/models-gguf" \
   "${HOST_DATA_ROOT}/models-hf" \
   "${HOST_DATA_ROOT}/valkey" \
-  "${HOST_DATA_ROOT}/traefik"; do
+  "${HOST_DATA_ROOT}/traefik" \
+  "${HOST_DATA_ROOT}/vllm-compile-cache"; do
   if [ -d "$dir" ]; then
     dir_uid=$(stat -c '%u' "$dir" 2>/dev/null || echo "0")
     if [ "$dir_uid" != "$(id -u)" ]; then

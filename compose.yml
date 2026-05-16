@@ -211,6 +211,143 @@ services:
       gpu-preflight:
         condition: service_completed_successfully
 
+  # ── vLLM (chat, Phase 7 — BCKND-03, D-A1..D-A8) ──────────────────────────────
+  # Pinned to v0.21.0-cu129 per 07-CONTEXT.md D-A1 (upgraded from CLAUDE.md's older
+  # v0.20.2 pin). Driver 595.97 ≥ 555.x for cu129. Wave 0 smoke (07-00-SUMMARY.md)
+  # empirically resolved Pitfall V-1 (sm_120 Blackwell kernel compat): the locked
+  # AWQ Marlin path WORKS on RTX 5060 Ti. **OUTCOME: locked** — no fallback ladder
+  # triggered (no --quantization=awq drop; no VLLM_USE_TRITON_AWQ=1).
+  #
+  # Wave 0 also surfaced Pitfall V-2 empirical floor: first-boot cold-start on
+  # this host (WSL2 + EXT4) is ~1000-1200s. The 600s in 07-CONTEXT D-A4 is
+  # OVERRIDDEN to 1200s here per the Wave 0 directive in 07-00-SUMMARY.md
+  # §"Implications for downstream plans" item 2. The 264s torch.compile cost is
+  # amortized across cold-starts via the vllm-compile-cache bind-mount (Wave 0
+  # directive item 3).
+  #
+  # Profile-gated `[vllm]` (D-A5) — default `docker compose up -d` does NOT
+  # start this; `docker compose --profile vllm up -d vllm vllm-embed` does.
+  # Joins `backend` (router data plane) + `app` (HF cache pull egress to
+  # huggingface.co). NO host port (D-A6 spirit; router-only surface).
+  vllm:
+    image: vllm/vllm-openai:v0.21.0-cu129   # [VERIFIED 2026-05-16 — Wave 0 OUTCOME: locked; Pitfall V-1 RESOLVED]
+    container_name: ${COMPOSE_PROJECT_NAME:-local-llms}-vllm
+    profiles: [vllm]
+    <<: *gpu
+    restart: unless-stopped
+    ipc: host           # D-A4 — required for vLLM's NCCL + shared memory between worker procs
+    shm_size: 16gb      # D-A4 — same rationale
+    entrypoint: ["/usr/local/bin/gpu-init-libcuda.sh"]
+    command:
+      - "python3"
+      - "-m"
+      - "vllm.entrypoints.openai.api_server"
+      - "--model=Qwen/Qwen2.5-7B-Instruct-AWQ"
+      - "--quantization=awq_marlin"            # Wave 0 OUTCOME: locked — Marlin path proven on sm_120 (07-00-SUMMARY.md)
+      - "--max-model-len=8192"
+      - "--gpu-memory-utilization=0.45"
+      - "--enable-auto-tool-choice"
+      - "--tool-call-parser=hermes"            # CLOSED R-2: hermes is canonical for Qwen2.5-Instruct per docs.vllm.ai
+      - "--served-model-name=Qwen/Qwen2.5-7B-Instruct-AWQ"
+      - "--host=0.0.0.0"
+      - "--port=8000"
+    environment:
+      # Defensive — Pitfall V-1 fallback B baseline. vLLM auto-selected FA2 in
+      # Wave 0 smoke anyway; setting it explicitly is harmless and keeps Plan
+      # 07-01 forward-compatible if a future image update changes defaults.
+      - VLLM_FLASH_ATTN_VERSION=2
+      # HF cache pinning (D-A7) — both env vars point at the same bind-mounted dir
+      - HF_HOME=/root/.cache/huggingface
+      - HF_HUB_CACHE=/root/.cache/huggingface
+      # Optional HF token — empty default OK; Qwen2.5-7B-AWQ + bge-m3 are public
+      - HUGGINGFACE_HUB_TOKEN=${HUGGINGFACE_HUB_TOKEN:-}
+    volumes:
+      # HF model cache (Phase 1 D-02 layout pre-created the directory)
+      - ${HOST_DATA_ROOT:-/srv/local-llms}/models-hf:/root/.cache/huggingface
+      # torch.compile AOT cache (Wave 0 directive — amortizes the 264s compile
+      # cost across cold-starts; bin/bootstrap-host.sh pre-creates the dir)
+      - ${HOST_DATA_ROOT:-/srv/local-llms}/vllm-compile-cache:/root/.cache/vllm
+      # GPU init wrapper (libcuda symlink for WSL2 / Docker Desktop — Phase 1
+      # pattern shared by ollama + llamacpp services above)
+      - ./bin/gpu-init-libcuda.sh:/usr/local/bin/gpu-init-libcuda.sh:ro
+    networks:
+      - backend         # data plane to router (internal:true blocks egress; HF pull goes via `app`)
+      - app             # HF cache pulls from huggingface.co (egress)
+    healthcheck:
+      # vLLM exposes /health returning 200 when model loaded & ready.
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 1200s   # Wave 0 override — empirical cold-start floor on this host
+                            # is ~1000-1200s (07-00-SUMMARY.md). DO NOT reduce.
+      retries: 10
+    depends_on:
+      # D-04 pattern — same as ollama / llamacpp: GPU preflight must pass first.
+      gpu-preflight:
+        condition: service_completed_successfully
+
+  # ── vLLM (embed, Phase 7 — D-B2, D-B5(a)) ────────────────────────────────────
+  # Separate vLLM process serving ONLY BAAI/bge-m3. CLOSED R-1: vLLM 0.21.x
+  # cannot serve generation + pooling in one process — runner mode is a
+  # process-wide choice. So embeddings on vLLM = a second container.
+  #
+  # Same locked image as the chat service. `--runner=pooling` (the 0.21.x
+  # canonical flag — NOT --task) + `--hf-overrides` selecting the
+  # BgeM3EmbeddingModel architecture (required for sparse/colbert weight
+  # loading per 07-RESEARCH State-of-the-Art row 2).
+  #
+  # Lower `--gpu-memory-utilization=0.25` keeps embed share at ~4 GB so both
+  # vLLM containers can coexist on the 16 GB envelope when the vllm profile
+  # is up. bge-m3 has no KV cache so a smaller shm_size suffices.
+  #
+  # start_period: 300s (NOT 1200s) — bge-m3 is ~2 GB, no torch.compile heavy
+  # path, 5 min suffices per 07-RESEARCH §Cold-start budget. Wave 0 only
+  # bumped the chat service's budget.
+  vllm-embed:
+    image: vllm/vllm-openai:v0.21.0-cu129   # same image as vllm: above; pinning consistency
+    container_name: ${COMPOSE_PROJECT_NAME:-local-llms}-vllm-embed
+    profiles: [vllm]
+    <<: *gpu
+    restart: unless-stopped
+    ipc: host
+    shm_size: 8gb       # smaller than chat — embed has no KV cache
+    entrypoint: ["/usr/local/bin/gpu-init-libcuda.sh"]
+    command:
+      - "python3"
+      - "-m"
+      - "vllm.entrypoints.openai.api_server"
+      - "--model=BAAI/bge-m3"
+      - "--runner=pooling"                  # CLOSED R-1: --runner pooling, NOT --task
+      - "--hf-overrides={\"architectures\":[\"BgeM3EmbeddingModel\"]}"
+      - "--gpu-memory-utilization=0.25"
+      - "--max-model-len=8192"
+      - "--served-model-name=BAAI/bge-m3"
+      - "--host=0.0.0.0"
+      - "--port=8000"
+    environment:
+      - VLLM_FLASH_ATTN_VERSION=2
+      - HF_HOME=/root/.cache/huggingface
+      - HF_HUB_CACHE=/root/.cache/huggingface
+      - HUGGINGFACE_HUB_TOKEN=${HUGGINGFACE_HUB_TOKEN:-}
+    volumes:
+      - ${HOST_DATA_ROOT:-/srv/local-llms}/models-hf:/root/.cache/huggingface
+      # Share the same compile cache dir as vllm: — keys differ by model+config
+      # so collisions are impossible; sharing reduces operator cognitive load.
+      - ${HOST_DATA_ROOT:-/srv/local-llms}/vllm-compile-cache:/root/.cache/vllm
+      - ./bin/gpu-init-libcuda.sh:/usr/local/bin/gpu-init-libcuda.sh:ro
+    networks:
+      - backend
+      - app
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 300s    # bge-m3 cold-start budget; smaller model, no heavy torch.compile
+      retries: 10
+    depends_on:
+      gpu-preflight:
+        condition: service_completed_successfully
+
   # ── Router (Phase 2 — D-A1, D-A4, ROUTE-01..ROUTE-08) ──────────────────────
   # The single externally-reachable model surface (localhost-only until Phase 6
   # puts Traefik in front). Joins app + backend; D-13 networks unchanged.
