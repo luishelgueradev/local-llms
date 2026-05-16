@@ -12,10 +12,10 @@ Un endpoint HTTPS único que hable simultáneamente OpenAI y Anthropic, despache
 ## Phases
 
 - [x] **Phase 1: GPU + Compose Foundation** ✅ Complete 2026-05-10 — Reproducible GPU passthrough verified by preflight, with the volume layout, `x-gpu` anchor, and a single Ollama instance proving end-to-end GPU inference.
-- [ ] **Phase 2: MVP Vertical Slice — Router + Ollama + SSE** — One-backend Fastify router exposing only `POST /v1/chat/completions` (OpenAI passthrough) with bearer auth, `models.yaml`, SSE streaming, pino redaction, and client-disconnect→upstream-abort.
+- [x] **Phase 2: MVP Vertical Slice — Router + Ollama + SSE** ✅ Complete 2026-05-12 — One-backend Fastify router exposing only `POST /v1/chat/completions` (OpenAI passthrough) with bearer auth, `models.yaml`, SSE streaming, pino redaction, and client-disconnect→upstream-abort.
 - [x] **Phase 3: Multi-Backend Dispatch — llama.cpp + Registry Hardening** ✅ Complete 2026-05-13 — Second backend slotted in via `models.yaml`, with per-backend liveness/readiness probes, concurrency caps, `GET /v1/models`, VRAM budgets, and Compose profiles per backend.
 - [x] **Phase 4: Anthropic Surface — `/v1/messages`, Tool Calling, Vision** ✅ Complete 2026-05-14 — Native Anthropic protocol with typed streaming events, count_tokens, `system`/role-alternation/`anthropic-version` semantics, bidirectional tool translation, and vision in both protocols.
-- [ ] **Phase 5: Postgres + Observability Seam** — `request_log` buffered async writes, `usage_daily` aggregation, `pg_dump` cron + tested restore drill, Prometheus `/metrics` on the router, real Compose healthchecks, and `X-Agent-Id` surfaced into logs.
+- [x] **Phase 5: Postgres + Observability Seam** — `request_log` buffered async writes, `usage_daily` aggregation, `pg_dump` cron + tested restore drill, Prometheus `/metrics` on the router, real Compose healthchecks, and `X-Agent-Id` surfaced into logs. (completed 2026-05-15)
 - [ ] **Phase 6: Traefik + TLS + Open WebUI** — Real HTTPS endpoint with four-network topology, SSE-friendly Traefik config, 120s+ E2E streaming verified through the proxy, and Open WebUI on a separate subdomain configured to talk only to the router.
 - [ ] **Phase 7: Embeddings + vLLM + GPU Telemetry** — `/v1/embeddings` (OpenAI surface), vLLM AWQ backend with explicit VRAM partitioning, vLLM/llama.cpp `/metrics` scraped, GPU exporter, and a Grafana dashboard for VRAM/ttft/error rate.
 - [ ] **Phase 8: Ollama Cloud Fallback + Resilience Hardening** — `backend: ollama-cloud` with bearer auth, circuit breaker, cloud-spend metric, hard `max_tokens` cap, Valkey-backed rate limit, `Idempotency-Key`, and `X-Model-Backend` response header.
@@ -126,7 +126,7 @@ Plans:
   3. A `pg_dump` cron job runs daily and a tested restore drill (drop database → restore → re-query) reads back identical data; the restore procedure is documented in the project README.
   4. `GET /metrics` on the router exposes Prometheus-format request rate, time-to-first-token, latency, and per-backend counters (without bearer auth — but only the metrics endpoint is unauthenticated, no other surface is).
   5. `docker compose ps` shows healthy state for every service via real healthchecks (not just process-up), and an `X-Agent-Id` request header is reflected into structured pino logs and the `request_log.agent_id` column.
-**Plans:** 6 plans
+**Plans:** 6/6 plans complete
 Plans:
 **Wave 1**
 - [x] 05-01-PLAN.md — Postgres service + Drizzle schema + boot-time migrator + buffered writer foundation + onClose drain (DATA-01, DATA-02, DATA-03, DATA-04, OBS-05; D-A1..A7, D-B1..B8, D-E1..E4, D-G1)
@@ -207,10 +207,10 @@ Plans:
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. GPU + Compose Foundation | 4/4 | Complete | 2026-05-10 |
-| 2. MVP Vertical Slice — Router + Ollama + SSE | 0/0 | Not started | - |
-| 3. Multi-Backend Dispatch — llama.cpp + Registry Hardening | 0/5 | Planned (revision 1) | - |
-| 4. Anthropic Surface — `/v1/messages`, Tool Calling, Vision | 0/5 | Planned | - |
-| 5. Postgres + Observability Seam | 0/4 | Planned | - |
+| 2. MVP Vertical Slice — Router + Ollama + SSE | 5/5 | Complete | 2026-05-12 |
+| 3. Multi-Backend Dispatch — llama.cpp + Registry Hardening | 5/5 | Complete | 2026-05-13 |
+| 4. Anthropic Surface — `/v1/messages`, Tool Calling, Vision | 5/5 | Complete | 2026-05-14 |
+| 5. Postgres + Observability Seam | 6/6 | Complete    | 2026-05-15 |
 | 6. Traefik + TLS + Open WebUI | 0/0 | Not started | - |
 | 7. Embeddings + vLLM + GPU Telemetry | 0/0 | Not started | - |
 | 8. Ollama Cloud Fallback + Resilience Hardening | 0/0 | Not started | - |
