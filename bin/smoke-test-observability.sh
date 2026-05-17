@@ -64,7 +64,11 @@ if [[ -z "${GRAFANA_ADMIN_PASSWORD:-}" ]]; then
   echo "[smoke-test-observability] ERROR: GRAFANA_ADMIN_PASSWORD is not set." >&2
   echo "[smoke-test-observability]        Generate one and write it to ${REPO_ROOT}/.env:" >&2
   echo "[smoke-test-observability]          echo \"GRAFANA_ADMIN_PASSWORD=\$(openssl rand -hex 24)\" >> .env" >&2
-  echo "[smoke-test-observability]        Then re-run `docker compose up -d grafana` so the new credential is picked up." >&2
+  # 07-REVIEW WR-07: single-quoted command name so bash does NOT command-
+  # substitute the literal `docker compose up -d grafana` when emitting the
+  # error message. The old double-quoted+backtick form actually executed the
+  # command at echo time — the opposite of what an error message should do.
+  echo "[smoke-test-observability]        Then re-run 'docker compose up -d grafana' so the new credential is picked up." >&2
   exit 1
 fi
 
