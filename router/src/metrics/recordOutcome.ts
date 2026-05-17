@@ -26,6 +26,7 @@ import {
   CloudMaxTokensExceededError,
   ImageFetchError,
   InvalidAgentIdError,
+  InvalidIdempotencyKeyError,
   InvalidImageUrlError,
   InvalidToolArgumentsError,
   RateLimitExceededError,
@@ -140,6 +141,12 @@ export function mapErrorToCode(err: unknown): string {
   if (err instanceof CapabilityNotSupportedError) return 'model_capability_mismatch';
   if (
     err instanceof InvalidAgentIdError ||
+    // Plan 08-07 (ROUTE-12 / D-D5): Idempotency-Key regex violation joins
+    // the invalid_request D-D2 bucket. The response envelope carries the
+    // specific 'invalid_idempotency_key' code; the request_log row's
+    // error_code collapses to the bucket label for SQL aggregation
+    // (parity with InvalidAgentIdError above).
+    err instanceof InvalidIdempotencyKeyError ||
     err instanceof InvalidToolArgumentsError ||
     err instanceof InvalidImageUrlError ||
     err instanceof ImageFetchError ||

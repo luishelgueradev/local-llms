@@ -172,6 +172,38 @@ export class RateLimitExceededError extends Error {
 }
 
 /**
+ * Plan 08-07 (ROUTE-12 / D-D5): thrown by extractIdempotencyKey when an
+ * Idempotency-Key header is present but violates the regex
+ * `/^[A-Za-z0-9._:-]{1,256}$/`. The regex is permissive enough for ULID,
+ * UUID, and operator-chosen strings; the 256-char ceiling bounds Valkey
+ * key length so a misbehaving client can't bloat the keyspace.
+ *
+ * Maps to:
+ *   - HTTP 400 (invalid_request bucket)
+ *   - OpenAI envelope: type: 'invalid_request_error',
+ *       code: 'invalid_idempotency_key', param: 'Idempotency-Key'
+ *   - Anthropic envelope: type: 'invalid_request_error'
+ *
+ * Symmetric to InvalidAgentIdError (D-D5 same regex shape, broader length
+ * cap because Idempotency-Key may legitimately be a 128-bit hex digest).
+ * Truncates the supplied value to 32 chars in the message body so an
+ * attacker spraying long keys can't bloat error envelopes / log lines.
+ */
+export class InvalidIdempotencyKeyError extends Error {
+  readonly code: 'invalid_idempotency_key' = 'invalid_idempotency_key';
+  constructor(public readonly suppliedValue: string) {
+    const display =
+      typeof suppliedValue === 'string' && suppliedValue.length > 32
+        ? `${suppliedValue.slice(0, 32)}...`
+        : String(suppliedValue ?? '');
+    super(
+      `Idempotency-Key "${display}" violates regex /^[A-Za-z0-9._:-]{1,256}$/`,
+    );
+    this.name = 'InvalidIdempotencyKeyError';
+  }
+}
+
+/**
  * Plan 05-02 D-D5 / ROUTE-09: thrown by the agentIdPreHandler when an inbound
  * X-Agent-Id header violates the regex `/^[A-Za-z0-9._:-]{1,128}$/`. Maps to
  * 400 + invalid_request_error on both wire surfaces (OpenAI envelope:
@@ -235,6 +267,8 @@ export function mapToHttpStatus(err: unknown): number {
   if (err instanceof CloudMaxTokensExceededError) return 400;
   // Plan 05-02 D-D5 / ROUTE-09: X-Agent-Id regex violation — pre-route 400.
   if (err instanceof InvalidAgentIdError) return 400;
+  // Plan 08-07 (ROUTE-12 / D-D5): Idempotency-Key regex violation — 400.
+  if (err instanceof InvalidIdempotencyKeyError) return 400;
   // Plan 04-04 T-04-02: malformed tool_calls[].function.arguments — 400.
   if (err instanceof InvalidToolArgumentsError) return 400;
   // Plan 04-04 T-04-01: image URL or fetch failures — 400 (Plan 05 consumer / D-C4 SSRF).
@@ -323,6 +357,17 @@ export function toOpenAIErrorEnvelope(err: unknown): EnvelopeOrSkip {
         type: 'invalid_request_error',
         code: 'invalid_agent_id',
         param: 'X-Agent-Id',
+      },
+    };
+  }
+  // Plan 08-07 (ROUTE-12 / D-D5): Idempotency-Key regex violation — OpenAI envelope.
+  if (err instanceof InvalidIdempotencyKeyError) {
+    return {
+      error: {
+        message: err.message,
+        type: 'invalid_request_error',
+        code: 'invalid_idempotency_key',
+        param: 'Idempotency-Key',
       },
     };
   }
@@ -500,6 +545,10 @@ export function toAnthropicErrorEnvelope(err: unknown): AnthropicEnvelopeOrSkip 
   }
   // Plan 05-02 D-D5: X-Agent-Id regex violation — Anthropic envelope.
   if (err instanceof InvalidAgentIdError) {
+    return { type: 'error', error: { type: 'invalid_request_error', message: err.message } };
+  }
+  // Plan 08-07 (ROUTE-12 / D-D5): Idempotency-Key regex violation — Anthropic envelope.
+  if (err instanceof InvalidIdempotencyKeyError) {
     return { type: 'error', error: { type: 'invalid_request_error', message: err.message } };
   }
   // Plan 04-04 / Plan 04-05: InvalidToolArgumentsError + InvalidImageUrlError + ImageFetchError
