@@ -81,11 +81,25 @@ export interface BackendAdapter {
    * OpenAI-compat shim), VLLMOpenAIAdapter (the vllm-embed pool serves
    * /v1/embeddings natively via `--runner pooling`); LlamacppOpenAIAdapter
    * throws. Phase 8: OllamaCloudAdapter will implement the same passthrough.
+   *
+   * 07-REVIEW CR-01: `opts.encoding_format`, `opts.dimensions`, `opts.user`
+   * are the optional OpenAI EmbeddingCreateParams forwarded from the route
+   * schema. They are spread into the SDK call so that a client requesting
+   * `encoding_format: 'base64'` actually receives base64 (the SDK's perf
+   * optimization auto-decodes 'base64' → number[] by default; passing
+   * 'base64' explicitly preserves the wire shape per OpenAI contract).
+   * `dimensions` truncates the returned vector (OpenAI v3+ feature). `user`
+   * is forwarded for upstream telemetry per OpenAI's recommendation.
    */
   embeddings(
     input: string | string[],
     model: string,
     signal: AbortSignal,
+    opts?: {
+      encoding_format?: 'float' | 'base64';
+      dimensions?: number;
+      user?: string;
+    },
   ): Promise<{
     object: 'list';
     data: Array<{ object: 'embedding'; index: number; embedding: number[] | string }>;

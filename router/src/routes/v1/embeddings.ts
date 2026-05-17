@@ -159,7 +159,15 @@ export function registerEmbeddingsRoute(
         release = await semaphore.acquire(controller.signal);
         released = false;
 
-        result = await adapter.embeddings(body.input, entry.backend_model, controller.signal);
+        // 07-REVIEW CR-01: forward optional EmbeddingCreateParams that the
+        // schema validates. Without this, encoding_format='base64' and
+        // dimensions=N pass zod but are silently dropped at the SDK boundary,
+        // violating the documented OpenAI-compat contract.
+        result = await adapter.embeddings(body.input, entry.backend_model, controller.signal, {
+          encoding_format: body.encoding_format,
+          dimensions: body.dimensions,
+          user: body.user,
+        });
         req.raw.socket?.off('close', onClose);
         return reply.send(result);
       } catch (err) {

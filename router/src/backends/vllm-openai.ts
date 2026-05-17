@@ -138,13 +138,29 @@ export class VLLMOpenAIAdapter implements BackendAdapter {
     input: string | string[],
     model: string,
     signal: AbortSignal,
+    opts?: {
+      encoding_format?: 'float' | 'base64';
+      dimensions?: number;
+      user?: string;
+    },
   ): Promise<{
     object: 'list';
     data: Array<{ object: 'embedding'; index: number; embedding: number[] | string }>;
     model: string;
     usage: { prompt_tokens: number; total_tokens: number };
   }> {
-    return this.client.embeddings.create({ model, input }, { signal });
+    // 07-REVIEW CR-01: forward optional OpenAI EmbeddingCreateParams (identical
+    // to OllamaOpenAIAdapter — see that file's comment for rationale).
+    return this.client.embeddings.create(
+      {
+        model,
+        input,
+        ...(opts?.encoding_format ? { encoding_format: opts.encoding_format } : {}),
+        ...(opts?.dimensions !== undefined ? { dimensions: opts.dimensions } : {}),
+        ...(opts?.user ? { user: opts.user } : {}),
+      },
+      { signal },
+    );
   }
 }
 

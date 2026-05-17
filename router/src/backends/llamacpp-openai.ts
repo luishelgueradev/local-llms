@@ -119,7 +119,15 @@ export class LlamacppOpenAIAdapter implements BackendAdapter {
     _input: string | string[],
     _model: string,
     _signal: AbortSignal,
+    _opts?: {
+      encoding_format?: 'float' | 'base64';
+      dimensions?: number;
+      user?: string;
+    },
   ): Promise<never> {
+    // 07-REVIEW CR-01: signature widened to match BackendAdapter interface even
+    // though llama.cpp throws unconditionally — keeps the interface consistent
+    // so TypeScript catches missing-param bugs at call sites.
     throw new CapabilityNotSupportedError('llamacpp', 'embeddings');
   }
 }

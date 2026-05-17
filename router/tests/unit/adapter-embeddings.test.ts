@@ -89,6 +89,61 @@ describe('OllamaOpenAIAdapter.embeddings() (Plan 07-04)', () => {
     expect(res.usage).toEqual({ prompt_tokens: 2, total_tokens: 2 });
   });
 
+  it('07-REVIEW CR-01: forwards encoding_format/dimensions/user opts to the SDK call', async () => {
+    let requestBody: Record<string, unknown> | undefined;
+    server.use(
+      http.post(`${OLLAMA_BASE}/embeddings`, async ({ request }) => {
+        requestBody = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json({
+          object: 'list',
+          data: [{ object: 'embedding', index: 0, embedding: floatsToBase64([0.5]) }],
+          model: 'bge-m3',
+          usage: { prompt_tokens: 1, total_tokens: 1 },
+        });
+      }),
+    );
+
+    const adapter = new OllamaOpenAIAdapter(OLLAMA_BASE);
+    const ac = new AbortController();
+    await adapter.embeddings('x', 'bge-m3', ac.signal, {
+      encoding_format: 'float',
+      dimensions: 512,
+      user: 'agent-7',
+    });
+
+    // CR-01 fix: explicit encoding_format='float' overrides the SDK's
+    // default 'base64' on the wire. Without the fix, the upstream sees
+    // encoding_format='base64' regardless of what the caller passes.
+    expect(requestBody?.encoding_format).toBe('float');
+    expect(requestBody?.dimensions).toBe(512);
+    expect(requestBody?.user).toBe('agent-7');
+  });
+
+  it('07-REVIEW CR-01: omits unset opts keys from the SDK wire call', async () => {
+    let requestBody: Record<string, unknown> | undefined;
+    server.use(
+      http.post(`${OLLAMA_BASE}/embeddings`, async ({ request }) => {
+        requestBody = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json({
+          object: 'list',
+          data: [{ object: 'embedding', index: 0, embedding: floatsToBase64([0.1]) }],
+          model: 'bge-m3',
+          usage: { prompt_tokens: 1, total_tokens: 1 },
+        });
+      }),
+    );
+
+    const adapter = new OllamaOpenAIAdapter(OLLAMA_BASE);
+    const ac = new AbortController();
+    await adapter.embeddings('x', 'bge-m3', ac.signal, {});
+
+    // When opts is {} the conditional-spread pattern drops all the optional
+    // keys, so the wire body has only {model, input} plus the SDK-default
+    // encoding_format='base64'. dimensions and user MUST NOT appear.
+    expect(requestBody?.dimensions).toBeUndefined();
+    expect(requestBody?.user).toBeUndefined();
+  });
+
   it('passthrough: array input → forwards array to upstream and returns multi-item data', async () => {
     server.use(
       http.post(`${OLLAMA_BASE}/embeddings`, async ({ request }) => {
@@ -153,6 +208,34 @@ describe('VLLMOpenAIAdapter.embeddings() (Plan 07-04)', () => {
     expect((res.data[0].embedding as number[]).length).toBe(1024);
     expect((res.data[1].embedding as number[])[0]).toBeCloseTo(0.3, 5);
     expect(res.usage).toEqual({ prompt_tokens: 6, total_tokens: 6 });
+  });
+
+  it('07-REVIEW CR-01: forwards encoding_format/dimensions/user opts to the SDK call', async () => {
+    let requestBody: Record<string, unknown> | undefined;
+    server.use(
+      http.post(`${VLLM_EMBED_BASE}/embeddings`, async ({ request }) => {
+        requestBody = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json({
+          object: 'list',
+          data: [{ object: 'embedding', index: 0, embedding: floatsToBase64([0.5]) }],
+          model: 'BAAI/bge-m3',
+          usage: { prompt_tokens: 1, total_tokens: 1 },
+        });
+      }),
+    );
+
+    const adapter = new VLLMOpenAIAdapter(VLLM_EMBED_BASE);
+    const ac = new AbortController();
+    await adapter.embeddings('x', 'BAAI/bge-m3', ac.signal, {
+      encoding_format: 'float',
+      dimensions: 256,
+      user: 'agent-9',
+    });
+
+    // Mirrors the Ollama test — same fix, parallel adapter implementation.
+    expect(requestBody?.encoding_format).toBe('float');
+    expect(requestBody?.dimensions).toBe(256);
+    expect(requestBody?.user).toBe('agent-9');
   });
 });
 
