@@ -275,9 +275,41 @@ pass "restic backup OK — snapshot id: ${SNAPSHOT_ID}"
 # BACKUP_KEEP_POLICY override is intentional verbatim splat — operator
 # explicitly opted in to that policy string. Default policy is baked into the
 # script so a typo in .env doesn't silently no-op retention.
+#
+# WR-05: validate the override shape BEFORE splatting it into restic's argv.
+# The accepted grammar is a whitespace-separated sequence of
+#   --keep-(last|hourly|daily|weekly|monthly|yearly) <positive-integer>
+# pairs. Anything else (e.g. `--keep-tag x; rm -rf /`, typos like
+# `--keep-daily seven`, or unrelated flags) is rejected before reaching
+# restic. This does not constrain operators to a fixed set of values, but
+# it does eliminate the worst footguns (unknown flags being interpreted
+# as paths, typo'd numbers silently weakening retention, etc.).
 if [[ -n "${BACKUP_KEEP_POLICY:-}" ]]; then
+  # Validate as pairs. Use `read -ra` so that consecutive whitespace is
+  # collapsed and quoted segments are split correctly under default IFS.
+  # shellcheck disable=SC2206  # intentional word-splitting of validated input
+  POLICY_TOKENS=( ${BACKUP_KEEP_POLICY} )
+  POLICY_COUNT=${#POLICY_TOKENS[@]}
+  if (( POLICY_COUNT == 0 )) || (( POLICY_COUNT % 2 != 0 )); then
+    fail "BACKUP_KEEP_POLICY must be an even number of whitespace-separated tokens (got ${POLICY_COUNT}: '${BACKUP_KEEP_POLICY}')."
+    echo "[backup-postgres]        Expected shape: --keep-<class> <N> [--keep-<class> <N> ...]" >&2
+    echo "[backup-postgres]        Valid classes : last hourly daily weekly monthly yearly" >&2
+    exit 1
+  fi
+  for (( pi = 0; pi < POLICY_COUNT; pi += 2 )); do
+    flag="${POLICY_TOKENS[$pi]}"
+    val="${POLICY_TOKENS[$((pi + 1))]}"
+    if ! [[ "${flag}" =~ ^--keep-(last|hourly|daily|weekly|monthly|yearly)$ ]]; then
+      fail "BACKUP_KEEP_POLICY contains invalid flag '${flag}' — must be --keep-{last,hourly,daily,weekly,monthly,yearly}."
+      exit 1
+    fi
+    if ! [[ "${val}" =~ ^[1-9][0-9]*$ ]]; then
+      fail "BACKUP_KEEP_POLICY: flag '${flag}' must be followed by a positive integer (got '${val}')."
+      exit 1
+    fi
+  done
   info "Step 2: restic forget (operator-overridden policy: ${BACKUP_KEEP_POLICY}) --prune ..."
-  # shellcheck disable=SC2086  # intentional word-splitting of policy override
+  # shellcheck disable=SC2086  # intentional word-splitting of validated policy
   FORGET_ARGS=( ${BACKUP_KEEP_POLICY} --prune )
 else
   info "Step 2: restic forget --keep-daily 7 --keep-weekly 4 --keep-monthly 6 --prune ..."
