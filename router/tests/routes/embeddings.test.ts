@@ -21,20 +21,13 @@ import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../../src/app.js';
 import {
-  registerEmbeddingsRoute,
-  type RegisterEmbeddingsOpts,
-} from '../../src/routes/v1/embeddings.js';
-import {
   loadRegistryFromString,
   makeRegistryStore,
 } from '../../src/config/registry.js';
 import type { ModelEntry } from '../../src/config/registry.js';
 import type { BackendAdapter } from '../../src/backends/adapter.js';
-import {
-  makeRecordRequestOutcome,
-  type OutcomeContext,
-} from '../../src/metrics/recordOutcome.js';
 import { makeMetricsRegistry } from '../../src/metrics/registry.js';
+import type { RequestLogInsert } from '../../src/db/schema/index.js';
 
 const TOKEN = 'local-llms_t1t2t3t4t5t6t7t8t9t0aabbccddeeff';
 const EMBED_MODEL = 'bge-m3-ollama';
@@ -91,39 +84,31 @@ function makeFakeAdapter(): {
 }
 
 let app: FastifyInstance;
-let recorded: OutcomeContext[];
-let pushed: unknown[];
+let pushed: RequestLogInsert[];
 let fakeCalls: FakeAdapterCall[];
 
 beforeEach(async () => {
-  recorded = [];
   pushed = [];
   fakeCalls = [];
 
   const registry = makeRegistryStore(loadRegistryFromString(YAML));
   const fakeBuffered = {
-    push: (row: unknown) => pushed.push(row),
+    push: (row: RequestLogInsert) => pushed.push(row),
     drain: async () => {},
     get size() {
       return 0;
     },
   };
   const metrics = makeMetricsRegistry();
-  // Real recordOutcome — exercises the metrics + bufferedWriter pipeline AND
-  // captures the OutcomeContext via a tee'd spy so tests can assert on the
-  // ctx shape the route emitted.
-  const realRecord = makeRecordRequestOutcome({
-    metrics,
-    bufferedWriter: fakeBuffered,
-  });
-  const recordOutcome = (ctx: OutcomeContext): void => {
-    recorded.push(ctx);
-    realRecord(ctx);
-  };
 
   const { adapter, calls } = makeFakeAdapter();
   fakeCalls = calls;
 
+  // Plan 07-04 Task 3: buildApp now wires /v1/embeddings via registerEmbeddingsRoute,
+  // so no manual route registration here. Assertions verify the bufferedWriter row
+  // produced by the route's outer-finally safeRecord OR app.setErrorHandler's
+  // recordOutcome (the pre-resolve error path). Both paths route through the same
+  // recordRequestOutcome helper → bufferedWriter.push under the hood.
   app = await buildApp({
     registry,
     bearerToken: TOKEN,
@@ -136,20 +121,6 @@ beforeEach(async () => {
     bufferedWriter: fakeBuffered,
     metrics,
   });
-
-  // Plan 07-04 Task 2: register the route manually until Task 3 wires it into
-  // buildApp itself. Pass the SAME recordOutcome wrapper so route-level
-  // observability assertions hold.
-  const opts: RegisterEmbeddingsOpts = {
-    registry,
-    makeAdapter: (_entry: ModelEntry) => adapter,
-    semaphores: {
-      get: () =>
-        ({ acquire: async () => () => {}, stats: () => ({ inFlight: 0, queued: 0 }) }) as never,
-    },
-    recordOutcome,
-  };
-  registerEmbeddingsRoute(app, opts);
 });
 
 afterEach(async () => {
@@ -181,16 +152,16 @@ describe('POST /v1/embeddings — happy path (OAI-02, EMBED-01)', () => {
     expect(fakeCalls[0].model).toBe('bge-m3');
     expect(fakeCalls[0].input).toBe('hola');
 
-    // recordOutcome observed exactly one row with success / tokensOut=0.
-    expect(recorded.length).toBe(1);
-    expect(recorded[0].protocol).toBe('openai');
-    expect(recorded[0].route).toBe('/v1/embeddings');
-    expect(recorded[0].backend).toBe('ollama');
-    expect(recorded[0].model).toBe(EMBED_MODEL);
-    expect(recorded[0].statusClass).toBe('success');
-    expect(recorded[0].httpStatus).toBe(200);
-    expect(recorded[0].tokensIn).toBe(3);
-    expect(recorded[0].tokensOut).toBe(0);
+    // bufferedWriter observed exactly one row with success / tokens_out=0.
+    expect(pushed.length).toBe(1);
+    expect(pushed[0].protocol).toBe('openai');
+    expect(pushed[0].route).toBe('/v1/embeddings');
+    expect(pushed[0].backend).toBe('ollama');
+    expect(pushed[0].model).toBe(EMBED_MODEL);
+    expect(pushed[0].status_class).toBe('success');
+    expect(pushed[0].http_status).toBe(200);
+    expect(pushed[0].tokens_in).toBe(3);
+    expect(pushed[0].tokens_out).toBe(0);
   });
 
   it('accepts array input (batch embeddings)', async () => {
@@ -225,11 +196,12 @@ describe('POST /v1/embeddings — capability gate (T-07-11 mitigation)', () => {
     // The adapter must NOT have been called (defense-in-depth layer 1 catches it).
     expect(fakeCalls.length).toBe(0);
 
-    // recordOutcome STILL records the error path (observability seam).
-    expect(recorded.length).toBe(1);
-    expect(recorded[0].statusClass).toBe('client_error');
-    expect(recorded[0].httpStatus).toBe(400);
-    expect(recorded[0].errorCode).toBe('model_capability_mismatch');
+    // bufferedWriter STILL records the error path (observability seam — Plan 07-04
+    // widens app.setErrorHandler's isRecordedRoute allowlist to include /v1/embeddings).
+    expect(pushed.length).toBe(1);
+    expect(pushed[0].status_class).toBe('client_error');
+    expect(pushed[0].http_status).toBe(400);
+    expect(pushed[0].error_code).toBe('model_capability_mismatch');
   });
 });
 
@@ -312,7 +284,7 @@ describe('POST /v1/embeddings — bearer auth (D-D4 / ROUTE-04)', () => {
     expect(env.error.code).toBe('unauthorized');
     expect(fakeCalls.length).toBe(0);
     // D-D4: pre-auth bearer failures are NOT recorded (no request_log row).
-    expect(recorded.length).toBe(0);
+    expect(pushed.length).toBe(0);
   });
 
   it('returns 401 when bearer token is invalid', async () => {
@@ -325,7 +297,7 @@ describe('POST /v1/embeddings — bearer auth (D-D4 / ROUTE-04)', () => {
 
     expect(res.statusCode).toBe(401);
     expect(fakeCalls.length).toBe(0);
-    expect(recorded.length).toBe(0);
+    expect(pushed.length).toBe(0);
   });
 });
 

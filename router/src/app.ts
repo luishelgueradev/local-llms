@@ -16,6 +16,7 @@ import { registerHealthz } from './routes/healthz.js';
 import { registerChatCompletionsRoute } from './routes/v1/chat-completions.js';
 import { registerMessagesRoute } from './routes/v1/messages.js';
 import { registerCountTokensRoute } from './routes/v1/count-tokens.js';
+import { registerEmbeddingsRoute } from './routes/v1/embeddings.js';
 import type { AdapterFactory } from './backends/adapter.js';
 import { registerModelsRoute } from './routes/v1/models.js';
 import {
@@ -419,6 +420,19 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
 
   // GET /v1/models — bearer-gated; lists all registry models (Plan 03-02, OAI-03).
   registerModelsRoute(app, opts.registry);
+
+  // Plan 07-04 (OAI-02, EMBED-01):
+  //  - POST /v1/embeddings — OpenAI-compat embedding endpoint dispatching to
+  //    Ollama (bge-m3) or vLLM-embed (BAAI/bge-m3) via the factory.
+  //    Non-streaming; reuses semaphores + recordOutcome from Phase 3 + Phase 5.
+  //    Capability gate enforces entry.capabilities.includes('embeddings')
+  //    BEFORE the adapter call (T-07-11 mitigation, route-side layer).
+  registerEmbeddingsRoute(app, {
+    registry: opts.registry,
+    makeAdapter: opts.makeAdapter ?? defaultMakeAdapter,
+    semaphores,
+    recordOutcome,
+  });
 
   // Plan 05-04 — start the usage_daily scheduler last, after all routes are
   // registered. The first refresh fires at the next UTC midnight; runNow()
