@@ -48,6 +48,7 @@ import {
   openAIChunksToCanonicalEvents,
 } from '../translation/openai-out.js';
 import { CLOUD_ADAPTER_TIMEOUT_MS } from '../config/constants.js';
+import { truncateAndRedact } from '../metrics/recordOutcome.js';
 
 export class OllamaCloudAdapter implements BackendAdapter {
   private readonly client: OpenAI;
@@ -118,6 +119,14 @@ export class OllamaCloudAdapter implements BackendAdapter {
   /**
    * Liveness probe. Calls /v1/models and checks that data[] is non-empty.
    * Never throws — failures surface via { ok: false, error }.
+   *
+   * 08-REVIEW WR-03 fix: the probe error message is surfaced verbatim on
+   * `/readyz`, which is in PUBLIC_PATHS (no bearer required). The OpenAI
+   * SDK's APIConnectionError / 401 / 5xx messages can include the upstream
+   * response body (e.g., "status 401: invalid api key" + headers + token
+   * fragments). Reuse `truncateAndRedact` so /readyz never ships
+   * upstream-API-key fragments to a public surface. The 120-char cap is
+   * tighter than the request_log column's 500 to keep the JSON tidy.
    */
   async probeLiveness(signal: AbortSignal): Promise<{ ok: boolean; latencyMs: number; error?: string }> {
     const t0 = Date.now();
@@ -126,7 +135,12 @@ export class OllamaCloudAdapter implements BackendAdapter {
       const ok = Array.isArray(res.data) && res.data.length > 0;
       return { ok, latencyMs: Date.now() - t0, error: ok ? undefined : 'empty data array' };
     } catch (err) {
-      return { ok: false, latencyMs: Date.now() - t0, error: err instanceof Error ? err.message : String(err) };
+      const raw = err instanceof Error ? err.message : String(err);
+      return {
+        ok: false,
+        latencyMs: Date.now() - t0,
+        error: truncateAndRedact(raw, 120),
+      };
     }
   }
 
