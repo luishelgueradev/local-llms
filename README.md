@@ -1658,6 +1658,23 @@ Make a written list of everything in items 3 + 4 + 5 **before** you generate the
       history -w               # persist the edited history to ~/.bash_history
       ```
 
+      > **Shell-specific note (WR-06):** the `history -d N` + `history -w`
+      > recipe above is bash-specific. Equivalents for other shells:
+      >
+      > - **zsh:** `history -d N` works identically; the on-exit-write
+      >   replacement for `history -w` is `fc -W` (force-write the
+      >   history file). To purge an entire session without writing
+      >   anything to disk, run `unset HISTFILE` before exiting.
+      > - **fish:** `history delete --contains "bearer"` deletes every
+      >   matching entry from `~/.local/share/fish/fish_history` in one
+      >   call (no line-number indirection).
+      >
+      > Additionally, scrub any open `tmux` / `screen` scrollback so the
+      > token does not survive in a re-attached pane: in tmux,
+      > `Ctrl+b :clear-history` (or `tmux clear-history` from another
+      > pane targeting the session); in screen, `Ctrl+a H` toggles
+      > logging — disable then re-enable to truncate the buffer.
+
     - Unset the `OLD_PREFIX` variable: `unset OLD_PREFIX`.
 
 **Rollback note** — if step 8's smoke fails (or any other end-to-end check during steps 1–9 reveals the new token is not propagating), the rotation is fully reversible **until you finish step 10**. To roll back:
