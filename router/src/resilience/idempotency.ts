@@ -225,7 +225,27 @@ async function subscribeToChannel(
     'message',
     onMessage as unknown as (...a: unknown[]) => void,
   );
-  await (sub as unknown as { subscribe(c: string): Promise<unknown> }).subscribe(channel);
+  // 08-REVIEW CR-04 fix: if `subscribe(channel)` throws (transient Valkey
+  // hiccup, AUTH failure after handshake, connection drop during the
+  // SUBSCRIBE round-trip), the freshly-allocated subscriber connection
+  // must be released. Without this guard the caller's try/finally never
+  // runs because subscribeToChannel rejected before returning the handle,
+  // and each transient failure leaks one TCP connection to Valkey.
+  try {
+    await (sub as unknown as { subscribe(c: string): Promise<unknown> }).subscribe(channel);
+  } catch (err) {
+    // Best-effort teardown — disconnect() is synchronous + non-throwing on
+    // ioredis; quit() may block on a half-open socket so we don't await it.
+    try {
+      (sub as unknown as { disconnect?: () => void }).disconnect?.();
+    } catch (closeErr) {
+      log.warn(
+        { closeErr, channel },
+        'idempotency: subscribeToChannel teardown after subscribe failure errored',
+      );
+    }
+    throw err;
+  }
 
   return {
     next(timeoutMs: number): Promise<ChannelMessage> {
