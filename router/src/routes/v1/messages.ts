@@ -48,9 +48,11 @@ import {
   ANTHROPIC_NO_ENVELOPE,
   BreakerOpenError,
   CapabilityNotSupportedError,
+  CloudMaxTokensExceededError,
   mapToHttpStatus,
   toAnthropicErrorEnvelope,
 } from '../../errors/envelope.js';
+import { CLOUD_MAX_TOKENS_CAP } from '../../config/constants.js';
 import type { CircuitBreaker } from '../../resilience/circuitBreaker.js';
 import {
   deriveStatusClass,
@@ -169,6 +171,30 @@ export function registerMessagesRoute(
       // which the centralized error handler maps to 404 + Anthropic envelope.
       const entry = opts.registry.resolve(body.model);
       req.resolvedBackend = entry.backend;       // Plan 08-03 (ROUTE-10) — stamp for onSend hook
+
+      // Plan 08-05 (CLOUD-04 / D-C1, D-C2): cloud-served models hard-cap
+      // max_tokens at CLOUD_MAX_TOKENS_CAP. Same guard as chat-completions.ts;
+      // the Anthropic Messages request body's `max_tokens` is REQUIRED
+      // (zod-validated as positive int at the route schema), so the typeof
+      // check is defensive — schema already guarantees it. Throws
+      // CloudMaxTokensExceededError → 400 + Anthropic envelope
+      // (invalid_request_error) via the centralized error handler.
+      //
+      // Fires AFTER req.resolvedBackend stamp (X-Model-Backend still flows on
+      // the 400 reply) and BEFORE the breaker.check / semaphore.acquire
+      // chain inside the try block.
+      if (
+        entry.backend === 'ollama-cloud' &&
+        typeof body.max_tokens === 'number' &&
+        body.max_tokens > CLOUD_MAX_TOKENS_CAP
+      ) {
+        throw new CloudMaxTokensExceededError(
+          body.max_tokens,
+          CLOUD_MAX_TOKENS_CAP,
+          entry.name,
+        );
+      }
+
       const adapter: BackendAdapter = opts.makeAdapter(entry);
 
       // D-A3 / D-F3 — translate Anthropic body → canonical with backend_model remap.

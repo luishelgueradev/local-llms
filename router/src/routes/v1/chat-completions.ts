@@ -12,10 +12,12 @@ import type { CanonicalResponse, CanonicalStreamEvent } from '../../translation/
 import {
   BreakerOpenError,
   CapabilityNotSupportedError,
+  CloudMaxTokensExceededError,
   NO_ENVELOPE,
   mapToHttpStatus,
   toOpenAIErrorEnvelope,
 } from '../../errors/envelope.js';
+import { CLOUD_MAX_TOKENS_CAP } from '../../config/constants.js';
 import type { CircuitBreaker } from '../../resilience/circuitBreaker.js';
 import {
   deriveStatusClass,
@@ -105,6 +107,31 @@ export function registerChatCompletionsRoute(
       // which the centralized error handler maps to 404 + OpenAI envelope (D-C3 row).
       const entry = opts.registry.resolve(body.model);
       req.resolvedBackend = entry.backend;       // Plan 08-03 (ROUTE-10) — stamp for onSend hook
+
+      // Plan 08-05 (CLOUD-04 / D-C1, D-C2): cloud-served models hard-cap
+      // max_tokens at CLOUD_MAX_TOKENS_CAP (Ollama Cloud documented ceiling).
+      // Reject (never silently clip — D-C1). The guard fires:
+      //   - AFTER req.resolvedBackend stamp (so the 400 response still carries
+      //     X-Model-Backend: ollama-cloud via Plan 08-03's onSend hook).
+      //   - BEFORE the breaker.check (so a request that would 400 doesn't
+      //     consume a half-open probe slot).
+      //   - BEFORE semaphore.acquire (so it doesn't queue against the cloud
+      //     semaphore).
+      // Local models are unaffected — only entries with backend === 'ollama-cloud'
+      // enforce the cap. typeof guard skips undefined max_tokens (the
+      // OpenAI body schema is .passthrough() so the field may be absent).
+      if (
+        entry.backend === 'ollama-cloud' &&
+        typeof body.max_tokens === 'number' &&
+        body.max_tokens > CLOUD_MAX_TOKENS_CAP
+      ) {
+        throw new CloudMaxTokensExceededError(
+          body.max_tokens,
+          CLOUD_MAX_TOKENS_CAP,
+          entry.name,
+        );
+      }
+
       const adapter: BackendAdapter = opts.makeAdapter(entry);
 
       // Plan 04-01 (D-A3, D-F3): translate inbound OpenAI body → canonical with the
