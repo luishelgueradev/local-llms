@@ -16,3 +16,18 @@
  * automatically at compile time.
  */
 export const LIVENESS_INTERVAL_MS = 10_000;
+
+/**
+ * Plan 08-05 (CLOUD-04 / D-C2) — hard cap on max_tokens for cloud-served
+ * (backend: ollama-cloud) requests. Ollama Cloud's documented ceiling per
+ * PITFALLS Pitfall 9 (research/PITFALLS.md:289) is 16,384 regardless of
+ * the model's nominal context. Requests above this cap are rejected at the
+ * router with HTTP 400 + cloud_max_tokens_exceeded envelope — never silently
+ * clipped (D-C1).
+ *
+ * Not env-configurable in v1 (D-C2). Per-model not configurable in v1.
+ * Local models are unaffected — only `backend: ollama-cloud` entries enforce
+ * this cap. A future Ollama Cloud policy change is handled by editing this
+ * constant in a follow-up plan and shipping; no env / YAML toggles.
+ */
+export const CLOUD_MAX_TOKENS_CAP = 16_384;

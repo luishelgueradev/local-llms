@@ -96,6 +96,47 @@ export class BreakerOpenError extends Error {
 }
 
 /**
+ * Plan 08-05 (CLOUD-04 / D-C1, D-C2): thrown by the /v1/chat/completions and
+ * /v1/messages routes when a `backend: ollama-cloud` request specifies
+ * `max_tokens > CLOUD_MAX_TOKENS_CAP` (16,384 per PITFALLS Pitfall 9).
+ *
+ * The cap is enforced at the router boundary — Ollama Cloud silently
+ * truncates oversized requests, which is exactly the opacity D-C1 forbids
+ * ("never silently clip — the client must know its request was modified").
+ * Rejecting with a structured 400 lets the agent reduce max_tokens and retry
+ * deterministically.
+ *
+ * Maps to:
+ *   - HTTP 400 (invalid_request bucket)
+ *   - OpenAI envelope: { error: { message, type: 'invalid_request_error',
+ *       code: 'cloud_max_tokens_exceeded', param: 'max_tokens' } }
+ *   - Anthropic envelope: { type: 'error',
+ *       error: { type: 'invalid_request_error', message } }
+ *
+ * The error carries both the requested value and the cap so clients can
+ * construct a helpful retry payload (e.g., "use max_tokens=16384 instead")
+ * directly from the response body.
+ *
+ * Local models are unaffected — only entries with `backend === 'ollama-cloud'`
+ * trigger this throw. The route handler gates BEFORE the breaker.check call so
+ * an oversized request doesn't consume a half-open probe slot.
+ */
+export class CloudMaxTokensExceededError extends Error {
+  readonly code: 'cloud_max_tokens_exceeded' = 'cloud_max_tokens_exceeded';
+  constructor(
+    public readonly requested: number,
+    public readonly cap: number,
+    public readonly modelName: string,
+  ) {
+    super(
+      `Cloud model "${modelName}" rejects max_tokens=${requested}: hard cap is ${cap}. ` +
+        `Reduce max_tokens to <= ${cap} and retry; cloud-served models cannot exceed this limit.`,
+    );
+    this.name = 'CloudMaxTokensExceededError';
+  }
+}
+
+/**
  * Plan 05-02 D-D5 / ROUTE-09: thrown by the agentIdPreHandler when an inbound
  * X-Agent-Id header violates the regex `/^[A-Za-z0-9._:-]{1,128}$/`. Maps to
  * 400 + invalid_request_error on both wire surfaces (OpenAI envelope:
@@ -155,6 +196,8 @@ export function mapToHttpStatus(err: unknown): number {
   if (err instanceof RegistryUnknownModelError) return 404;
   // Plan 04-02 D-C2: missing capability for the requested model — pre-adapter 400.
   if (err instanceof CapabilityNotSupportedError) return 400;
+  // Plan 08-05 (CLOUD-04 / D-C1): cloud model max_tokens > 16384 — pre-adapter 400.
+  if (err instanceof CloudMaxTokensExceededError) return 400;
   // Plan 05-02 D-D5 / ROUTE-09: X-Agent-Id regex violation — pre-route 400.
   if (err instanceof InvalidAgentIdError) return 400;
   // Plan 04-04 T-04-02: malformed tool_calls[].function.arguments — 400.
@@ -215,6 +258,20 @@ export function toOpenAIErrorEnvelope(err: unknown): EnvelopeOrSkip {
         type: 'invalid_request_error',
         code: 'model_capability_mismatch',
         param: 'model',
+      },
+    };
+  }
+  // Plan 08-05 (CLOUD-04 / D-C1): cloud max_tokens cap exceeded → 400 +
+  // invalid_request_error with the specific 'cloud_max_tokens_exceeded' code
+  // and param='max_tokens' so clients can map the failure to the offending
+  // body field directly. err.message already contains both requested + cap.
+  if (err instanceof CloudMaxTokensExceededError) {
+    return {
+      error: {
+        message: err.message,
+        type: 'invalid_request_error',
+        code: 'cloud_max_tokens_exceeded',
+        param: 'max_tokens',
       },
     };
   }
@@ -378,6 +435,12 @@ export function toAnthropicErrorEnvelope(err: unknown): AnthropicEnvelopeOrSkip 
     return { type: 'error', error: { type: 'not_found_error', message: err.message } };
   }
   if (err instanceof CapabilityNotSupportedError) {
+    return { type: 'error', error: { type: 'invalid_request_error', message: err.message } };
+  }
+  // Plan 08-05 (CLOUD-04 / D-C1): cloud max_tokens cap exceeded — Anthropic
+  // taxonomy has no specific cloud-cap type; collapse to invalid_request_error
+  // (parity with the OpenAI envelope which carries the specific `code` field).
+  if (err instanceof CloudMaxTokensExceededError) {
     return { type: 'error', error: { type: 'invalid_request_error', message: err.message } };
   }
   // Plan 05-02 D-D5: X-Agent-Id regex violation — Anthropic envelope.

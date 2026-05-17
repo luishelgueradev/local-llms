@@ -23,6 +23,7 @@ import { hasZodFastifySchemaValidationErrors } from '@bram-dc/fastify-type-provi
 import {
   BackendSaturatedError,
   CapabilityNotSupportedError,
+  CloudMaxTokensExceededError,
   ImageFetchError,
   InvalidAgentIdError,
   InvalidImageUrlError,
@@ -136,6 +137,11 @@ export function mapErrorToCode(err: unknown): string {
     err instanceof InvalidToolArgumentsError ||
     err instanceof InvalidImageUrlError ||
     err instanceof ImageFetchError ||
+    // Plan 08-05 (CLOUD-04): cloud max_tokens cap exceeded joins the
+    // invalid_request D-D2 bucket. The response envelope still carries the
+    // specific 'cloud_max_tokens_exceeded' code; only the request_log row's
+    // error_code collapses to the bucket label for SQL aggregation.
+    err instanceof CloudMaxTokensExceededError ||
     err instanceof z.ZodError ||
     hasZodFastifySchemaValidationErrors(err)
   ) {
