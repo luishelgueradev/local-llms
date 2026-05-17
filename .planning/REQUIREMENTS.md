@@ -42,7 +42,7 @@
 - [x] **ROUTE-09**: An `X-Agent-Id` request header is surfaced into structured logs and `request_log` rows
 - [x] **ROUTE-10**: An `X-Model-Backend` response header tells the client which backend served the response
 - [x] **ROUTE-11**: Server-side per-token-per-minute rate limit is enforced via Valkey
-- [ ] **ROUTE-12**: An `Idempotency-Key` request header attaches retries to the in-flight stream rather than starting a new generation
+- [x] **ROUTE-12**: An `Idempotency-Key` request header attaches retries to the in-flight stream rather than starting a new generation
 
 ### OpenAI surface
 
@@ -254,7 +254,7 @@ Each requirement maps to exactly one phase. Mapping derived from research-recomm
 | DATA-06 | Phase 8 — Ollama Cloud Fallback + Resilience Hardening | Complete |
 | ROUTE-10 | Phase 8 — Ollama Cloud Fallback + Resilience Hardening | Complete |
 | ROUTE-11 | Phase 8 — Ollama Cloud Fallback + Resilience Hardening | Complete |
-| ROUTE-12 | Phase 8 — Ollama Cloud Fallback + Resilience Hardening | Pending |
+| ROUTE-12 | Phase 8 — Ollama Cloud Fallback + Resilience Hardening | Complete |
 | OPS-01 | Phase 9 — Operations Hardening | Pending |
 | OPS-02 | Phase 9 — Operations Hardening | Pending |
 | OPS-03 | Phase 9 — Operations Hardening | Pending |
