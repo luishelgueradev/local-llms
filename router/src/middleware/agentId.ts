@@ -36,6 +36,19 @@ declare module 'fastify' {
      * body runs) do not double-write a request_log row.
      */
     __recorded?: boolean;
+    /**
+     * Plan 08-03 (ROUTE-10) — the registry entry's backend value, stamped by
+     * each route handler immediately after `registry.resolve(body.model)`. Read
+     * by the onSend hook in app.ts to populate the `X-Model-Backend` response
+     * header. Undefined on pre-resolve errors (unknown model, missing bearer),
+     * which is the correct behavior — those responses have no resolved backend
+     * to advertise.
+     *
+     * Valid values match LocalBackendEnum: 'ollama' | 'llamacpp' | 'vllm' |
+     * 'vllm-embed' | 'ollama-cloud'. Typed as `string` to avoid a cross-module
+     * dependency from middleware/ to config/.
+     */
+    resolvedBackend?: string;
   }
 }
 

@@ -158,6 +158,7 @@ export function registerMessagesRoute(
       // Resolve model → entry → adapter. resolve(unknown) throws RegistryUnknownModelError
       // which the centralized error handler maps to 404 + Anthropic envelope.
       const entry = opts.registry.resolve(body.model);
+      req.resolvedBackend = entry.backend;       // Plan 08-03 (ROUTE-10) — stamp for onSend hook
       const adapter: BackendAdapter = opts.makeAdapter(entry);
 
       // D-A3 / D-F3 — translate Anthropic body → canonical with backend_model remap.

@@ -101,6 +101,7 @@ export function registerEmbeddingsRoute(
       // isRecordedRoute allowlist to include /v1/embeddings, so a request_log
       // row is still produced for unknown-model errors).
       const entry = opts.registry.resolve(body.model);
+      req.resolvedBackend = entry.backend;       // Plan 08-03 (ROUTE-10) — stamp for onSend hook
 
       const adapter: BackendAdapter = opts.makeAdapter(entry);
 

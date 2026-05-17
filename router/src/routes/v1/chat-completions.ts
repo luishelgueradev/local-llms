@@ -86,6 +86,7 @@ export function registerChatCompletionsRoute(
       // Resolve model -> entry -> adapter. resolve(unknown) throws RegistryUnknownModelError
       // which the centralized error handler maps to 404 + OpenAI envelope (D-C3 row).
       const entry = opts.registry.resolve(body.model);
+      req.resolvedBackend = entry.backend;       // Plan 08-03 (ROUTE-10) — stamp for onSend hook
       const adapter: BackendAdapter = opts.makeAdapter(entry);
 
       // Plan 04-01 (D-A3, D-F3): translate inbound OpenAI body → canonical with the

@@ -470,6 +470,38 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
   });
 
   // -------------------------------------------------------------------------
+  // X-Model-Backend response header (Plan 08-03, ROUTE-10)
+  // -------------------------------------------------------------------------
+  //
+  // onSend fires after the route handler returns and BEFORE the body is
+  // serialized + flushed. For non-stream responses, this places the header
+  // cleanly in the initial HTTP response. For SSE streams (chat-completions,
+  // messages stream branch), the SSE plugin (fastify-sse-v2) flushes headers
+  // on the first reply.sse(...) call AFTER all onSend hooks have run — so the
+  // header lands in the initial response block, BEFORE the first `data:` frame.
+  //
+  // Skip the header when req.resolvedBackend is undefined: pre-resolve errors
+  // (unknown model 404, missing bearer 401) and routes that never resolve a
+  // backend (/healthz, /readyz, /metrics, /v1/models, /v1/messages/count_tokens)
+  // all naturally produce responses without the header.
+  //
+  // Each route handler stamps req.resolvedBackend = entry.backend immediately
+  // after the registry.resolve(body.model) call. count-tokens deliberately
+  // does NOT stamp (pure-CPU token estimate; no backend dispatch — D-F1).
+  //
+  // D-E2: Traefik passes custom response headers through by default; Plan 08-10's
+  // smoke verifies the header survives the edge and is present on SSE streams.
+  // T-08-T-03 mitigation: reply.header() replaces (not appends), so any upstream
+  // X-Model-Backend echo cannot tamper with the value we stamp here.
+  app.addHook('onSend', async (req, reply, payload) => {
+    const backend = req.resolvedBackend;
+    if (backend) {
+      void reply.header('X-Model-Backend', backend);
+    }
+    return payload;
+  });
+
+  // -------------------------------------------------------------------------
   // Routes
   // -------------------------------------------------------------------------
 
