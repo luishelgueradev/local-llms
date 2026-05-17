@@ -58,3 +58,23 @@ describe('EnvSchema — CIRCUIT_* defaults + overrides (Plan 08-04)', () => {
     expect(() => loadEnv({ ...baseEnv, CIRCUIT_FAILURE_THRESHOLD: '-1' })).toThrow();
   });
 });
+
+describe('EnvSchema — ROUTER_RATE_LIMIT_RPM defaults + overrides (Plan 08-06)', () => {
+  it('defaults to 600 when unset (D-D3 documented per-bearer-token RPM)', () => {
+    const env = loadEnv(baseEnv);
+    expect(env.ROUTER_RATE_LIMIT_RPM).toBe(600);
+  });
+
+  it('accepts operator overrides via env (string -> int coercion)', () => {
+    const env = loadEnv({ ...baseEnv, ROUTER_RATE_LIMIT_RPM: '1200' });
+    expect(env.ROUTER_RATE_LIMIT_RPM).toBe(1200);
+  });
+
+  it('rejects ROUTER_RATE_LIMIT_RPM=0 with ZodError (min=1)', () => {
+    expect(() => loadEnv({ ...baseEnv, ROUTER_RATE_LIMIT_RPM: '0' })).toThrow();
+  });
+
+  it('rejects negative ROUTER_RATE_LIMIT_RPM with ZodError', () => {
+    expect(() => loadEnv({ ...baseEnv, ROUTER_RATE_LIMIT_RPM: '-100' })).toThrow();
+  });
+});
