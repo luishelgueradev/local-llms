@@ -199,13 +199,19 @@ fi
 # overwriting the trap itself (WR-03 — the previous pattern installed three
 # different EXIT traps, each overwriting the previous, leaving stale state
 # if the script exited between assignments).
+#
+# PARSER_ERR is also covered here (CR-02): the previous code hardcoded
+# `/tmp/gc-models-parser.err` for the classifier stderr capture, which is
+# a predictable name → symlink-attack target. `mktemp` returns a fresh
+# unguessable path with O_EXCL semantics, closing the TOCTOU window.
 CANDIDATES_FILE=""
 CLASSIFIED_FILE=""
 UNREF_FILE=""
+PARSER_ERR=""
 # Trap is idempotent — `rm -f` on an empty path is a no-op, and the
 # `2>/dev/null || true` tail guarantees a re-entry from EXIT does not
 # error out under set -uo pipefail.
-trap 'rm -f "${CANDIDATES_FILE:-}" "${CLASSIFIED_FILE:-}" "${UNREF_FILE:-}" 2>/dev/null || true' EXIT
+trap 'rm -f "${CANDIDATES_FILE:-}" "${CLASSIFIED_FILE:-}" "${UNREF_FILE:-}" "${PARSER_ERR:-}" 2>/dev/null || true' EXIT
 
 CANDIDATES_FILE="$(mktemp)"
 
@@ -261,14 +267,18 @@ echo "[gc-models] Scanning ${CANDIDATE_COUNT} candidate(s) under ${HOST_DATA_ROO
 CLASSIFIED_FILE="$(mktemp)"
 
 if [[ "${CANDIDATE_COUNT}" -gt 0 ]]; then
+  # `mktemp` (CR-02): the previous hardcoded `/tmp/gc-models-parser.err`
+  # is a predictable filename — a pre-placed symlink at that path would
+  # cause the `2>` redirect to follow the link and truncate the linked
+  # file (TOCTOU). The consolidated trap cleans this up regardless of
+  # exit path; no manual `rm -f` needed.
+  PARSER_ERR="$(mktemp)"
   if ! (cd "${ROUTER_DIR}" && "${TSX_BIN}" "${CLASSIFY_HELPER}" "${MODELS_YAML}") \
-       < "${CANDIDATES_FILE}" > "${CLASSIFIED_FILE}" 2>/tmp/gc-models-parser.err; then
+       < "${CANDIDATES_FILE}" > "${CLASSIFIED_FILE}" 2>"${PARSER_ERR}"; then
     echo "[gc-models] ERROR: classifier failed. Stderr:" >&2
-    cat /tmp/gc-models-parser.err >&2 || true
-    rm -f /tmp/gc-models-parser.err
+    cat "${PARSER_ERR}" >&2 || true
     exit 1
   fi
-  rm -f /tmp/gc-models-parser.err
 fi
 
 # ─── Build the unreferenced (to-GC) list ─────────────────────────────────────
