@@ -341,7 +341,13 @@ if [[ "${LEVEL}" == "WARN" ]] && [[ -n "${NTFY_URL}" ]]; then
   # `--fail` treats 4xx/5xx as errors so they reach the secondary log line.
   # `--max-time 10` bounds the wait — a hung receiver cannot block the cron slot
   # for more than 10 seconds (T-09-D-04 mitigation).
-  set +e
+  #
+  # WR-02: previously this block was wrapped in `set +e ... set -e`. The
+  # script header only sets `-uo pipefail` (no `-e`), so `set +e` was a no-op
+  # and the trailing `set -e` actually ENABLED errexit for the remainder of
+  # the script — flipping it from never-on to on. Removing both: under the
+  # prevailing `set -uo pipefail`, `curl` failures do not abort the script
+  # and `CURL_EXIT=$?` captures the exit code cleanly.
   curl --fail -sS --max-time 10 \
     -H 'Title: local-llms disk alert' \
     -H 'Priority: high' \
@@ -349,7 +355,6 @@ if [[ "${LEVEL}" == "WARN" ]] && [[ -n "${NTFY_URL}" ]]; then
     -d "${MSG}" \
     "${NTFY_URL}" >/dev/null 2>&1
   CURL_EXIT=$?
-  set -e
 
   if [[ "${CURL_EXIT}" -ne 0 ]]; then
     # Host-only extraction via extract_url_host (CR-01). The function
