@@ -653,7 +653,7 @@ To re-run `01-init.sql` from scratch (DESTRUCTIVE — wipes ALL data): `docker c
 - **`request_log` is unbounded in v1.** No automated retention or partitioning yet. Monitor disk usage on `${HOST_DATA_ROOT}/postgres-data` (Phase 9 OPS-03 adds an alert). Partitioning + TTL land when actual row volume warrants — not before.
 - **`usage_daily` refresh** runs on the router's Node `setInterval` once per UTC midnight (CONTEXT D-F2 path B). If the router is offline at midnight, the day's aggregation lands on the next boot.
 - **`/metrics` is unauth on loopback.** Phase 6 (Traefik) MUST add a path-matcher middleware returning 404 for external `/metrics` requests — flagged as a Phase 6 CRITICAL follow-up in `.planning/phases/05-postgres-observability-seam/05-CONTEXT.md` §Deferred.
-- **Backups are on-host.** Phase 9 (OPS-02) adds an off-host backup destination. Until then, a host disk failure loses both the live data and the backups.
+- **Backups are on-host until OPS-02 is configured.** When `BACKUP_RESTIC_REPO` + `BACKUP_RESTIC_PASSWORD` are unset in `.env`, the daily `pg_dump` files live on the same disk as the live database — a single disk failure loses both. See [§Operations §Off-host backups (OPS-02)](#off-host-backups-ops-02) for the host-crontab + restic publish recipe that closes this limitation.
 
 ## Phase 6 — Traefik + TLS + Open WebUI
 
@@ -1299,7 +1299,126 @@ If the dry-run lied or you change your mind, `mv` the file back from the trash d
 
 **Pattern reference:** the `--apply` / `--yes` / interactive-phrase contract mirrors `bin/restore-drill.sh` (see `.planning/phases/05-postgres-observability-seam/05-03-SUMMARY.md` §patterns-established for the canonical destructive-ops template).
 
-<!-- OPS-02 — Plan 09-02 will add `### Off-host backups (OPS-02)` here. -->
+### Off-host backups (OPS-02)
+
+The Phase 5 `pg-backup` sidecar writes daily `router-YYYY-MM-DDTHH.dump` files to `${HOST_DATA_ROOT}/postgres-backups/` with 7-day on-host retention. Those dumps live on the SAME host as the live database — a single disk failure loses both. `bin/backup-postgres.sh` closes that gap by publishing the newest dump to an operator-provided **off-host** [restic](https://restic.net/) repository, enforcing retention via `restic forget --prune`.
+
+This subsection closes the Phase 5 §"Known limitations" bullet about on-host-only backups.
+
+**Why restic and not rclone (CONTEXT §Specifics line 74):**
+
+- Restic encrypts at rest by default (AES-256 + Poly1305 MAC). `BACKUP_RESTIC_PASSWORD` doubles as the encryption key — no separate `crypt` backend dance.
+- Retention is a one-line policy: `restic forget --keep-daily 7 --keep-weekly 4 --keep-monthly 6 --prune`. Rclone retention requires custom scripting.
+- Same CLI for LAN destinations (sftp, rest-server, local) AND cloud storage (b2, s3, gcs, azure) — operator can change destinations without changing the script.
+
+**Prerequisites — one-time setup:**
+
+1. Install restic on the host:
+
+   ```bash
+   sudo apt install restic         # Debian / Ubuntu
+   # or download a static binary from https://restic.net/
+   ```
+
+2. Set `BACKUP_RESTIC_REPO` + `BACKUP_RESTIC_PASSWORD` in `.env` (see `.env.example` for sample URIs covering sftp / local-path / b2 / rest backends, and the password-generation recipe).
+
+3. Initialize the restic repository ONCE (the script does NOT auto-init):
+
+   ```bash
+   restic -r "$BACKUP_RESTIC_REPO" init
+   # Interactive prompt: paste the value you set in BACKUP_RESTIC_PASSWORD.
+   ```
+
+   Repeat-runs of `init` against an already-initialized repo will refuse — that is the correct behavior.
+
+**Daily publish — host crontab (recommended):**
+
+The pg-backup sidecar's `while true; sleep 86400` loop starts when the sidecar first comes up — if Compose was started at 04:00 UTC, dumps land at ~04:00 UTC every day. Schedule the off-host publish ~30 min later so the day's dump is on disk:
+
+```cron
+# /etc/crontab or `crontab -e` (host crontab, NOT inside a container)
+# Adjust HH to ~30 minutes after your stack's pg-backup dump time.
+MAILTO=ops@example.com
+30 4 * * * cd /path/to/local-llms && bash bin/backup-postgres.sh >> /var/log/local-llms-backup.log 2>&1
+```
+
+Make the log file operator-owned + chmod 600 (the script itself never prints `BACKUP_RESTIC_PASSWORD`, but the log will accumulate restic stdout and a stray host diagnostic could leak around it):
+
+```bash
+sudo touch /var/log/local-llms-backup.log
+sudo chown "$USER":"$USER" /var/log/local-llms-backup.log
+sudo chmod 600 /var/log/local-llms-backup.log
+```
+
+**Manual one-shot:**
+
+Useful for testing the setup or doing an ad-hoc publish before a known-risky change:
+
+```bash
+bash bin/backup-postgres.sh
+```
+
+The script picks the newest `router-*.dump` via `ls -t | head -1`, runs `restic backup` with `--tag local-llms --tag postgres --tag <hostname>`, and then runs the retention policy. Backup failures exit 1; retention-only failures WARN but exit 0 (partial success is better than crontab spam on a transient prune lock contention).
+
+**Retention policy:**
+
+Default — `--keep-daily 7 --keep-weekly 4 --keep-monthly 6`. Total ~17 snapshots after 6 months of daily backups. Operator override via `BACKUP_KEEP_POLICY` in `.env`:
+
+```bash
+# Long-retention archive (example only — set to whatever you actually want)
+BACKUP_KEEP_POLICY="--keep-daily 30 --keep-monthly 24"
+```
+
+**Off-host restore drill — extending the Phase 5 [Restore drill](#restore-drill):**
+
+The on-host `bin/restore-drill.sh` (Phase 5) is UNCHANGED. The off-host restore prepends a `restic restore` step that fetches the desired snapshot back into the host bind mount, then hands off to the same `bin/restore-drill.sh` recipe:
+
+```bash
+# 1. List available snapshots (filter by the postgres tag the script adds).
+restic -r "$BACKUP_RESTIC_REPO" snapshots --tag postgres
+
+# 2. Pick the snapshot id you want — e.g. `abcd1234`.
+
+# 3. Restore into the host bind mount so the restore-drill script can find it.
+restic -r "$BACKUP_RESTIC_REPO" restore abcd1234 \
+  --target "${HOST_DATA_ROOT:-/srv/local-llms}/postgres-backups/"
+
+# 4. Hand off to the existing Phase 5 recipe with the restored dump filename.
+bin/restore-drill.sh router-2026-05-14T12.dump
+```
+
+Step 3 unpacks the snapshot into a subtree mirroring the original path. The dump file will land at `${HOST_DATA_ROOT}/postgres-backups/${HOST_DATA_ROOT}/postgres-backups/router-*.dump` (restic preserves absolute paths). Move it up one level into the directory `bin/restore-drill.sh` actually reads:
+
+```bash
+mv "${HOST_DATA_ROOT}/postgres-backups${HOST_DATA_ROOT}/postgres-backups/"router-*.dump \
+   "${HOST_DATA_ROOT}/postgres-backups/"
+```
+
+Audit recipe (NOT a Plan 09-02 deliverable — operator-driven):
+
+```bash
+# Verify on-disk blobs match content hashes (slow — runs `restic check --read-data`).
+restic -r "$BACKUP_RESTIC_REPO" check --read-data
+```
+
+**What is NOT backed up:**
+
+- **`models-gguf/` and `models-hf/`** — models are re-downloadable per `.planning/REQUIREMENTS.md` §"Out of Scope" line 169.
+- **`${HOST_DATA_ROOT}/openwebui/`** — Open WebUI's local filesystem state (uploaded files, temp cache). The OWUI Postgres DB IS covered (it is one of the two databases inside the dump). v2 may add filesystem-state backup.
+- **Valkey (`${HOST_DATA_ROOT}/valkey/`)** — cache only: registry cache, rate-limit counters, idempotency state. Nothing in there outlives a restart.
+
+**Security note — `BACKUP_RESTIC_PASSWORD` storage (T-09-I-03):**
+
+The off-host backup destination IS the disaster-recovery target — assume it can be compromised independently of the live host. Restic's AES-256 encryption means an attacker with read access to the off-host blobs sees noise. BUT an attacker with `.env` read access on the live host can also decrypt the off-host snapshots.
+
+Recommendation: store `BACKUP_RESTIC_PASSWORD` in a password manager OUTSIDE the host filesystem (1Password / Bitwarden / `pass` running on a different machine). The `.env` file is the convenience copy — losing the live host should not lose the password.
+
+At-rest encryption of `.env` itself (via sops / age / vault) is deferred to v2 per CONTEXT §Deferred line 85. The current limitation is documented; in-stack secret-rotation tooling for `BACKUP_RESTIC_PASSWORD` is operator-managed (rotate by initializing a fresh repo + re-publishing) and outside Plan 09-02 scope.
+
+**Standing operator caveats:**
+
+- **Backup is fire-and-forget.** Failures surface only via crontab `MAILTO` and the log redirection. Set up Postfix / msmtp if you want the email actually delivered. A Grafana panel for "last successful off-host backup age" is operator-deferred — add a `restic snapshots --json | jq` panel later if desired.
+- **Concurrent invocations serialize on the repo lock.** If a manual `bash bin/backup-postgres.sh` overlaps with the crontab entry, restic emits "unable to acquire lock" + exits 1; the script surfaces that clearly. Avoid overlapping schedules.
 
 <!-- OPS-03 — Plan 09-03 will add `### Disk-usage alert (OPS-03)` here. -->
 
