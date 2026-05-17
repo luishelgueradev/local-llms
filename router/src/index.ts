@@ -1,6 +1,7 @@
 import pino, { type LoggerOptions } from 'pino';
-import { loadEnv } from './config/env.js';
-import { loadRegistryFromFile, makeRegistryStore, watchRegistry } from './config/registry.js';
+import { fileURLToPath } from 'node:url';
+import { loadEnv, type Env } from './config/env.js';
+import { loadRegistryFromFile, makeRegistryStore, watchRegistry, type Registry } from './config/registry.js';
 import { buildApp, POSTGRES_PROBE_URL } from './app.js';
 import { makeLoggerOptions } from './log/logger.js';
 import { makeDb, makePool } from './db/index.js';
@@ -9,6 +10,31 @@ import { makeBufferedWriter } from './db/bufferedWriter.js';
 import { makeUsageDailyScheduler } from './db/usageDaily.js';
 import { makeMetricsRegistry } from './metrics/registry.js';
 import { makeValkeyClient } from './clients/valkey.js';
+
+/**
+ * Plan 08-02 (CLOUD-01 + D-A2) — refuses boot when the registry declares any
+ * `backend: ollama-cloud` model entry but env.OLLAMA_API_KEY is empty.
+ *
+ * Why this is a cross-check rather than a schema field: zod schemas are static —
+ * the env schema has no awareness of the registry. Doing the check here means
+ * - operators with no cloud models can leave OLLAMA_API_KEY empty (or absent
+ *   from .env entirely) and the router boots normally.
+ * - operators who add a cloud entry to models.yaml WITHOUT setting the env var
+ *   get a loud failure at next boot, not a silent 401 at first request.
+ *
+ * Exported as a named function so a vitest unit test can exercise it without
+ * spinning up the full router boot.
+ */
+export function assertCloudEnvIfConfigured(reg: Registry, env: Env): void {
+  const hasCloud = reg.models.some((m) => m.backend === 'ollama-cloud');
+  if (hasCloud && (!env.OLLAMA_API_KEY || env.OLLAMA_API_KEY.trim() === '')) {
+    throw new Error(
+      'Config error: router/models.yaml declares one or more `backend: ollama-cloud` entries ' +
+        'but OLLAMA_API_KEY is empty in the environment. Set OLLAMA_API_KEY=... in .env ' +
+        '(get a key from https://ollama.com → Settings → API Keys) or remove the cloud entries.',
+    );
+  }
+}
 
 async function main(): Promise<void> {
   const env = loadEnv();
@@ -65,6 +91,13 @@ async function main(): Promise<void> {
   // Fail-fast on bad models.yaml (D-C3 startup half — hot-reload's keep-previous semantics
   // land in plan 02-05's watcher).
   const initialRegistry = loadRegistryFromFile(env.MODELS_YAML_PATH);
+
+  // Plan 08-02 (CLOUD-01) — refuse to boot if models.yaml declares cloud entries
+  // but env.OLLAMA_API_KEY is empty. Placed after env-parse + registry-parse
+  // so both inputs are validated before the cross-check runs. See JSDoc on
+  // assertCloudEnvIfConfigured (above main) for rationale.
+  assertCloudEnvIfConfigured(initialRegistry, env);
+
   const registry = makeRegistryStore(initialRegistry);
 
   const app = await buildApp({
@@ -148,19 +181,36 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((err: unknown) => {
-  // No app.log available yet (we crashed before or during buildApp). Emit a single
-  // pino-shaped JSON line on stderr so log shippers still parse it; level 60 = fatal.
-  // WR-03 fix — surface pre-listen throws (loadEnv / loadRegistryFromFile / buildApp)
-  // through structured logging instead of as an unhandled promise rejection.
-  const e = err as { name?: string; message?: string; stack?: string } | undefined;
-  process.stderr.write(
-    `${JSON.stringify({
-      level: 60,
-      time: Date.now(),
-      msg: 'failed to start',
-      err: { name: e?.name, message: e?.message, stack: e?.stack },
-    })}\n`,
-  );
-  process.exit(1);
-});
+/**
+ * Plan 08-02 (CLOUD-01) — only run main() when this module is the process
+ * entrypoint, not when it's imported as a library (e.g. from a vitest test that
+ * needs the exported assertCloudEnvIfConfigured helper). Without the gate, the
+ * test-side import would invoke main(), boot the full app, and call
+ * process.exit(1) when env parsing fails on the test's incomplete env — causing
+ * vitest to abort with "process.exit unexpectedly called".
+ *
+ * The check compares the resolved path of import.meta.url against process.argv[1]
+ * (the file Node was invoked with). Equivalent to the CommonJS
+ * `require.main === module` idiom in ESM.
+ */
+const isMainModule =
+  typeof process.argv[1] === 'string' && fileURLToPath(import.meta.url) === process.argv[1];
+
+if (isMainModule) {
+  main().catch((err: unknown) => {
+    // No app.log available yet (we crashed before or during buildApp). Emit a single
+    // pino-shaped JSON line on stderr so log shippers still parse it; level 60 = fatal.
+    // WR-03 fix — surface pre-listen throws (loadEnv / loadRegistryFromFile / buildApp)
+    // through structured logging instead of as an unhandled promise rejection.
+    const e = err as { name?: string; message?: string; stack?: string } | undefined;
+    process.stderr.write(
+      `${JSON.stringify({
+        level: 60,
+        time: Date.now(),
+        msg: 'failed to start',
+        err: { name: e?.name, message: e?.message, stack: e?.stack },
+      })}\n`,
+    );
+    process.exit(1);
+  });
+}

@@ -11,11 +11,16 @@ import { RegistryUnknownModelError } from '../errors/envelope.js';
  * backend values so (1) each gets its own BackendSemaphore (chat and embed concurrency
  * caps are independent), and (2) the per-backend VRAM-envelope superRefine sums them
  * separately rather than over-accounting both vllm instances against a single budget.
- * Phase 8 widens to include 'ollama-cloud' with a discriminated union so cloud entries
- * may omit vram_budget_gb.
+ *
+ * Plan 08-02 (CLOUD-01) — the enum now includes 'ollama-cloud'. Rather than the
+ * discriminated-union approach previously sketched (cloud entries skipping
+ * vram_budget_gb entirely), we relax `vram_budget_gb` from `.positive()` to
+ * `.nonnegative()`: cloud entries set vram_budget_gb=0 and the VRAM-envelope
+ * superRefine still sums them (0 contributes 0 to the envelope total — clean).
+ * The one-character relaxation covers the same intent as a discriminated union
+ * without forcing the schema to drift as the enum grows.
  */
-export const LocalBackendEnum = z.enum(['ollama', 'llamacpp', 'vllm', 'vllm-embed']);
-// Phase 8 widens to include 'ollama-cloud' (with a discriminated union to allow cloud entries to skip vram_budget_gb).
+export const LocalBackendEnum = z.enum(['ollama', 'llamacpp', 'vllm', 'vllm-embed', 'ollama-cloud']);
 
 export const ModelEntrySchema = z.object({
   name: z.string().min(1),
@@ -24,7 +29,10 @@ export const ModelEntrySchema = z.object({
   backend_model: z.string().min(1),
   // Phase 3: capabilities + vram_budget_gb are now REQUIRED fields (Phase 2 accepted them without requiring them).
   capabilities: z.array(z.enum(['chat', 'embeddings', 'vision', 'tools'])).min(1),
-  vram_budget_gb: z.number().positive(),
+  // Cloud entries (backend: ollama-cloud) use 0 because they consume no local VRAM;
+  // the VRAM-envelope superRefine still sums them (0 contributes 0 to the envelope total).
+  // Plan 08-02 relaxed this from .positive() to .nonnegative() for that reason.
+  vram_budget_gb: z.number().nonnegative(),
   // Per-model concurrency is accepted-but-ignored in Phase 3 (D-B6); backend-level cap is authoritative.
   concurrency: z.number().int().positive().optional(),
   max_model_len: z.number().int().positive().optional(),

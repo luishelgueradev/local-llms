@@ -16,6 +16,21 @@ const EnvSchema = z.object({
   // value — there's no "disable auth" knob.
   ROUTER_VALKEY_URL: z.string().url().default('redis://valkey:6379'),
   ROUTER_VALKEY_PASSWORD: z.string().min(8, 'ROUTER_VALKEY_PASSWORD must be at least 8 characters'),
+  /**
+   * Phase 8 Plan 02 (CLOUD-01, D-A2) — bearer token for https://ollama.com.
+   *
+   * OPTIONAL at the env-schema level: an operator running only local models
+   * doesn't need it. CROSS-CHECKED at boot in router/src/index.ts via
+   * assertCloudEnvIfConfigured: if models.yaml declares any `backend: ollama-cloud`
+   * entry but this field is empty, the router refuses to start with a clear error.
+   * The two-stage check (optional + cross-check) keeps the local-only path
+   * zero-friction while making the cloud-required path fail-fast.
+   *
+   * Deliberately NOT `.min(8)` — Ollama Cloud's key format is `oss_` prefix
+   * + ~32 chars but not contractually guaranteed; pinning a length here
+   * would break operators if Ollama rotates to a different format.
+   */
+  OLLAMA_API_KEY: z.string().optional(),
   // OLLAMA_URL was removed: it was parsed but never consumed — backend URLs come
   // from models.yaml per-entry backend_url (registry-driven). Phase 3 WR-04
   // identified the same dead field; removing it here closes both IN-01 and 03/WR-04.

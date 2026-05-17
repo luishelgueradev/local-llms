@@ -221,16 +221,22 @@ models:
     `)).toThrow();
   });
 
-  it('rejects backend: ollama-cloud in Phase 3 (not in LocalBackendEnum until Phase 8)', () => {
+  it('Plan 08-02: ACCEPTS backend: ollama-cloud — LocalBackendEnum was widened to include it', () => {
+    // Phase 3 originally rejected this. Plan 08-02 (CLOUD-01) widens
+    // LocalBackendEnum to ['ollama', 'llamacpp', 'vllm', 'vllm-embed', 'ollama-cloud'].
+    // Cloud entries declare vram_budget_gb: 0 because they consume no local VRAM;
+    // the schema was simultaneously relaxed from .positive() to .nonnegative() so 0
+    // is structurally valid. See tests/config/registry-cloud.test.ts for the full
+    // cloud-widening regression suite.
     expect(() => loadRegistryFromString(`
 models:
-  - name: x
+  - name: gpt-oss:120b-cloud
     backend: ollama-cloud
-    backend_url: http://x/v1
-    backend_model: m
+    backend_url: https://ollama.com/v1
+    backend_model: gpt-oss:120b-cloud
     capabilities: [chat]
-    vram_budget_gb: 4
-    `)).toThrow();
+    vram_budget_gb: 0
+    `)).not.toThrow();
   });
 });
 
