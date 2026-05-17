@@ -10,11 +10,13 @@ import { openAIRequestToCanonical } from '../../translation/openai-in.js';
 import { canonicalToOpenAIResponse, canonicalToOpenAISse } from '../../translation/openai-out.js';
 import type { CanonicalResponse, CanonicalStreamEvent } from '../../translation/canonical.js';
 import {
+  BreakerOpenError,
   CapabilityNotSupportedError,
   NO_ENVELOPE,
   mapToHttpStatus,
   toOpenAIErrorEnvelope,
 } from '../../errors/envelope.js';
+import type { CircuitBreaker } from '../../resilience/circuitBreaker.js';
 import {
   deriveStatusClass,
   mapErrorToCode,
@@ -61,6 +63,22 @@ export interface RegisterChatCompletionsOpts {
    * (Pitfall 8 idempotency).
    */
   recordOutcome: RecordRequestOutcome;
+  /**
+   * Plan 08-04 (CLOUD-03 / D-B1..D-B4) — per-backend circuit breaker. The
+   * route calls breaker.check(entry.backend) AFTER capability gating and
+   * BEFORE semaphore acquire; on state='open' throws BreakerOpenError (503).
+   * recordSuccess/recordFailure are fire-and-forget around the adapter call.
+   *
+   * Construction lives in app.ts; tests pass either a real Valkey-backed
+   * breaker or the no-op fallback (check always 'closed').
+   */
+  breaker: CircuitBreaker;
+  /**
+   * Plan 08-04 — Retry-After header value (seconds) when the breaker is
+   * open. Derived from env.CIRCUIT_COOLDOWN_MS in app.ts so the route
+   * doesn't need access to the env object.
+   */
+  breakerCooldownSec: number;
 }
 
 /**
@@ -193,6 +211,20 @@ export function registerChatCompletionsRoute(
       let canonicalResult: CanonicalResponse | undefined;
 
       try {
+        // Plan 08-04 (CLOUD-03) — per-backend circuit breaker gate. Fires AFTER
+        // capability gating (above) and BEFORE semaphore acquire so a backend
+        // outage fails fast in <1ms without consuming a slot. On state='open',
+        // throw BreakerOpenError (503 + structured envelope); on 'half-open',
+        // this caller IS the probe — fall through to the adapter call.
+        const breakerResult = await opts.breaker.check(entry.backend);
+        if (breakerResult.state === 'open') {
+          // Stamp Retry-After header BEFORE throw so the centralized error
+          // handler's envelope ships with the back-off hint (mirror of
+          // BackendSaturatedError's Retry-After pattern below).
+          void reply.header('Retry-After', String(opts.breakerCooldownSec));
+          throw new BreakerOpenError(entry.backend, opts.breakerCooldownSec);
+        }
+
         // Lookup the semaphore for the resolved backend. Inside the try so a missing
         // entry routes through the centralized error handler with proper listener cleanup.
         const semaphore = opts.semaphores.get(entry.backend);
@@ -209,6 +241,10 @@ export function registerChatCompletionsRoute(
             // rather than starting an SSE response we can't recover from.
             upstream = await adapter.chatCompletionsCanonicalStream(canonical, controller.signal);
           } catch (err) {
+            // Plan 08-04 — pre-stream adapter error (the SDK threw before the
+            // stream began). The classifier filters non-trip errors; fire-and-
+            // forget so the JSON envelope below isn't delayed by Valkey RTT.
+            void opts.breaker.recordFailure(entry.backend, err);
             // HTTP not yet 200; emit envelope.
             req.raw.socket?.off('close', onClose);
             const env = toOpenAIErrorEnvelope(err);
@@ -287,6 +323,15 @@ export function registerChatCompletionsRoute(
             heartbeat.stop();
             req.raw.socket?.off('close', onClose);
             safeRelease();  // Pitfall 1 mitigation — slot released on stream end/abort/error
+            // Plan 08-04 — stream-branch breaker signaling. Fire-and-forget so
+            // sseCleanup stays synchronous. final.error => recordFailure
+            // (the classifier filters non-trip errors anyway); otherwise
+            // recordSuccess closes a half-open probe / no-op on closed.
+            if (final?.error !== undefined) {
+              void opts.breaker.recordFailure(entry.backend, final.error);
+            } else {
+              void opts.breaker.recordSuccess(entry.backend);
+            }
             const hasUpstreamError = final?.error !== undefined;
             const errStatus = hasUpstreamError
               ? mapToHttpStatus(final!.error)
@@ -360,6 +405,12 @@ export function registerChatCompletionsRoute(
         // finally block can populate request_log.tokens_in / tokens_out for the
         // non-stream branch.
         canonicalResult = await adapter.chatCompletionsCanonical(canonical, controller.signal);
+        // Plan 08-04 — fire-and-forget breaker success signal. Not awaited so
+        // it doesn't add tail latency to the response. If Valkey is slow / down,
+        // the breaker's internal client-options (lazyConnect:false +
+        // enableOfflineQueue:false) surface a rejection that pino logs via the
+        // breaker's `log.warn`; the route is unaffected.
+        void opts.breaker.recordSuccess(entry.backend);
         req.raw.socket?.off('close', onClose);
         return reply.send(canonicalToOpenAIResponse(canonicalResult, { displayModel: entry.name }));
       } catch (err) {
@@ -372,6 +423,14 @@ export function registerChatCompletionsRoute(
         // rate_limit_error envelope; we set the header here so it's present on the reply.
         if (err instanceof BackendSaturatedError) {
           void reply.header('Retry-After', String(Math.ceil(err.waitedMs / 1000)));
+        }
+        // Plan 08-04 — fire-and-forget breaker failure signal. The classifier
+        // (isBreakerTrip) filters out non-trip errors (4xx, ZodError, abort,
+        // BreakerOpenError itself), so calling on every catch is safe; only
+        // trip-eligible errors actually increment the counter. NOT awaited
+        // (same rationale as the success path).
+        if (!(err instanceof BreakerOpenError)) {
+          void opts.breaker.recordFailure(entry.backend, err);
         }
         req.raw.socket?.off('close', onClose);
         caughtErr = err instanceof Error ? err : new Error(String(err));

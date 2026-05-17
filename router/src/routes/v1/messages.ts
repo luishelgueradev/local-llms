@@ -46,10 +46,12 @@ import { countTokens } from '../../translation/count-tokens.js';
 import type { CanonicalResponse, CanonicalStreamEvent } from '../../translation/canonical.js';
 import {
   ANTHROPIC_NO_ENVELOPE,
+  BreakerOpenError,
   CapabilityNotSupportedError,
   mapToHttpStatus,
   toAnthropicErrorEnvelope,
 } from '../../errors/envelope.js';
+import type { CircuitBreaker } from '../../resilience/circuitBreaker.js';
 import {
   deriveStatusClass,
   mapErrorToCode,
@@ -88,6 +90,14 @@ export interface RegisterMessagesRouteOpts {
    * metrics + enqueues request_log row via per-request safeRecord closure.
    */
   recordOutcome: RecordRequestOutcome;
+  /**
+   * Plan 08-04 (CLOUD-03 / D-B1..D-B4) — per-backend circuit breaker. See
+   * RegisterChatCompletionsOpts.breaker for the full semantics; this route
+   * follows the same gate-then-record-around-adapter pattern.
+   */
+  breaker: CircuitBreaker;
+  /** Plan 08-04 — Retry-After header value when the breaker is open. */
+  breakerCooldownSec: number;
 }
 
 /**
@@ -216,6 +226,16 @@ export function registerMessagesRoute(
       let canonicalResult: CanonicalResponse | undefined;
 
       try {
+        // Plan 08-04 (CLOUD-03) — per-backend circuit breaker. Mirrors
+        // chat-completions.ts: fires AFTER capability gate, BEFORE semaphore
+        // acquire. On 'open' throws BreakerOpenError (503); on 'half-open'
+        // this caller is the probe — falls through.
+        const breakerResult = await opts.breaker.check(entry.backend);
+        if (breakerResult.state === 'open') {
+          void reply.header('Retry-After', String(opts.breakerCooldownSec));
+          throw new BreakerOpenError(entry.backend, opts.breakerCooldownSec);
+        }
+
         const semaphore = opts.semaphores.get(entry.backend);
         release = await semaphore.acquire(controller.signal);
         released = false;
@@ -242,6 +262,9 @@ export function registerMessagesRoute(
               { inputTokensHint },
             );
           } catch (err) {
+            // Plan 08-04 — pre-stream adapter error; fire-and-forget breaker
+            // failure signal. Classifier filters non-trip errors.
+            void opts.breaker.recordFailure(entry.backend, err);
             // HTTP not yet 200; emit Anthropic envelope.
             req.raw.socket?.off('close', onClose);
             const env = toAnthropicErrorEnvelope(err);
@@ -322,6 +345,12 @@ export function registerMessagesRoute(
             heartbeat.stop();
             req.raw.socket?.off('close', onClose);
             safeRelease();
+            // Plan 08-04 — fire-and-forget breaker signaling on stream end.
+            if (final?.error !== undefined) {
+              void opts.breaker.recordFailure(entry.backend, final.error);
+            } else {
+              void opts.breaker.recordSuccess(entry.backend);
+            }
             const hasUpstreamError = final?.error !== undefined;
             const errStatus = hasUpstreamError
               ? mapToHttpStatus(final!.error)
@@ -392,6 +421,8 @@ export function registerMessagesRoute(
         // Plan 05-02 Task 3: capture canonicalResult on the OUTER scope so the
         // finally block can populate request_log.tokens_in / tokens_out / upstream_message_id.
         canonicalResult = await adapter.chatCompletionsCanonical(canonical, controller.signal);
+        // Plan 08-04 — fire-and-forget breaker success signal.
+        void opts.breaker.recordSuccess(entry.backend);
 
         // Plan 04-05 Issue #5 resolution: the route hands the canonical result to
         // canonicalToAnthropicResponse with { displayModel: entry.name } so the
@@ -405,6 +436,12 @@ export function registerMessagesRoute(
       } catch (err) {
         if (err instanceof BackendSaturatedError) {
           void reply.header('Retry-After', String(Math.ceil(err.waitedMs / 1000)));
+        }
+        // Plan 08-04 — fire-and-forget breaker failure signal. Skip the
+        // BreakerOpenError case so a breaker-open response doesn't recurse
+        // into recordFailure on itself.
+        if (!(err instanceof BreakerOpenError)) {
+          void opts.breaker.recordFailure(entry.backend, err);
         }
         req.raw.socket?.off('close', onClose);
         caughtErr = err instanceof Error ? err : new Error(String(err));

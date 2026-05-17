@@ -243,6 +243,9 @@ async function setup(
       ? {
           valkey: valkey as unknown as ValkeyClient,
           env: CIRCUIT_ENV,
+          // Wire the breaker's clock to the mock's `now` so valkey.tick(ms)
+          // advances both TTL bookkeeping AND the breaker's notion of time.
+          breakerNow: () => valkey.now,
         }
       : {}),
   });
@@ -494,6 +497,7 @@ describe('Circuit breaker integration — Plan 08-04 (CLOUD-03)', () => {
       metrics: makeFakeMetrics(),
       valkey: valkey as unknown as ValkeyClient,
       env: CIRCUIT_ENV,
+      breakerNow: () => valkey.now,
     });
 
     // Trip the cloud breaker.

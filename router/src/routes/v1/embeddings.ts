@@ -34,9 +34,11 @@ import type { AdapterFactory, BackendAdapter } from '../../backends/adapter.js';
 import type { BackendSemaphore } from '../../concurrency/semaphore.js';
 import { BackendSaturatedError } from '../../concurrency/semaphore.js';
 import {
+  BreakerOpenError,
   CapabilityNotSupportedError,
   mapToHttpStatus,
 } from '../../errors/envelope.js';
+import type { CircuitBreaker } from '../../resilience/circuitBreaker.js';
 import {
   deriveStatusClass,
   mapErrorToCode,
@@ -80,6 +82,13 @@ export interface RegisterEmbeddingsOpts {
    * idempotency on both success and error paths.
    */
   recordOutcome: RecordRequestOutcome;
+  /**
+   * Plan 08-04 (CLOUD-03 / D-B1..D-B4) — per-backend circuit breaker. See
+   * RegisterChatCompletionsOpts.breaker for full semantics.
+   */
+  breaker: CircuitBreaker;
+  /** Plan 08-04 — Retry-After seconds when the breaker is open. */
+  breakerCooldownSec: number;
 }
 
 export function registerEmbeddingsRoute(
@@ -156,6 +165,14 @@ export function registerEmbeddingsRoute(
           throw new CapabilityNotSupportedError(entry.name, 'embeddings');
         }
 
+        // Plan 08-04 (CLOUD-03) — circuit breaker gate. Fires AFTER capability
+        // gate, BEFORE semaphore acquire. Same pattern as chat-completions.ts.
+        const breakerResult = await opts.breaker.check(entry.backend);
+        if (breakerResult.state === 'open') {
+          void reply.header('Retry-After', String(opts.breakerCooldownSec));
+          throw new BreakerOpenError(entry.backend, opts.breakerCooldownSec);
+        }
+
         const semaphore = opts.semaphores.get(entry.backend);
         release = await semaphore.acquire(controller.signal);
         released = false;
@@ -169,6 +186,8 @@ export function registerEmbeddingsRoute(
           dimensions: body.dimensions,
           user: body.user,
         });
+        // Plan 08-04 — fire-and-forget breaker success signal.
+        void opts.breaker.recordSuccess(entry.backend);
         req.raw.socket?.off('close', onClose);
         return reply.send(result);
       } catch (err) {
@@ -176,6 +195,11 @@ export function registerEmbeddingsRoute(
         // chat-completions.ts. The centralized error handler then emits 429 + envelope.
         if (err instanceof BackendSaturatedError) {
           void reply.header('Retry-After', String(Math.ceil(err.waitedMs / 1000)));
+        }
+        // Plan 08-04 — fire-and-forget breaker failure signal (skip BreakerOpenError
+        // to avoid recursive trip on the breaker's own surfaced error).
+        if (!(err instanceof BreakerOpenError)) {
+          void opts.breaker.recordFailure(entry.backend, err);
         }
         req.raw.socket?.off('close', onClose);
         caughtErr = err instanceof Error ? err : new Error(String(err));

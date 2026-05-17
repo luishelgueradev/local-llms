@@ -42,6 +42,8 @@ import {
 } from './metrics/recordOutcome.js';
 import { agentIdPreHandler as defaultAgentIdPreHandler } from './middleware/agentId.js';
 import { closeValkey, type ValkeyClient } from './clients/valkey.js';
+import { makeCircuitBreaker, type CircuitBreaker } from './resilience/circuitBreaker.js';
+import type { Env } from './config/env.js';
 import type { Logger } from 'pino';
 
 // Fastify module augmentation so TypeScript knows about app.liveness + app.semaphores (decorators).
@@ -152,6 +154,27 @@ export interface BuildAppOpts {
    * with the key already closed-over, so they don't need to know about it.
    */
   cloudApiKey?: string;
+  /**
+   * Plan 08-04 (CLOUD-03 / D-B1..D-B4) — env subset needed by the per-backend
+   * circuit breaker. Production wiring (index.ts) passes the full env; test
+   * fixtures omit unless exercising the breaker (in which case they pass an
+   * explicit numeric subset alongside opts.valkey).
+   *
+   * When opts.valkey OR opts.env is absent, buildApp constructs a no-op
+   * breaker (check always 'closed', record* are no-ops) so existing tests
+   * built without these fields continue to work unmodified.
+   */
+  env?: Pick<
+    Env,
+    'CIRCUIT_FAILURE_THRESHOLD' | 'CIRCUIT_WINDOW_MS' | 'CIRCUIT_COOLDOWN_MS'
+  >;
+  /**
+   * Plan 08-04 — test injection seam for the breaker's clock. Tests can pass
+   * a custom `now` so they can advance fake-time without real timers. When
+   * omitted, the breaker uses `Date.now`. Production wiring (index.ts) does
+   * not pass this field.
+   */
+  breakerNow?: () => number;
 }
 
 /**
@@ -439,6 +462,41 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
   // without a Valkey client — they exercise routes that don't touch it.
   if (opts.valkey) app.decorate('valkey', opts.valkey);
 
+  // Plan 08-04 (CLOUD-03 / D-B1..D-B4) — per-backend circuit breaker. When
+  // both opts.valkey AND opts.env are present, construct a real Valkey-backed
+  // breaker; otherwise fall back to a no-op breaker so existing test fixtures
+  // (which omit both fields) continue to work unmodified.
+  //
+  // Production wiring (index.ts) always passes a real Valkey client + the
+  // CIRCUIT_* env subset, so the no-op path is exclusively a test-fixture
+  // concern.
+  const breaker: CircuitBreaker =
+    opts.valkey && opts.env
+      ? makeCircuitBreaker({
+          valkey: opts.valkey,
+          log: app.log as Logger,
+          env: opts.env,
+          now: opts.breakerNow,
+        })
+      : {
+          check: async () => ({ state: 'closed' as const }),
+          recordFailure: async () => {
+            /* no-op */
+          },
+          recordSuccess: async () => {
+            /* no-op */
+          },
+          reset: async () => {
+            /* no-op */
+          },
+        };
+
+  // Pre-compute the Retry-After value (seconds, rounded up from ms) so the
+  // routes can stamp it without re-reading env.
+  const breakerCooldownSec = opts.env
+    ? Math.ceil(opts.env.CIRCUIT_COOLDOWN_MS / 1000)
+    : 60;
+
   // Shutdown hook (D-D7) — clears all timers so process exit is clean.
   // semaphoreMap.clear() tidies the Map; active timer waiters inside the semaphore
   // will reject on their own setTimeout fires (process is exiting).
@@ -533,6 +591,8 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
     makeAdapter: opts.makeAdapter ?? makeAdapterWithCloudKey,
     semaphores,
     recordOutcome,
+    breaker,
+    breakerCooldownSec,
   });
 
   // Plan 04-02 (ANTHR-02, ANTHR-03, ANTHR-04, ANTHR-05):
@@ -544,6 +604,8 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
     makeAdapter: opts.makeAdapter ?? makeAdapterWithCloudKey,
     semaphores,
     recordOutcome,
+    breaker,
+    breakerCooldownSec,
   });
   registerCountTokensRoute(app, { registry: opts.registry });
 
@@ -561,6 +623,8 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
     makeAdapter: opts.makeAdapter ?? makeAdapterWithCloudKey,
     semaphores,
     recordOutcome,
+    breaker,
+    breakerCooldownSec,
   });
 
   // Plan 05-04 — start the usage_daily scheduler last, after all routes are

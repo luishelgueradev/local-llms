@@ -113,6 +113,14 @@ async function main(): Promise<void> {
     // closure. Empty string when the operator runs local-only — assertCloudEnvIfConfigured
     // (above) refused to boot if cloud entries existed without a real key.
     cloudApiKey: env.OLLAMA_API_KEY ?? '',
+    // Plan 08-04 (CLOUD-03 / D-B2) — env subset for the per-backend circuit
+    // breaker. Pairs with `valkey` above: buildApp constructs a real Valkey-
+    // backed breaker only when both fields are present.
+    env: {
+      CIRCUIT_FAILURE_THRESHOLD: env.CIRCUIT_FAILURE_THRESHOLD,
+      CIRCUIT_WINDOW_MS: env.CIRCUIT_WINDOW_MS,
+      CIRCUIT_COOLDOWN_MS: env.CIRCUIT_COOLDOWN_MS,
+    },
   });
 
   // RESEARCH A4 / Pitfall 7 — operator opts into polling fallback for WSL2 + Docker
