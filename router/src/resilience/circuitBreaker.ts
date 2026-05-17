@@ -257,6 +257,17 @@ export function makeCircuitBreaker(opts: MakeCircuitBreakerOpts): CircuitBreaker
       if (stateRaw === 'half-open') {
         // Probe failed — re-open for another full cooldown window. The
         // probe_lock is released so the next post-cooldown check can re-arm.
+        //
+        // 08-REVIEW WR-06 acknowledgement: this branch is NOT atomic with
+        // the GET above; two concurrent failure-recording call sites can
+        // both observe state='half-open' and both run the Promise.all
+        // below. The end-state is correct (state stays 'open', probe_at
+        // advances to roughly the same value, probe_lock DEL is
+        // idempotent), so the race is benign at v1 single-user scale.
+        // If multi-instance routers ever land, swap the GET + branched
+        // SET pair for a Lua script or MULTI/EXEC transaction — the
+        // shape of the keys is already namespaced per backend, so the
+        // script body is small.
         const t = now();
         await Promise.all([
           valkey.set(
