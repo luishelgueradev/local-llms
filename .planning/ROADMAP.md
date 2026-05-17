@@ -216,7 +216,7 @@ Plans:
   3. `max_tokens` is hard-capped at 16,384 for cloud-served models (requests above the cap are rejected with a structured error); a `cloud_spend_daily` metric (sum of generation_duration_ms scoped to cloud-backed requests) is recorded in Postgres and queryable.
   4. `valkey/valkey:8-alpine` runs as a Compose service backing a server-side per-token-per-minute rate limit (`ratelimit:{token}:{minute}`); excess requests receive `429 Retry-After`. A small `models.yaml` cache is also served from Valkey.
   5. An `Idempotency-Key` request header attaches retries to the in-flight stream rather than starting a new generation — a chaos test that fires N concurrent requests with the same key consumes only one GPU-stream worth of tokens and all N clients receive the same response.
-**Plans:** 11 plans
+**Plans:** 9/11 plans executed
 Plans:
 **Wave 0**
 - [x] 08-00-PLAN.md — CR-02 precondition fix: registry validator + probeAdapterFor cache key widening (CLOUD-01 prerequisite)
@@ -233,7 +233,7 @@ Plans:
 
 **Wave 3** *(three parallel plans — depend on Waves 1 + 2)*
 - [x] 08-07-PLAN.md — Idempotency-Key multiplexer (Valkey SETNX + pub/sub + cached chunks list + stream/non-stream replay) (ROUTE-12)
-- [ ] 08-08-PLAN.md — cloud_spend_daily Postgres view migration (CLOUD-05)
+- [x] 08-08-PLAN.md — cloud_spend_daily Postgres view migration (CLOUD-05)
 - [ ] 08-09-PLAN.md — Valkey-backed 30s registry cache + watchRegistry onReload propagation (DATA-06 cache)
 
 **Wave 4** *(blocks on Waves 0-3; live verification + human-verify)*
@@ -263,7 +263,7 @@ Plans:
 | 5. Postgres + Observability Seam | 6/6 | Complete    | 2026-05-15 |
 | 6. Traefik + TLS + Open WebUI | 0/4 | Planned | - |
 | 7. Embeddings + vLLM + GPU Telemetry | 7/7 | Complete   | 2026-05-17 |
-| 8. Ollama Cloud Fallback + Resilience Hardening | 4/11 | In progress | - |
+| 8. Ollama Cloud Fallback + Resilience Hardening | 9/11 | In Progress|  |
 | 9. Operations Hardening | 0/0 | Not started | - |
 
 ## Coverage Summary

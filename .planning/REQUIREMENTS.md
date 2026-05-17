@@ -27,7 +27,7 @@
 - [x] **CLOUD-02**: Models declared with `backend: ollama-cloud` route remotely with no client-visible difference from local models
 - [x] **CLOUD-03**: Per-backend circuit breaker (N failures in M seconds → cooldown) prevents cascading failures during cloud outages
 - [x] **CLOUD-04**: `max_tokens` is hard-capped at 16,384 for cloud-served models
-- [ ] **CLOUD-05**: A `cloud_spend_daily` metric (sum of generation_duration_ms scoped to cloud-backed requests) is recorded in Postgres
+- [x] **CLOUD-05**: A `cloud_spend_daily` metric (sum of generation_duration_ms scoped to cloud-backed requests) is recorded in Postgres
 
 ### Router — common (Fastify + TS)
 
@@ -250,7 +250,7 @@ Each requirement maps to exactly one phase. Mapping derived from research-recomm
 | CLOUD-02 | Phase 8 — Ollama Cloud Fallback + Resilience Hardening | Complete |
 | CLOUD-03 | Phase 8 — Ollama Cloud Fallback + Resilience Hardening | Complete |
 | CLOUD-04 | Phase 8 — Ollama Cloud Fallback + Resilience Hardening | Complete |
-| CLOUD-05 | Phase 8 — Ollama Cloud Fallback + Resilience Hardening | Pending |
+| CLOUD-05 | Phase 8 — Ollama Cloud Fallback + Resilience Hardening | Complete |
 | DATA-06 | Phase 8 — Ollama Cloud Fallback + Resilience Hardening | Complete |
 | ROUTE-10 | Phase 8 — Ollama Cloud Fallback + Resilience Hardening | Complete |
 | ROUTE-11 | Phase 8 — Ollama Cloud Fallback + Resilience Hardening | Complete |
