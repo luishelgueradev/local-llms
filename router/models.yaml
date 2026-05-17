@@ -23,6 +23,15 @@ backends:
     base_url: http://vllm-embed:8000/v1
     concurrency: 4
     queue_max_wait_ms: 30000
+  ollama-cloud:
+    # base_url: documentation only — NOT used at runtime (see registry.ts BackendsSection comment).
+    # Phase 8 (Plan 08-02 — CLOUD-01): Ollama Cloud OpenAI-compat surface. Concurrency
+    # backstop only — cloud's own rate-limit + weekly quota are the real cap. Plan 08-06
+    # adds the per-agent rate-limit; Plan 08-07 adds idempotency; Plan 08-04 adds the
+    # breaker that opens on cloud 5xx/timeout streaks.
+    base_url: https://ollama.com/v1
+    concurrency: 4
+    queue_max_wait_ms: 30000
 
 models:
   - name: llama3.2:3b-instruct-q4_K_M
@@ -88,3 +97,28 @@ models:
     concurrency: 4
     max_model_len: 8192
     profile: vllm
+
+  # Phase 8 (Plan 08-02 — CLOUD-01, CLOUD-02). Ollama Cloud entries route to
+  # https://ollama.com/v1 with bearer OLLAMA_API_KEY from .env. vram_budget_gb=0
+  # because cloud doesn't consume local VRAM; the registry envelope superRefine
+  # sums them (0+0=0 ≤ 16). Concurrency: 4 — cloud's own rate-limit and quota
+  # gates are the real cap; the per-backend semaphore backstops bursts.
+  - name: gpt-oss:120b-cloud
+    backend: ollama-cloud
+    backend_url: https://ollama.com/v1
+    backend_model: gpt-oss:120b-cloud
+    capabilities: [chat, tools]
+    vram_budget_gb: 0
+    concurrency: 4
+    max_model_len: 65536
+    profile: cloud
+
+  - name: gpt-oss:20b-cloud
+    backend: ollama-cloud
+    backend_url: https://ollama.com/v1
+    backend_model: gpt-oss:20b-cloud
+    capabilities: [chat, tools]
+    vram_budget_gb: 0
+    concurrency: 4
+    max_model_len: 32768
+    profile: cloud

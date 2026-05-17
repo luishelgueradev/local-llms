@@ -138,6 +138,20 @@ export interface BuildAppOpts {
    * in-flight request) flush before the pg drain races its 3 s timeout.
    */
   valkey?: ValkeyClient;
+  /**
+   * Plan 08-02 (CLOUD-01) — bearer apiKey threaded into the AdapterFactory
+   * closure so OllamaCloudAdapter can authenticate against https://ollama.com.
+   *
+   * Optional in BuildAppOpts because test fixtures without cloud entries don't
+   * need it; production wiring (index.ts) ALWAYS passes it (empty string is
+   * acceptable when the registry has no cloud entries — assertCloudEnvIfConfigured
+   * is the boot-time gate that refuses the misconfigured case BEFORE buildApp).
+   *
+   * The key is pre-bound into makeAdapterWithCloudKey at the top of buildApp;
+   * route handlers + the liveness scheduler receive an AdapterFactory (single-arg)
+   * with the key already closed-over, so they don't need to know about it.
+   */
+  cloudApiKey?: string;
 }
 
 /**
@@ -161,6 +175,21 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
   // SSE plugin — registered now so plan 02-04's stream branch can call reply.sse(...)
   // without re-registering. No options — defaults are correct.
   await app.register(FastifySSEPlugin);
+
+  // Plan 08-02 (CLOUD-01) — wrap defaultMakeAdapter in a closure that pre-binds
+  // the cloud apiKey for OllamaCloudAdapter construction. Local adapters ignore
+  // the deps arg entirely; cloud adapters require it. The closure keeps the
+  // AdapterFactory type single-arg (no churn at the 4 call sites below), with
+  // the key safely captured at buildApp time.
+  //
+  // Empty-string fallback is intentional: assertCloudEnvIfConfigured (index.ts)
+  // refuses to boot when models.yaml has cloud entries + empty key, so an empty
+  // cloudApiKey here can only mean "no cloud entries in registry, key not
+  // needed". If a cloud entry somehow reaches the factory with this empty
+  // closure key, factory.ts throws with a clear "requires cloudApiKey" error.
+  const cloudApiKey = opts.cloudApiKey ?? '';
+  const makeAdapterWithCloudKey: AdapterFactory = (entry) =>
+    defaultMakeAdapter(entry, { cloudApiKey });
 
   // Bearer auth — onRequest hook runs BEFORE body parsing and zod validation,
   // so invalid tokens are rejected before any route-level processing occurs.
@@ -273,8 +302,11 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
   // mock from tests. The BuildAppOpts.makeAdapter contract (see app.ts:62)
   // is "tests inject a fake here to mock the upstream"; probeAdapterFor now
   // honors that contract.
+  // Plan 08-02 (CLOUD-01) — when opts.makeAdapter is not supplied (production),
+  // fall back to makeAdapterWithCloudKey so probes against a cloud backend's
+  // /v1/models surface authenticate correctly. Tests still inject opts.makeAdapter.
   const probeAdapters = new Map<string, ReturnType<typeof defaultMakeAdapter>>();
-  const probeMakeAdapter = opts.makeAdapter ?? defaultMakeAdapter;
+  const probeMakeAdapter = opts.makeAdapter ?? makeAdapterWithCloudKey;
   const probeAdapterFor = (backend: string, url: string) => {
     const key = `${backend}|${url}`;
     let a = probeAdapters.get(key);
@@ -466,7 +498,7 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
   // Required before Phase 8's OllamaCloudAdapter (different auth surface).
   registerChatCompletionsRoute(app, {
     registry: opts.registry,
-    makeAdapter: opts.makeAdapter ?? defaultMakeAdapter,
+    makeAdapter: opts.makeAdapter ?? makeAdapterWithCloudKey,
     semaphores,
     recordOutcome,
   });
@@ -477,7 +509,7 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
   //  - POST /v1/messages/count_tokens — pure CPU; no backend call, no semaphore (D-F1).
   registerMessagesRoute(app, {
     registry: opts.registry,
-    makeAdapter: opts.makeAdapter ?? defaultMakeAdapter,
+    makeAdapter: opts.makeAdapter ?? makeAdapterWithCloudKey,
     semaphores,
     recordOutcome,
   });
@@ -494,7 +526,7 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
   //    BEFORE the adapter call (T-07-11 mitigation, route-side layer).
   registerEmbeddingsRoute(app, {
     registry: opts.registry,
-    makeAdapter: opts.makeAdapter ?? defaultMakeAdapter,
+    makeAdapter: opts.makeAdapter ?? makeAdapterWithCloudKey,
     semaphores,
     recordOutcome,
   });

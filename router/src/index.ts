@@ -109,6 +109,10 @@ async function main(): Promise<void> {
     usageDailyScheduler,
     pool, // Plan 05-04 D-G2 — enables /readyz postgres probe
     valkey, // Plan 08-01 DATA-06 — decorates app.valkey for Phase 8 consumers
+    // Plan 08-02 (CLOUD-01) — pre-bind OLLAMA_API_KEY into the AdapterFactory
+    // closure. Empty string when the operator runs local-only — assertCloudEnvIfConfigured
+    // (above) refused to boot if cloud entries existed without a real key.
+    cloudApiKey: env.OLLAMA_API_KEY ?? '',
   });
 
   // RESEARCH A4 / Pitfall 7 — operator opts into polling fallback for WSL2 + Docker
