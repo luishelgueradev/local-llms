@@ -42,7 +42,7 @@ Do NOT add `default-runtime: nvidia` to `/etc/docker/daemon.json` — `compose.y
 
    Creates `/srv/local-llms/{models-gguf,models-hf,postgres,valkey,traefik}` and copies `.env.example` to `.env` if missing. Idempotent — safe to re-run.
 
-   > **Future-phase note (load-bearing):** The bootstrap script's `chown -R` step is safe in Phase 1 because only `models-gguf/`, `models-hf/`, and `traefik/{acme,logs}/` exist with real content, and all are user-owned. **After Phase 5 (Postgres) and Phase 8 (Valkey) land**, those services run as non-user uids inside their containers (Postgres uid 999, Valkey uid 999/1000). Re-running this script unchanged after those phases ship will clobber the required ownership of `postgres/` and `valkey/` and break the next `docker compose up`. The script MUST be updated to skip those subdirs from the recursive chown before Phase 5 / Phase 8 land. The chown section in `bin/bootstrap-host.sh` carries an inline `FUTURE FOOTGUN` comment block as a reminder at the call site.
+   > **Multi-phase ownership note:** The bootstrap script chowns service-owned subtrees to their container UIDs (postgres → uid 70 from Phase 5, prometheus → uid 65534 from Phase 7), and chowns the user-owned subtrees (`models-gguf/`, `models-hf/`, `valkey/`, `traefik/`, `vllm-compile-cache/`, `grafana/`) to the invoking user. Re-running the script is safe at any time — each branch is gated on the directory existing and ownership being incorrect. Valkey (Phase 8) is currently treated as user-owned; when Phase 8 lands and the valkey container declares its runtime UID, add it to the targeted-UID block alongside `postgres-data/postgres-backups`.
 
 2. **Verify GPU passthrough end-to-end.**
 
