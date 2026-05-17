@@ -1292,11 +1292,135 @@ fi
 echo ""
 echo "[smoke-test-router] === Phase 5 section complete ==="
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 7 — /v1/embeddings + request_log
+# ─────────────────────────────────────────────────────────────────────────────
+# Covers EMBED-01 + OAI-02 + BCKND-03 + Phase SC5 (request_log distinct rows).
+#
+#   1. bge-m3 present in Ollama (idempotent pull)
+#   2. bge-m3-ollama   → 1024-dim happy path
+#   3. capability gate — chat-only model on /v1/embeddings → 400
+#   4. zod gate       — empty input → 400 (Pitfall E-1)
+#   5. bge-m3-vllm    → 1024-dim happy path (gated on --profile vllm)
+#   6. request_log    — distinct backend rows for route='/v1/embeddings'
+#
+# Phase 2-6 sections above are UNCHANGED. This section is appended.
+# ─────────────────────────────────────────────────────────────────────────────
+
+echo ""
+echo "[smoke-test-router] === Phase 7 — /v1/embeddings + request_log ==="
+
+# 1. Ensure bge-m3 is present in Ollama (idempotent pull).
+if docker compose exec -T "${OLLAMA_SVC}" ollama list 2>/dev/null | grep -q '^bge-m3'; then
+  pass "Phase 7: bge-m3 already present in Ollama (skip pull)"
+else
+  echo "[smoke-test-router] Pulling bge-m3 into Ollama (first-run only — may take a few minutes)..."
+  if docker compose exec -T "${OLLAMA_SVC}" ollama pull bge-m3 >/dev/null 2>&1; then
+    pass "Phase 7: bge-m3 pulled into Ollama"
+  else
+    fail "Phase 7: ollama pull bge-m3 failed — check: docker compose logs ollama"
+  fi
+fi
+
+# 2. Ollama /v1/embeddings happy path — dimensions == 1024.
+EMBED_OLLAMA_RESP=$(curl -fsS \
+  -X POST "${ROUTER_URL}/v1/embeddings" \
+  -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"bge-m3-ollama","input":"Hola mundo desde local-llms"}' 2>/dev/null || echo "")
+if [[ -z "${EMBED_OLLAMA_RESP}" ]]; then
+  fail "Phase 7: bge-m3-ollama /v1/embeddings request failed (empty response)"
+else
+  DIM_OLLAMA=$(echo "${EMBED_OLLAMA_RESP}" | jq '.data[0].embedding | length' 2>/dev/null || echo "0")
+  if [[ "${DIM_OLLAMA}" == "1024" ]]; then
+    pass "Phase 7: bge-m3-ollama → 1024-dim (OAI-02 + EMBED-01 happy path)"
+  else
+    fail "Phase 7: bge-m3-ollama dimensions=${DIM_OLLAMA} (expected 1024); body head: $(echo "${EMBED_OLLAMA_RESP}" | head -c 200)"
+  fi
+fi
+
+# 3. Capability gate — chat-only model on /v1/embeddings must return 400.
+STATUS=$(curl -s -o /dev/null -w '%{http_code}' \
+  -X POST "${ROUTER_URL}/v1/embeddings" \
+  -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"qwen2.5-7b-instruct-awq","input":"x"}' 2>/dev/null || echo "000")
+if [[ "${STATUS}" == "400" ]]; then
+  pass "Phase 7: capability gate — chat-only model returns 400 (registry-enforced)"
+else
+  fail "Phase 7: capability gate returned ${STATUS} (expected 400)"
+fi
+
+# 4. Zod gate — empty input must return 400 (Pitfall E-1: prevents upstream 500).
+STATUS=$(curl -s -o /dev/null -w '%{http_code}' \
+  -X POST "${ROUTER_URL}/v1/embeddings" \
+  -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"bge-m3-ollama","input":""}' 2>/dev/null || echo "000")
+if [[ "${STATUS}" == "400" ]]; then
+  pass "Phase 7: zod gate — empty input rejected at request boundary (400)"
+else
+  fail "Phase 7: empty input returned ${STATUS} (expected 400)"
+fi
+
+# 5. vLLM-embed happy path — gated on --profile vllm being active.
+#    Detected via `docker compose ps vllm-embed` showing State=running.
+VLLM_EMBED_EXERCISED=0
+if docker compose ps vllm-embed --format '{{.State}}' 2>/dev/null | grep -q '^running$'; then
+  EMBED_VLLM_RESP=$(curl -fsS \
+    -X POST "${ROUTER_URL}/v1/embeddings" \
+    -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -d '{"model":"bge-m3-vllm","input":"Hola mundo desde local-llms"}' 2>/dev/null || echo "")
+  if [[ -z "${EMBED_VLLM_RESP}" ]]; then
+    fail "Phase 7: bge-m3-vllm /v1/embeddings request failed (empty response) — vllm-embed is running but the request did not succeed"
+  else
+    DIM_VLLM=$(echo "${EMBED_VLLM_RESP}" | jq '.data[0].embedding | length' 2>/dev/null || echo "0")
+    if [[ "${DIM_VLLM}" == "1024" ]]; then
+      pass "Phase 7: bge-m3-vllm → 1024-dim (BCKND-03 vLLM-embed happy path)"
+      VLLM_EMBED_EXERCISED=1
+    else
+      fail "Phase 7: bge-m3-vllm dimensions=${DIM_VLLM} (expected 1024); body head: $(echo "${EMBED_VLLM_RESP}" | head -c 200) — Pitfall E-2 (bge-m3 must serve dense, not sparse/colbert)"
+    fi
+  fi
+else
+  skip "Phase 7: vllm-embed not running — skipping bge-m3-vllm check (run with --profile vllm to include it)"
+fi
+
+# 6. request_log distinct backend rows for route='/v1/embeddings' (Phase SC5).
+#    Wait ~3s for the Phase 5 D-B4 buffered writer (1-2s flush interval + slack).
+sleep 3
+ROWS=$(docker compose exec -T postgres psql -U app -d router -tA -c \
+  "SELECT backend, COUNT(*) FROM request_log WHERE route='/v1/embeddings' GROUP BY backend ORDER BY backend;" 2>/dev/null || echo "")
+if [[ -z "${ROWS}" ]]; then
+  fail "Phase 7: request_log query returned empty — recordRequestOutcome may not be wired (check Plan 07-04)"
+else
+  if echo "${ROWS}" | grep -qE '^ollama\|[1-9][0-9]*$'; then
+    pass "Phase 7: request_log has rows for backend=ollama on /v1/embeddings"
+  else
+    fail "Phase 7: request_log missing ollama rows for /v1/embeddings — got:\n${ROWS}"
+  fi
+  if [[ "${VLLM_EMBED_EXERCISED}" == "1" ]]; then
+    if echo "${ROWS}" | grep -qE '^vllm-embed\|[1-9][0-9]*$'; then
+      pass "Phase 7: request_log has rows for backend=vllm-embed on /v1/embeddings"
+    else
+      fail "Phase 7: request_log missing vllm-embed rows for /v1/embeddings (vLLM happy path succeeded) — got:\n${ROWS}"
+    fi
+  else
+    skip "Phase 7: vllm-embed row check (vLLM not exercised this run)"
+  fi
+  echo "[smoke-test-router] request_log distinct rows for embedding dispatch:"
+  echo "${ROWS}" | sed 's/^/[smoke-test-router]   /'
+fi
+
+echo ""
+echo "[smoke-test-router] === Phase 7 section complete ==="
+
 # Final summary
 echo ""
 echo "[smoke-test-router] ================================================================"
 if [[ "${FAILURES}" -eq 0 ]]; then
-  echo "[smoke-test-router]  Phase 2/3/4/5 router verification: COMPLETE."
+  echo "[smoke-test-router]  Phase 2/3/4/5/7 router verification: COMPLETE."
   echo "[smoke-test-router]  Model used : ${MODEL}"
   echo "[smoke-test-router]  Router URL : ${ROUTER_URL}"
   echo "[smoke-test-router]  Skipped    : ${SKIPS:-0} (vision sections require llama3.2-vision pull + outbound HTTPS)"
