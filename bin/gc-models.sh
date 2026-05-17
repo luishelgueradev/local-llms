@@ -193,8 +193,21 @@ fi
 #   - models-gguf/ollama/        (Ollama's blob store; opaque to coarse parse)
 #   - .gc-trash/                 (recursion safety — never GC the trash)
 #   - any dotfile / dot-dir      (handled by classifyCandidate as hidden-file)
+# Declare all temp file vars up front (empty) and install ONE trap that
+# covers them lazily via `${var:-}`. Pre-declaring with empty values means
+# every subsequent assignment extends the trap's responsibility without
+# overwriting the trap itself (WR-03 — the previous pattern installed three
+# different EXIT traps, each overwriting the previous, leaving stale state
+# if the script exited between assignments).
+CANDIDATES_FILE=""
+CLASSIFIED_FILE=""
+UNREF_FILE=""
+# Trap is idempotent — `rm -f` on an empty path is a no-op, and the
+# `2>/dev/null || true` tail guarantees a re-entry from EXIT does not
+# error out under set -uo pipefail.
+trap 'rm -f "${CANDIDATES_FILE:-}" "${CLASSIFIED_FILE:-}" "${UNREF_FILE:-}" 2>/dev/null || true' EXIT
+
 CANDIDATES_FILE="$(mktemp)"
-trap 'rm -f "${CANDIDATES_FILE}"' EXIT
 
 # models-gguf/gguf/*.gguf — files only.
 if [[ -d "${ROOT_GGUF}/gguf" ]]; then
@@ -243,8 +256,9 @@ CANDIDATE_COUNT="$(wc -l < "${CANDIDATES_FILE}" | tr -d ' ')"
 echo "[gc-models] Scanning ${CANDIDATE_COUNT} candidate(s) under ${HOST_DATA_ROOT}/{models-gguf/gguf,models-hf}"
 
 # ─── Classify candidates via the parser ──────────────────────────────────────
+# No new trap needed — CLASSIFIED_FILE was pre-declared and the consolidated
+# trap installed above already covers it via `${CLASSIFIED_FILE:-}` (WR-03).
 CLASSIFIED_FILE="$(mktemp)"
-trap 'rm -f "${CANDIDATES_FILE}" "${CLASSIFIED_FILE}"' EXIT
 
 if [[ "${CANDIDATE_COUNT}" -gt 0 ]]; then
   if ! (cd "${ROUTER_DIR}" && "${TSX_BIN}" "${CLASSIFY_HELPER}" "${MODELS_YAML}") \
@@ -258,8 +272,8 @@ if [[ "${CANDIDATE_COUNT}" -gt 0 ]]; then
 fi
 
 # ─── Build the unreferenced (to-GC) list ─────────────────────────────────────
+# Consolidated trap (WR-03) already covers UNREF_FILE lazily.
 UNREF_FILE="$(mktemp)"
-trap 'rm -f "${CANDIDATES_FILE}" "${CLASSIFIED_FILE}" "${UNREF_FILE}"' EXIT
 
 # Each line of CLASSIFIED_FILE: <0|1><TAB><reason><TAB><relPath>
 # Filter referenced=0 only.
