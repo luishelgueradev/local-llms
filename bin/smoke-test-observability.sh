@@ -78,6 +78,29 @@ if ! command -v docker >/dev/null 2>&1; then
   exit 1
 fi
 
+# 07-REVIEW WR-02: pre-flight wget capability probe inside the prometheus and
+# grafana containers. The whole script depends on `docker compose exec -T <svc>
+# wget` working — but grafana/grafana base images have flipped between busybox-
+# wget, full-wget, and distroless variants across major versions. Without this
+# probe, every Section assertion fails opaquely with "Could not fetch …" and
+# leaves the operator without a clear remediation. Fail fast with a clear
+# error so the operator knows to either downgrade the image, install wget, or
+# rewrite the script to use curl.
+for svc in prometheus grafana; do
+  # `docker compose ps <svc>` returns nothing if the service isn't defined or
+  # not running — skip the probe in that case (Section-level asserts will
+  # report the actual missing service).
+  if docker compose ps "${svc}" --format '{{.State}}' 2>/dev/null | grep -q '^running$'; then
+    if ! docker compose exec -T "${svc}" sh -c 'command -v wget' >/dev/null 2>&1; then
+      echo "[smoke-test-observability] ERROR: ${svc} container has no wget on PATH." >&2
+      echo "[smoke-test-observability]        The image may have been upgraded past the busybox-wget version pinned." >&2
+      echo "[smoke-test-observability]        Either pin an older tag with wget, install wget in a custom image," >&2
+      echo "[smoke-test-observability]        or rewrite this script's HTTP calls to use curl." >&2
+      exit 1
+    fi
+  fi
+done
+
 # ── Failure / skip tracking ──────────────────────────────────────────────────
 FAILURES=0
 SKIPS=0
