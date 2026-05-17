@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v0.9.0
 milestone_name: milestone
 status: executing
-stopped_at: "Phase 8 Plan 04 (CLOUD-03 — per-backend circuit breaker) COMPLETE — router/src/resilience/circuitBreaker.ts implements makeCircuitBreaker + isBreakerTrip with Valkey-backed state (closed/open/half-open) per backend (D-B4). 5 failures in 30s → opens for 60s; half-open probe success closes / failure re-opens (D-B3). BreakerOpenError → 503 + structured envelope (OpenAI: api_error/backend_circuit_open; Anthropic: overloaded_error) + Retry-After header. 3 routes (chat-completions, messages, embeddings) call breaker.check after capability gate, before semaphore acquire; recordSuccess/Failure fire-and-forget around adapter calls. Per-backend isolation verified end-to-end: cloud breaker open leaves local Ollama serving. 6 commits: d2154d6+4365116+bf3185e+6bd6f08+48d4747+0f142b2 across 3 atomic TDD task pairs. 598/600 tests pass (+25 new). Build clean. 1 auto-fixed deviation (Rule 1 — state/probe_at TTL was cooldown*1 in spec, must be cooldown*2 to survive probe transition; fix landed during Task 2 GREEN with module-header documentation). CLOUD-03 closes."
-last_updated: "2026-05-17T16:24:00Z"
+stopped_at: "Phase 8 Plan 05 (CLOUD-04 — cloud max_tokens hard-cap) COMPLETE — CLOUD_MAX_TOKENS_CAP=16384 constant + CloudMaxTokensExceededError class (D-C1 never silently clip; D-C2 single source of truth). Pre-adapter guard on /v1/chat/completions + /v1/messages fires AFTER req.resolvedBackend stamp (X-Model-Backend still ships on 400) and BEFORE breaker.check (no half-open probe consumption). OpenAI envelope: code='cloud_max_tokens_exceeded' / param='max_tokens'; Anthropic envelope: invalid_request_error. Embeddings route NOT gated (no max_tokens param). 4 commits: 645bffe+5921672+0b87d2b+eb9291f across 2 atomic TDD task pairs. 610/612 tests pass (+12 new). Build clean. Zero deviations. CLOUD-04 closes. Cloud-cost-protection layer 2/4 complete (breaker + cap); plans 08-06 (rate limit) + 08-07 (idempotency mux) remain."
+last_updated: "2026-05-17T16:37:39Z"
 progress:
   total_phases: 9
   completed_phases: 7
   total_plans: 50
-  completed_plans: 45
-  percent: 90
+  completed_plans: 46
+  percent: 92
 ---
 
 # Project State: local-llms
@@ -27,12 +27,12 @@ progress:
 ## Current Position
 
 Phase: 08 (Ollama Cloud Fallback + Resilience Hardening) — EXECUTING
-Plan: 6 of 11
+Plan: 7 of 11
 
 - **Milestone:** v1
 - **Phase:** 8
-- **Plan:** 08-04 (Wave 2, CLOUD-03 — per-backend circuit breaker) — COMPLETE. router/src/resilience/circuitBreaker.ts implements makeCircuitBreaker + isBreakerTrip classifier with Valkey-backed state (closed/open/half-open) per backend (D-B4). 5 failures in 30s opens breaker for 60s (D-B2); half-open probe success closes / failure re-opens (D-B3). BreakerOpenError → 503 + structured envelope + Retry-After header. 3 routes (chat-completions, messages, embeddings) call breaker.check after capability gate, before semaphore acquire; recordSuccess/Failure fire-and-forget around adapter calls. Per-backend isolation verified: cloud breaker open leaves local Ollama serving. Commits: d2154d6+4365116+bf3185e+6bd6f08+48d4747+0f142b2 (6 commits, 3 atomic TDD task pairs). 598/600 tests pass (+25 new). Build clean. 1 auto-fixed deviation (Rule 1 — TTL doubling for state/probe_at keys; documented in module header). CLOUD-03 closes.
-- **Next plan:** 08-05 (Wave 2 or later — max_tokens guardrails, independent feature). Per-backend rate limit (08-06) and idempotency mux (08-07) will reuse Plan 08-04's patterns (no-op fallback, fire-and-forget signal, Valkey decorator).
+- **Plan:** 08-05 (Wave 2, CLOUD-04 — cloud max_tokens hard-cap) — COMPLETE. router/src/config/constants.ts exports `CLOUD_MAX_TOKENS_CAP = 16_384` (D-C2). router/src/errors/envelope.ts adds CloudMaxTokensExceededError class with 3 envelope mappings (status 400; OpenAI envelope code='cloud_max_tokens_exceeded' / param='max_tokens'; Anthropic envelope invalid_request_error). recordOutcome.ts mapErrorToCode → 'invalid_request' D-D2 bucket. Pre-adapter guard on chat-completions.ts + messages.ts fires AFTER req.resolvedBackend stamp (Plan 08-03 X-Model-Backend still ships on 400) and BEFORE breaker.check (Plan 08-04 — oversized requests never consume half-open probe slots). Embeddings route NOT gated (no max_tokens param). 4 commits: 645bffe+5921672+0b87d2b+eb9291f across 2 atomic TDD task pairs (RED unit/GREEN core + RED integration/GREEN routes). 610/612 tests pass (+12 new). Build clean. Zero deviations. CLOUD-04 closes.
+- **Next plan:** 08-06 (Wave 2, per-backend rate limit — reuses Plan 08-04 patterns: no-op fallback, fire-and-forget signal, Valkey decorator). Then 08-07 (idempotency mux), 08-08, 08-09, 08-10.
 - **Phase 7 carry-over:** Plan 07-06 task 3 still PENDING-HUMAN (operator approval on RTX 5060 Ti host). Recipe in 07-06-SUMMARY.md §User Setup Required.
 
 ### Progress
@@ -45,10 +45,10 @@ Phase 4: ░░░░░░░░░░ 0% (0/16 requirements)
 Phase 5: ░░░░░░░░░░ 0% (0/8 requirements)
 Phase 6: ░░░░░░░░░░ 0% (0/11 requirements)
 Phase 7: █████████░ 86% (6/7 requirements coded; smoke scripts in tree; OBS-05 already complete from Phase 5; awaiting operator human-verify on 07-06 task 3)
-Phase 8: ███████░░░ 67% (7/9 requirements — CLOUD-01 precondition closed via Plan 08-00; DATA-06 foundation closed via Plan 08-01; CLOUD-01 + CLOUD-02 + EMBED-02 vertical slice closed via Plan 08-02; ROUTE-10 closed via Plan 08-03; CLOUD-03 closed via Plan 08-04)
+Phase 8: ████████░░ 78% (8/9 requirements — CLOUD-01 precondition closed via Plan 08-00; DATA-06 foundation closed via Plan 08-01; CLOUD-01 + CLOUD-02 + EMBED-02 vertical slice closed via Plan 08-02; ROUTE-10 closed via Plan 08-03; CLOUD-03 closed via Plan 08-04; CLOUD-04 closed via Plan 08-05)
 Phase 9: ░░░░░░░░░░ 0% (0/4 requirements)
 
-Overall: ███░░░░░░░ 30% (23/76 v1 requirements)
+Overall: ███░░░░░░░ 32% (24/76 v1 requirements)
 ```
 
 ## Performance Metrics
@@ -103,8 +103,8 @@ Overall: ███░░░░░░░ 30% (23/76 v1 requirements)
 
 ## Session Continuity
 
-Last session: 2026-05-17T16:24:00Z
-Stopped at: Phase 8 Plan 04 (CLOUD-03 — per-backend circuit breaker) COMPLETE — Valkey-backed state machine + isBreakerTrip classifier (5xx + APIConnectionError/Timeout + Node DNS/conn errors trip; 4xx + Zod + abort + generic don't). 3 routes wired with breaker.check pre-adapter + recordSuccess/Failure fire-and-forget around adapter calls. Per-backend isolation (D-B4) verified end-to-end. Commits: d2154d6+4365116+bf3185e+6bd6f08+48d4747+0f142b2 (6 commits, 3 atomic TDD task pairs). 598/600 tests pass (+25 new). Build clean. 1 auto-fixed deviation (Rule 1 — TTL doubling for state/probe_at keys). CLOUD-03 closes; resilience layer ready for Plans 08-06 (rate limit) + 08-07 (idempotency mux).
+Last session: 2026-05-17T16:37:39Z
+Stopped at: Phase 8 Plan 05 (CLOUD-04 — cloud max_tokens hard-cap) COMPLETE — CLOUD_MAX_TOKENS_CAP=16384 constant (D-C2 single source of truth, not env-configurable in v1) + CloudMaxTokensExceededError class with 3 envelope mappings (400 + cloud_max_tokens_exceeded on OpenAI / invalid_request_error on Anthropic). Pre-adapter guard on chat-completions + messages routes fires AFTER req.resolvedBackend stamp (X-Model-Backend still ships on 400 — Plan 08-03 onSend) and BEFORE breaker.check (Plan 08-04 — oversized requests don't consume probe slots). Embeddings route NOT gated. 4 commits: 645bffe+5921672+0b87d2b+eb9291f across 2 atomic TDD task pairs. 610/612 tests pass (+12 new). Build clean. Zero deviations. CLOUD-04 closes. Cloud-cost-protection layer 2/4 complete (breaker + cap); 08-06 (rate limit) + 08-07 (idempotency mux) remain.
 
 **Next action:** Operator runs the recipe in 07-06-SUMMARY.md §User Setup Required: `docker compose --profile vllm up -d` → wait for vllm healthy → `bash bin/smoke-test-observability.sh && bash bin/smoke-test-router.sh` → visual Grafana check → reply `approved` (or list failing assertions for re-execution).
 
