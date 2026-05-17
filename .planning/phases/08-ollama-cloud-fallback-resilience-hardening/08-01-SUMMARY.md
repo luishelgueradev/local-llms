@@ -177,3 +177,5 @@ Pre-existing typecheck errors in `router/tests/app/probe-adapter.test.ts` lines 
 - ✓ `npm test` — 532 passing / 2 skipped (no regression)
 - ✓ `npm run build` — clean (dist/index.js = 137.89 KB)
 - ✓ `docker compose config` renders without YAML/interpolation errors
+
+**Final docs commit:** `1373d7f` — SUMMARY + deferred-items + STATE + ROADMAP + REQUIREMENTS.
