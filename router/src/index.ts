@@ -10,6 +10,7 @@ import { makeBufferedWriter } from './db/bufferedWriter.js';
 import { makeUsageDailyScheduler } from './db/usageDaily.js';
 import { makeMetricsRegistry } from './metrics/registry.js';
 import { makeValkeyClient } from './clients/valkey.js';
+import { makeRegistryCache } from './config/registryCache.js';
 
 /**
  * Plan 08-02 (CLOUD-01 + D-A2) — refuses boot when the registry declares any
@@ -69,6 +70,13 @@ async function main(): Promise<void> {
     log: bootLog,
   });
 
+  // Plan 08-09 (DATA-06) — 30s Valkey-backed read-through cache for the parsed
+  // models.yaml registry. File is the source of truth (D-D4); the cache is a
+  // derivative that (a) shaves YAML parse + zod validation off warm restarts and
+  // (b) is the structural seam for future multi-instance routers (v2) which
+  // would share the cached snapshot across nodes.
+  const registryCache = makeRegistryCache({ valkey, log: bootLog });
+
   // Plan 05-02 (D-C3, OBS-01) — fresh prom-client registry per process.
   // Constructed BEFORE the bufferedWriter so its logBufferDroppedTotal
   // counter wires into the writer as the real counter (replacing the
@@ -90,7 +98,24 @@ async function main(): Promise<void> {
 
   // Fail-fast on bad models.yaml (D-C3 startup half — hot-reload's keep-previous semantics
   // land in plan 02-05's watcher).
-  const initialRegistry = loadRegistryFromFile(env.MODELS_YAML_PATH);
+  //
+  // Plan 08-09 (DATA-06) — try the Valkey-backed warm cache FIRST. On hit, skip
+  // the YAML re-parse + zod re-validation; on miss, fall back to the file (the
+  // source of truth) and populate the cache for the next restart / next instance.
+  // A cache miss on a fresh restart is expected; a cache hit indicates the
+  // previous router instance wrote the registry within the 30s TTL window.
+  const cachedRegistry = await registryCache.get();
+  let initialRegistry;
+  if (cachedRegistry) {
+    bootLog.info({ models: cachedRegistry.models.length }, 'registry: warm cache hit (Valkey)');
+    initialRegistry = cachedRegistry;
+  } else {
+    bootLog.info('registry: warm cache miss; loading from file');
+    initialRegistry = loadRegistryFromFile(env.MODELS_YAML_PATH);
+    // Populate the cache for the next restart / next instance. Non-fatal on
+    // failure (warn-logged inside registryCache.set).
+    await registryCache.set(initialRegistry);
+  }
 
   // Plan 08-02 (CLOUD-01) — refuse to boot if models.yaml declares cloud entries
   // but env.OLLAMA_API_KEY is empty. Placed after env-parse + registry-parse
@@ -139,6 +164,15 @@ async function main(): Promise<void> {
     pollingIntervalMs: 1000,
     onReload: (next) => {
       app.log.info({ models: next.models.length, names: next.models.map((m) => m.name) }, 'registry reloaded');
+      // Plan 08-09 (DATA-06) — propagate the new snapshot to Valkey BEFORE
+      // doing further reload work so multi-instance peers (v2) and any
+      // future warm-restart sees the latest shape. watchRegistry's onReload
+      // callback is typed as synchronous (Registry => void), so we
+      // fire-and-forget; registryCache.set is itself non-throwing
+      // (warn-logged on Valkey error inside the factory).
+      void registryCache.set(next).catch((err: unknown) => {
+        app.log.warn({ err }, 'registry cache: post-reload set failed (non-fatal)');
+      });
       // Phase 3: re-register liveness probes against the new URL set.
       // liveness.start() is idempotent — de-dups timers; clears removed URLs (Pitfall 6).
       const backendUrls = Array.from(new Set(next.models.map((m) => m.backend_url)));
