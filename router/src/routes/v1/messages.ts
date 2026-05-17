@@ -281,17 +281,94 @@ export function registerMessagesRoute(
         }
 
         // Plan 08-07 (ROUTE-12 / D-D5 / D-D6) — Idempotency-Key acquire +
-        // follower replay. Same shape as chat-completions.ts. Stream-branch
-        // wiring follows in Task 3; here we handle the non-stream replay.
+        // follower replay. Same shape as chat-completions.ts.
         if (idempotencyKey && opts.idempotency) {
           const acq = await opts.idempotency.acquire(idempotencyKey, req.id);
           idempotencyRole = acq.role;
-          if (acq.role === 'follower' && body.stream !== true) {
-            const { body: cachedBody, upstreamMessageId } =
-              await opts.idempotency.awaitNonStreamResult(idempotencyKey, req.id);
-            followerUpstreamMessageId = upstreamMessageId;
-            req.raw.socket?.off('close', onClose);
-            return reply.send(cachedBody);
+          if (acq.role === 'follower') {
+            if (body.stream !== true) {
+              const { body: cachedBody, upstreamMessageId } =
+                await opts.idempotency.awaitNonStreamResult(idempotencyKey, req.id);
+              followerUpstreamMessageId = upstreamMessageId;
+              req.raw.socket?.off('close', onClose);
+              return reply.send(cachedBody);
+            }
+            // ── STREAM FOLLOWER (Task 3) ─────────────────────────────
+            // Pipe the multiplexer's canonical event stream through the
+            // Anthropic SSE translator (with displayModel = entry.name so
+            // the wire model field matches the leader exactly).
+            const followerHeartbeat = startAnthropicHeartbeat(reply.raw);
+            stopHeartbeat = (): void => followerHeartbeat.stop();
+            const muxIter = opts.idempotency.awaitStreamResult(
+              idempotencyKey,
+              req.id,
+            );
+            let muxTerminal: 'done' | 'error' | 'aborted' | undefined;
+            const followerEvents: AsyncIterable<CanonicalStreamEvent> = {
+              async *[Symbol.asyncIterator](): AsyncGenerator<CanonicalStreamEvent> {
+                for await (const item of muxIter) {
+                  if (item.terminal) {
+                    muxTerminal = item.terminal;
+                    return;
+                  }
+                  if (item.event !== undefined) {
+                    yield item.event as CanonicalStreamEvent;
+                  }
+                }
+              },
+            };
+            const followerSseCleanup = (final?: {
+              tokensIn: number;
+              tokensOut: number;
+              upstreamMessageId?: string;
+              error?: Error;
+            }): void => {
+              followerHeartbeat.stop();
+              req.raw.socket?.off('close', onClose);
+              const aborted = muxTerminal === 'aborted' || controller.signal.aborted;
+              const httpStatusFollow = final?.error
+                ? mapToHttpStatus(final.error)
+                : reply.statusCode;
+              const statusClass = aborted
+                ? 'disconnect'
+                : final?.error
+                  ? deriveStatusClass(httpStatusFollow, false)
+                  : deriveStatusClass(reply.statusCode, false);
+              safeRecord({
+                protocol: 'anthropic',
+                route: req.url.split('?')[0] ?? req.url,
+                backend: entry.backend,
+                model: entry.name,
+                statusClass,
+                httpStatus: httpStatusFollow,
+                durationMs: performance.now() - (req._t0 ?? performance.now()),
+                ttftMs: followerHeartbeat.msSinceStart,
+                tokensIn: final?.tokensIn,
+                tokensOut: final?.tokensOut,
+                errorCode: aborted
+                  ? 'client_disconnect'
+                  : final?.error
+                    ? mapErrorToCode(final.error)
+                    : undefined,
+                errorMessage: final?.error?.message,
+                agentId: req.agentId,
+                requestId: req.id,
+                upstreamMessageId: followerUpstreamMessageId ?? final?.upstreamMessageId,
+                timestamp: new Date(),
+              });
+            };
+            try {
+              await reply.sse(
+                canonicalToAnthropicSse(followerEvents, {
+                  signal: controller.signal,
+                  onCleanup: followerSseCleanup,
+                  displayModel: entry.name,
+                }),
+              );
+            } finally {
+              followerHeartbeat.stop();
+            }
+            return;
           }
         }
 
@@ -324,6 +401,19 @@ export function registerMessagesRoute(
             // Plan 08-04 — pre-stream adapter error; fire-and-forget breaker
             // failure signal. Classifier filters non-trip errors.
             void opts.breaker.recordFailure(entry.backend, err);
+            // Plan 08-07 — pre-stream error: publish 'error' terminal so any
+            // follower waiting on the channel disconnects with a structured
+            // outcome (fire-and-forget — same pattern as chat-completions.ts).
+            if (idempotencyKey && idempotencyRole === 'leader' && opts.idempotency) {
+              void opts.idempotency
+                .finalizeStream(idempotencyKey, 'error')
+                .catch((finalizeErr: unknown) => {
+                  req.log.warn(
+                    { err: finalizeErr, idempotencyKey },
+                    'idempotency: finalizeStream(error) failed (leader pre-stream catch)',
+                  );
+                });
+            }
             // HTTP not yet 200; emit Anthropic envelope.
             req.raw.socket?.off('close', onClose);
             const env = toAnthropicErrorEnvelope(err);
@@ -377,6 +467,27 @@ export function registerMessagesRoute(
           const heartbeat = startAnthropicHeartbeat(reply.raw);
           stopHeartbeat = () => heartbeat.stop();
 
+          // Plan 08-07 (ROUTE-12 / D-D5 / D-D6) — leader-side multiplexer.
+          // Mirrors chat-completions.ts: wrap the upstream iterable so each
+          // canonical event is RPUSHed + PUBLISHed before yielding to the
+          // SSE translator. capturedUpstreamMessageId is captured from
+          // message_start.message.id for finalize and request_log row.
+          let capturedUpstreamMessageId: string | undefined;
+          const upstreamWithMux: AsyncIterable<CanonicalStreamEvent> =
+            idempotencyKey && idempotencyRole === 'leader' && opts.idempotency
+              ? {
+                  async *[Symbol.asyncIterator](): AsyncGenerator<CanonicalStreamEvent> {
+                    for await (const ev of upstream) {
+                      if (ev.type === 'message_start') {
+                        capturedUpstreamMessageId = ev.message.id;
+                      }
+                      void opts.idempotency!.publishStreamEvent(idempotencyKey, ev);
+                      yield ev;
+                    }
+                  },
+                }
+              : upstream;
+
           // sseCleanup runs in canonicalToAnthropicSse's finally on stream end /
           // abort / error. CRITICAL (Pitfall 1 / T-3-D4): MUST call safeRelease so
           // the semaphore slot is released when the SSE stream closes — NOT when
@@ -409,6 +520,29 @@ export function registerMessagesRoute(
               void opts.breaker.recordFailure(entry.backend, final.error);
             } else {
               void opts.breaker.recordSuccess(entry.backend);
+            }
+            // Plan 08-07 — leader-side finalize. Same mapping as
+            // chat-completions.ts. capturedUpstreamMessageId is the
+            // msg_<ulid> captured from the canonical message_start event
+            // (or final.upstreamMessageId if the translator already
+            // exposed it via its widened onCleanup signature).
+            if (idempotencyKey && idempotencyRole === 'leader' && opts.idempotency) {
+              const terminal: 'done' | 'error' | 'aborted' =
+                final?.error !== undefined
+                  ? 'error'
+                  : controller.signal.aborted
+                    ? 'aborted'
+                    : 'done';
+              const upstreamId =
+                final?.upstreamMessageId ?? capturedUpstreamMessageId;
+              void opts.idempotency
+                .finalizeStream(idempotencyKey, terminal, upstreamId)
+                .catch((finalizeErr: unknown) => {
+                  req.log.warn(
+                    { err: finalizeErr, idempotencyKey, terminal },
+                    'idempotency: finalizeStream failed (leader stream end)',
+                  );
+                });
             }
             const hasUpstreamError = final?.error !== undefined;
             const errStatus = hasUpstreamError
@@ -449,7 +583,7 @@ export function registerMessagesRoute(
           // is idempotent — calling it twice (here AND from sseCleanup) is safe.
           try {
             await reply.sse(
-              canonicalToAnthropicSse(upstream, {
+              canonicalToAnthropicSse(upstreamWithMux, {
                 signal: controller.signal,
                 onCleanup: sseCleanup,
                 // Plan 04-05: displayModel rewrites message_start.message.model to

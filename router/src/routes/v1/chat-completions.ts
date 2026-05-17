@@ -281,28 +281,102 @@ export function registerChatCompletionsRoute(
         // AFTER breaker.check (so a backend-out request fails fast and doesn't
         // pollute the idempotency key) and BEFORE semaphore.acquire (followers
         // must NOT consume a slot — that's the cost-saving the multiplexer
-        // provides). On follower role for the NON-STREAM branch we replay the
-        // cached body and return without acquiring the semaphore or calling
-        // the adapter. Stream-branch follower replay is wired in Task 3.
+        // provides).
         if (idempotencyKey && opts.idempotency) {
           const acq = await opts.idempotency.acquire(idempotencyKey, req.id);
           idempotencyRole = acq.role;
-          if (acq.role === 'follower' && body.stream !== true) {
-            const { body: cachedBody, upstreamMessageId } =
-              await opts.idempotency.awaitNonStreamResult(idempotencyKey, req.id);
-            followerUpstreamMessageId = upstreamMessageId;
-            // Mark this request as an idempotency replay so the metrics tag
-            // can distinguish it from the leader's request in downstream
-            // observability (D-D5 + Plan 08-08 cost-attribution).
-            req.raw.socket?.off('close', onClose);
-            // The outer finally records the outcome for this follower — using
-            // the cached body's upstream_message_id for grouping. We send the
-            // body as-is (it's already in OpenAI wire shape from the leader).
-            return reply.send(cachedBody);
+          if (acq.role === 'follower') {
+            if (body.stream !== true) {
+              // ── NON-STREAM FOLLOWER ──────────────────────────────────
+              const { body: cachedBody, upstreamMessageId } =
+                await opts.idempotency.awaitNonStreamResult(idempotencyKey, req.id);
+              followerUpstreamMessageId = upstreamMessageId;
+              req.raw.socket?.off('close', onClose);
+              return reply.send(cachedBody);
+            }
+            // ── STREAM FOLLOWER (Task 3) ─────────────────────────────
+            // Pipe the multiplexer's iterator through the canonical→OpenAI
+            // SSE translator. The leader's wire output is reproduced exactly
+            // because both leader + follower run the SAME translator with
+            // the SAME displayModel argument over the SAME canonical events.
+            const followerHeartbeat = startHeartbeat(reply.raw);
+            stopHeartbeat = (): void => followerHeartbeat.stop();
+            const muxIter = opts.idempotency.awaitStreamResult(
+              idempotencyKey,
+              req.id,
+            );
+            // Adapter-shaped iterable that yields canonical events from the
+            // multiplexer's stream. Terminal markers (done/error/aborted)
+            // end the iteration; `aborted`/`error` also flip a flag so the
+            // route records the appropriate status_class via sseCleanup.
+            let muxTerminal: 'done' | 'error' | 'aborted' | undefined;
+            const followerEvents: AsyncIterable<CanonicalStreamEvent> = {
+              async *[Symbol.asyncIterator](): AsyncGenerator<CanonicalStreamEvent> {
+                for await (const item of muxIter) {
+                  if (item.terminal) {
+                    muxTerminal = item.terminal;
+                    return;
+                  }
+                  if (item.event !== undefined) {
+                    yield item.event as CanonicalStreamEvent;
+                  }
+                }
+              },
+            };
+            const followerSseCleanup = (final?: {
+              tokensIn: number;
+              tokensOut: number;
+              error?: Error;
+            }): void => {
+              followerHeartbeat.stop();
+              req.raw.socket?.off('close', onClose);
+              // No semaphore release — follower never acquired one.
+              const aborted = muxTerminal === 'aborted' || controller.signal.aborted;
+              const httpStatusFollow = final?.error
+                ? mapToHttpStatus(final.error)
+                : reply.statusCode;
+              const statusClass = aborted
+                ? 'disconnect'
+                : final?.error
+                  ? deriveStatusClass(httpStatusFollow, false)
+                  : deriveStatusClass(reply.statusCode, false);
+              safeRecord({
+                protocol: 'openai',
+                route: req.url.split('?')[0] ?? req.url,
+                backend: entry.backend,
+                model: entry.name,
+                statusClass,
+                httpStatus: httpStatusFollow,
+                durationMs: performance.now() - (req._t0 ?? performance.now()),
+                ttftMs: followerHeartbeat.msSinceStart,
+                tokensIn: final?.tokensIn,
+                tokensOut: final?.tokensOut,
+                errorCode: aborted
+                  ? 'client_disconnect'
+                  : final?.error
+                    ? mapErrorToCode(final.error)
+                    : undefined,
+                errorMessage: final?.error?.message,
+                agentId: req.agentId,
+                requestId: req.id,
+                upstreamMessageId: followerUpstreamMessageId,
+                timestamp: new Date(),
+              });
+            };
+            try {
+              await reply.sse(
+                canonicalToOpenAISse(followerEvents, {
+                  signal: controller.signal,
+                  onCleanup: followerSseCleanup,
+                  displayModel: entry.name,
+                }),
+              );
+            } finally {
+              followerHeartbeat.stop();
+            }
+            return;
           }
-          // Leader role: fall through and execute the adapter call. The
-          // non-stream branch's reply.send completion site calls
-          // publishNonStream; the stream branch's wiring is in Task 3.
+          // Leader role: fall through and execute the adapter call.
         }
 
         // Lookup the semaphore for the resolved backend. Inside the try so a missing
@@ -325,6 +399,20 @@ export function registerChatCompletionsRoute(
             // stream began). The classifier filters non-trip errors; fire-and-
             // forget so the JSON envelope below isn't delayed by Valkey RTT.
             void opts.breaker.recordFailure(entry.backend, err);
+            // Plan 08-07 — pre-stream error: publish 'error' terminal so any
+            // follower waiting on the channel disconnects with a structured
+            // outcome (fire-and-forget — Valkey blip shouldn't delay the
+            // 4xx/5xx envelope from the leader's POV).
+            if (idempotencyKey && idempotencyRole === 'leader' && opts.idempotency) {
+              void opts.idempotency
+                .finalizeStream(idempotencyKey, 'error')
+                .catch((finalizeErr: unknown) => {
+                  req.log.warn(
+                    { err: finalizeErr, idempotencyKey },
+                    'idempotency: finalizeStream(error) failed (leader pre-stream catch)',
+                  );
+                });
+            }
             // HTTP not yet 200; emit envelope.
             req.raw.socket?.off('close', onClose);
             const env = toOpenAIErrorEnvelope(err);
@@ -378,6 +466,34 @@ export function registerChatCompletionsRoute(
           const heartbeat = startHeartbeat(reply.raw);
           stopHeartbeat = () => heartbeat.stop();  // wires onClose to also stop heartbeat
 
+          // Plan 08-07 (ROUTE-12 / D-D5 / D-D6) — leader-side multiplexer
+          // wiring. Wrap the upstream iterable so each canonical event is
+          // fire-and-forget RPUSHed + PUBLISHed to the channel BEFORE being
+          // yielded to the SSE translator. Followers subscribed to the
+          // channel receive byte-identical events; followers arriving later
+          // LRANGE the cached chunks list. capturedUpstreamMessageId is
+          // captured from message_start.message.id so finalizeStream can
+          // surface the shared id to followers' request_log rows.
+          let capturedUpstreamMessageId: string | undefined;
+          const upstreamWithMux: AsyncIterable<CanonicalStreamEvent> =
+            idempotencyKey && idempotencyRole === 'leader' && opts.idempotency
+              ? {
+                  async *[Symbol.asyncIterator](): AsyncGenerator<CanonicalStreamEvent> {
+                    for await (const ev of upstream) {
+                      if (ev.type === 'message_start') {
+                        capturedUpstreamMessageId = ev.message.id;
+                      }
+                      // Fire-and-forget publish — Valkey blip should not
+                      // stall the upstream → SSE pipeline. publishStreamEvent
+                      // itself catches + logs internally so we don't double-
+                      // log here.
+                      void opts.idempotency!.publishStreamEvent(idempotencyKey, ev);
+                      yield ev;
+                    }
+                  },
+                }
+              : upstream;
+
           // sseCleanup is called by canonicalToOpenAISse onCleanup on stream end / abort / error.
           // CRITICAL (Pitfall 1 / T-3-D4): sseCleanup MUST call safeRelease so the semaphore
           // slot is released when the SSE stream closes — NOT when the adapter call returns
@@ -412,6 +528,28 @@ export function registerChatCompletionsRoute(
             } else {
               void opts.breaker.recordSuccess(entry.backend);
             }
+            // Plan 08-07 (ROUTE-12 / D-D5 / D-D6) — leader-side finalize.
+            // Fire-and-forget. Status mapping: error => 'error'; client
+            // disconnect => 'aborted'; otherwise 'done'. Followers
+            // subscribed to the channel receive a terminal marker and
+            // disconnect cleanly. The cached chunks list + result key
+            // get EXPIRE 900s (15 min) for late-arriving followers.
+            if (idempotencyKey && idempotencyRole === 'leader' && opts.idempotency) {
+              const terminal: 'done' | 'error' | 'aborted' =
+                final?.error !== undefined
+                  ? 'error'
+                  : controller.signal.aborted
+                    ? 'aborted'
+                    : 'done';
+              void opts.idempotency
+                .finalizeStream(idempotencyKey, terminal, capturedUpstreamMessageId)
+                .catch((finalizeErr: unknown) => {
+                  req.log.warn(
+                    { err: finalizeErr, idempotencyKey, terminal },
+                    'idempotency: finalizeStream failed (leader stream end)',
+                  );
+                });
+            }
             const hasUpstreamError = final?.error !== undefined;
             const errStatus = hasUpstreamError
               ? mapToHttpStatus(final!.error)
@@ -440,6 +578,9 @@ export function registerChatCompletionsRoute(
               errorMessage,
               agentId: req.agentId,
               requestId: req.id,
+              // Plan 08-07 — share upstream_message_id with followers'
+              // request_log rows for Plan 08-08 cost-attribution grouping.
+              upstreamMessageId: capturedUpstreamMessageId,
               timestamp: new Date(),
             });
           };
@@ -455,7 +596,7 @@ export function registerChatCompletionsRoute(
           // `heartbeat.stop()` is idempotent — calling it twice (here AND from
           // sseCleanup) is safe.
           try {
-            await reply.sse(canonicalToOpenAISse(upstream, {
+            await reply.sse(canonicalToOpenAISse(upstreamWithMux, {
               signal: controller.signal,
               onCleanup: sseCleanup,
               // Plan 04-05: registry name on the wire (parity with Anthropic surface).

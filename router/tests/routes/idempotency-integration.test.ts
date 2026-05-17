@@ -30,7 +30,7 @@ import {
   makeRegistryStore,
 } from '../../src/config/registry.js';
 import type { BackendAdapter } from '../../src/backends/adapter.js';
-import type { CanonicalResponse } from '../../src/translation/canonical.js';
+import type { CanonicalResponse, CanonicalStreamEvent } from '../../src/translation/canonical.js';
 import type { ValkeyClient } from '../../src/clients/valkey.js';
 import type { CreateEmbeddingResponse } from 'openai/resources/embeddings';
 
@@ -261,28 +261,83 @@ class ValkeyMock {
   }
 }
 
+/** Test-controlled canonical stream events for the stream-branch tests. */
+function makeStreamEvents(model: string): CanonicalStreamEvent[] {
+  return [
+    {
+      type: 'message_start',
+      message: {
+        id: 'msg_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+        type: 'message',
+        role: 'assistant',
+        content: [],
+        model,
+        stop_reason: null,
+        stop_sequence: null,
+        usage: { input_tokens: 5, output_tokens: 0 },
+      },
+    },
+    {
+      type: 'content_block_start',
+      index: 0,
+      content_block: { type: 'text', text: '' },
+    },
+    {
+      type: 'content_block_delta',
+      index: 0,
+      delta: { type: 'text_delta', text: 'hello' },
+    },
+    { type: 'content_block_stop', index: 0 },
+    {
+      type: 'message_delta',
+      delta: { stop_reason: 'end_turn', stop_sequence: null },
+      usage: { output_tokens: 1 },
+    },
+    { type: 'message_stop' },
+  ];
+}
+
 function makeFakeAdapter(): {
   adapter: BackendAdapter;
-  calls: { chat: number; embeddings: number };
+  calls: { chat: number; embeddings: number; stream: number };
   resolveNext: (() => void)[];
   pauseAdapter: boolean;
+  streamHook: { pauseBetweenEvents: boolean; releaseEvent: (() => void)[] };
 } {
-  const calls = { chat: 0, embeddings: 0 };
+  const calls = { chat: 0, embeddings: 0, stream: 0 };
   const resolveNext: (() => void)[] = [];
   const state = { pauseAdapter: false };
+  const streamHook = {
+    pauseBetweenEvents: false,
+    releaseEvent: [] as (() => void)[],
+  };
   const adapter: BackendAdapter = {
     async chatCompletionsCanonical(canonical) {
       calls.chat++;
       if (state.pauseAdapter) {
-        // Wait until resolveNext is called — gives the test fine-grained
-        // control over concurrency (lets all N requests pile up at acquire
-        // before the leader's adapter call completes).
         await new Promise<void>((resolve) => resolveNext.push(resolve));
       }
       return stubCanonicalResponse(canonical.model);
     },
-    async chatCompletionsCanonicalStream() {
-      throw new Error('stream not used in Task 2 tests');
+    async chatCompletionsCanonicalStream(canonical) {
+      calls.stream++;
+      if (state.pauseAdapter) {
+        await new Promise<void>((resolve) => resolveNext.push(resolve));
+      }
+      const events = makeStreamEvents(canonical.model);
+      async function* iter(): AsyncGenerator<CanonicalStreamEvent> {
+        for (const ev of events) {
+          // Read flag live so the test can flip pauseBetweenEvents=false
+          // mid-stream and have subsequent events flow without pause.
+          if (streamHook.pauseBetweenEvents) {
+            await new Promise<void>((resolve) =>
+              streamHook.releaseEvent.push(resolve),
+            );
+          }
+          yield ev;
+        }
+      }
+      return iter();
     },
     async probeLiveness() {
       return { ok: true, latencyMs: 0 };
@@ -299,6 +354,7 @@ function makeFakeAdapter(): {
     adapter,
     calls,
     resolveNext,
+    streamHook,
     get pauseAdapter() {
       return state.pauseAdapter;
     },
@@ -307,9 +363,10 @@ function makeFakeAdapter(): {
     },
   } as unknown as {
     adapter: BackendAdapter;
-    calls: { chat: number; embeddings: number };
+    calls: { chat: number; embeddings: number; stream: number };
     resolveNext: (() => void)[];
     pauseAdapter: boolean;
+    streamHook: { pauseBetweenEvents: boolean; releaseEvent: (() => void)[] };
   };
 }
 
@@ -501,6 +558,135 @@ describe('Idempotency-Key multiplexer integration — Plan 08-07 (ROUTE-12)', ()
     const responses = await Promise.all(promises);
     expect(fixture.calls.chat).toBe(2);
     expect(responses.every((r) => r.statusCode === 200)).toBe(true);
+  });
+
+  it('Test 6 (chat stream 3x same key): adapter called once; 3 identical SSE sequences', async () => {
+    await setup();
+    // Pause between events so the leader's stream stays in-flight while
+    // followers subscribe to the channel.
+    fixture.streamHook.pauseBetweenEvents = true;
+
+    const promises = Array.from({ length: 3 }, () =>
+      app.inject({
+        method: 'POST',
+        url: '/v1/chat/completions',
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          'content-type': 'application/json',
+          'idempotency-key': '01HABCDEF0123456789ABCDEFS',
+        },
+        payload: {
+          model: LOCAL_MODEL,
+          messages: [{ role: 'user', content: 'hi' }],
+          stream: true,
+        },
+      }),
+    );
+
+    // Give followers a chance to subscribe.
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+
+    // Release all paused events.
+    fixture.streamHook.pauseBetweenEvents = false;
+    while (fixture.streamHook.releaseEvent.length > 0) {
+      fixture.streamHook.releaseEvent.shift()!();
+    }
+
+    const responses = await Promise.all(promises);
+    // Adapter stream invoked exactly once.
+    expect(fixture.calls.stream).toBe(1);
+    expect(responses.every((r) => r.statusCode === 200)).toBe(true);
+    // All 3 SSE bodies byte-identical.
+    const bodies = responses.map((r) => r.body);
+    expect(new Set(bodies).size).toBe(1);
+    // The SSE body contains the expected text token.
+    expect(bodies[0]).toContain('hello');
+    expect(bodies[0]).toContain('[DONE]');
+  });
+
+  it('Test 7 (messages stream 3x same key): adapter called once; 3 identical SSE sequences', async () => {
+    await setup();
+    fixture.streamHook.pauseBetweenEvents = true;
+
+    const promises = Array.from({ length: 3 }, () =>
+      app.inject({
+        method: 'POST',
+        url: '/v1/messages',
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          'content-type': 'application/json',
+          'idempotency-key': '01HABCDEF0123456789ABCDEFT',
+        },
+        payload: {
+          model: LOCAL_MODEL,
+          max_tokens: 100,
+          messages: [{ role: 'user', content: 'hi' }],
+          stream: true,
+        },
+      }),
+    );
+
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+
+    fixture.streamHook.pauseBetweenEvents = false;
+    while (fixture.streamHook.releaseEvent.length > 0) {
+      fixture.streamHook.releaseEvent.shift()!();
+    }
+
+    const responses = await Promise.all(promises);
+    expect(fixture.calls.stream).toBe(1);
+    expect(responses.every((r) => r.statusCode === 200)).toBe(true);
+    const bodies = responses.map((r) => r.body);
+    expect(new Set(bodies).size).toBe(1);
+    // Anthropic SSE body has typed events.
+    expect(bodies[0]).toContain('message_start');
+    expect(bodies[0]).toContain('message_stop');
+  });
+
+  it('Test 8 (sequential stream): second request replays cached chunks after leader finishes', async () => {
+    await setup();
+    // Adapter runs immediately; leader finalizes before follower joins.
+    fixture.streamHook.pauseBetweenEvents = false;
+
+    const r1 = await app.inject({
+      method: 'POST',
+      url: '/v1/chat/completions',
+      headers: {
+        authorization: `Bearer ${TOKEN}`,
+        'content-type': 'application/json',
+        'idempotency-key': '01HABCDEF0123456789ABCDEFU',
+      },
+      payload: {
+        model: LOCAL_MODEL,
+        messages: [{ role: 'user', content: 'hi' }],
+        stream: true,
+      },
+    });
+    expect(r1.statusCode).toBe(200);
+    expect(fixture.calls.stream).toBe(1);
+
+    // Second request — leader already finalized; follower reads chunks list
+    // + result key and replays without invoking the adapter.
+    const r2 = await app.inject({
+      method: 'POST',
+      url: '/v1/chat/completions',
+      headers: {
+        authorization: `Bearer ${TOKEN}`,
+        'content-type': 'application/json',
+        'idempotency-key': '01HABCDEF0123456789ABCDEFU',
+      },
+      payload: {
+        model: LOCAL_MODEL,
+        messages: [{ role: 'user', content: 'hi' }],
+        stream: true,
+      },
+    });
+    expect(r2.statusCode).toBe(200);
+    expect(fixture.calls.stream).toBe(1); // still ONE
+    // SSE bodies byte-identical.
+    expect(r2.body).toBe(r1.body);
   });
 
   it('Test 5b (sequential same-key): second request becomes follower after leader finishes', async () => {
