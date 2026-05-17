@@ -211,6 +211,15 @@ describe('POST /v1/embeddings — capability gate (T-07-11 mitigation)', () => {
     expect(pushed[0].status_class).toBe('client_error');
     expect(pushed[0].http_status).toBe(400);
     expect(pushed[0].error_code).toBe('model_capability_mismatch');
+    // 07-REVIEW WR-08: lock which code path produced the row. The capability
+    // throw lives inside the route's try block, so the outer `finally` runs
+    // FIRST and records with the resolved entry's backend/model labels — NOT
+    // the centralized error-handler fallback of 'unknown'/'unknown' that
+    // pre-registry-resolve errors emit. A future refactor that moves the
+    // throw before the try block would break this invariant silently; this
+    // assertion catches the regression loudly.
+    expect(pushed[0].backend).toBe('vllm');
+    expect(pushed[0].model).toBe(CHAT_MODEL);
   });
 });
 
