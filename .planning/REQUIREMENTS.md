@@ -40,7 +40,7 @@
 - [ ] **ROUTE-07**: Per-backend concurrency cap is configurable via `models.yaml`; excess requests queue or 429
 - [ ] **ROUTE-08**: SSE infrastructure works end-to-end: 15s heartbeat, backpressure via `reply.raw.write()` return-value check + `'drain'` await, `req.raw.on('close')` aborts the upstream `AbortController`
 - [x] **ROUTE-09**: An `X-Agent-Id` request header is surfaced into structured logs and `request_log` rows
-- [ ] **ROUTE-10**: An `X-Model-Backend` response header tells the client which backend served the response
+- [x] **ROUTE-10**: An `X-Model-Backend` response header tells the client which backend served the response
 - [ ] **ROUTE-11**: Server-side per-token-per-minute rate limit is enforced via Valkey
 - [ ] **ROUTE-12**: An `Idempotency-Key` request header attaches retries to the in-flight stream rather than starting a new generation
 
@@ -252,7 +252,7 @@ Each requirement maps to exactly one phase. Mapping derived from research-recomm
 | CLOUD-04 | Phase 8 — Ollama Cloud Fallback + Resilience Hardening | Pending |
 | CLOUD-05 | Phase 8 — Ollama Cloud Fallback + Resilience Hardening | Pending |
 | DATA-06 | Phase 8 — Ollama Cloud Fallback + Resilience Hardening | Complete |
-| ROUTE-10 | Phase 8 — Ollama Cloud Fallback + Resilience Hardening | Pending |
+| ROUTE-10 | Phase 8 — Ollama Cloud Fallback + Resilience Hardening | Complete |
 | ROUTE-11 | Phase 8 — Ollama Cloud Fallback + Resilience Hardening | Pending |
 | ROUTE-12 | Phase 8 — Ollama Cloud Fallback + Resilience Hardening | Pending |
 | OPS-01 | Phase 9 — Operations Hardening | Pending |

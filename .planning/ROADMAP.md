@@ -226,7 +226,7 @@ Plans:
 - [x] 08-02-PLAN.md — OllamaCloudAdapter + LocalBackendEnum widening + factory dispatch + 2 cloud model entries + assertCloudEnvIfConfigured (CLOUD-01, CLOUD-02, EMBED-02)
 
 **Wave 2** *(four parallel-safe plans — all depend on either 08-01 Valkey or 08-02 cloud entries; disjoint file ownership within wave)*
-- [ ] 08-03-PLAN.md — X-Model-Backend onSend hook + 3 route stamps (ROUTE-10)
+- [x] 08-03-PLAN.md — X-Model-Backend onSend hook + 3 route stamps (ROUTE-10)
 - [ ] 08-04-PLAN.md — Per-backend circuit breaker with Valkey-backed state machine + half-open probe lock (CLOUD-03)
 - [ ] 08-05-PLAN.md — max_tokens 16384 cap for cloud + structured envelope (CLOUD-04)
 - [ ] 08-06-PLAN.md — Per-bearer-token-per-minute rate limit pre-handler + Valkey INCR + Retry-After (ROUTE-11)
@@ -263,7 +263,7 @@ Plans:
 | 5. Postgres + Observability Seam | 6/6 | Complete    | 2026-05-15 |
 | 6. Traefik + TLS + Open WebUI | 0/4 | Planned | - |
 | 7. Embeddings + vLLM + GPU Telemetry | 7/7 | Complete   | 2026-05-17 |
-| 8. Ollama Cloud Fallback + Resilience Hardening | 3/11 | In progress | - |
+| 8. Ollama Cloud Fallback + Resilience Hardening | 4/11 | In progress | - |
 | 9. Operations Hardening | 0/0 | Not started | - |
 
 ## Coverage Summary

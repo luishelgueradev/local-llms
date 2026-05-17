@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v0.9.0
 milestone_name: milestone
 status: executing
-stopped_at: "Phase 8 Plan 02 (CLOUD-01 + CLOUD-02 + EMBED-02 vertical slice) COMPLETE — OllamaCloudAdapter targets https://ollama.com/v1 with bearer OLLAMA_API_KEY; LocalBackendEnum widened with 'ollama-cloud'; vram_budget_gb relaxed to .nonnegative(); env.ts adds optional OLLAMA_API_KEY field cross-checked at boot via assertCloudEnvIfConfigured; factory split into LOCAL_ADAPTERS + CLOUD_ADAPTERS with MakeAdapterDeps.cloudApiKey thread; app.ts pre-binds a makeAdapterWithCloudKey closure at all 4 call sites; models.yaml gains gpt-oss:120b-cloud + gpt-oss:20b-cloud entries. Commits: 720fff7 (Task 1 — registry/env/boot helper) + ab42b5c (Task 2 — adapter + factory) + 3cf3c27 (Task 3 — app.ts closure + models.yaml). 556/558 tests pass (2 skipped, +24 new tests). Build clean. 2 deviations auto-fixed (Rule 3: stale Phase-3 test asserting cloud rejection + Rule 3: isMainModule gate so vitest can import index.ts without triggering process.exit). CLOUD-01 + CLOUD-02 + EMBED-02 closed; resilience layers (08-03..08-10) layer on top."
-last_updated: "2026-05-17T15:56:10Z"
+stopped_at: "Phase 8 Plan 03 (ROUTE-10 — X-Model-Backend response header) COMPLETE — single Fastify onSend hook in app.ts reads req.resolvedBackend (new FastifyRequest module-augmentation field on middleware/agentId.ts) and stamps `X-Model-Backend: <backend>` on every successful chat/messages/embeddings response. Three route handlers (chat-completions, messages, embeddings) stamp req.resolvedBackend = entry.backend immediately after registry.resolve(body.model). count-tokens deliberately does NOT stamp (D-F1 — no backend dispatch). 7-test integration suite at router/tests/app/x-model-backend.test.ts covers 3 happy paths + 4 negative/edge cases (404 unknown model, 401 missing bearer, count_tokens no-header, ollama-cloud entry → header: ollama-cloud). Commits: 95df963 (test RED) + c0318e4 (feat GREEN). 563/565 tests pass (2 skipped, +7 new). Build clean. Zero deviations. ROUTE-10 closes; CLOUD-02 transparency vertical slice (08-02 + 08-03) structurally complete."
+last_updated: "2026-05-17T16:05:14Z"
 progress:
   total_phases: 9
   completed_phases: 7
   total_plans: 50
-  completed_plans: 42
-  percent: 84
+  completed_plans: 44
+  percent: 88
 ---
 
 # Project State: local-llms
@@ -27,12 +27,12 @@ progress:
 ## Current Position
 
 Phase: 08 (Ollama Cloud Fallback + Resilience Hardening) — EXECUTING
-Plan: 4 of 11
+Plan: 5 of 11
 
 - **Milestone:** v1
 - **Phase:** 8
-- **Plan:** 08-02 (Wave 1, CLOUD-01 + CLOUD-02 + EMBED-02 vertical slice) — COMPLETE. OllamaCloudAdapter (bearer OLLAMA_API_KEY targeting https://ollama.com/v1) implements all 4 BackendAdapter methods including embeddings (closes EMBED-02 deferred from Phase 7); registry widened to accept `backend: ollama-cloud` with vram_budget_gb=0; env.ts adds optional OLLAMA_API_KEY field cross-checked at boot; factory split into LOCAL_ADAPTERS + CLOUD_ADAPTERS with MakeAdapterDeps.cloudApiKey thread; app.ts pre-binds the key in a makeAdapterWithCloudKey closure; models.yaml gains gpt-oss:120b-cloud + gpt-oss:20b-cloud. Commits: 720fff7 + ab42b5c + 3cf3c27. 556/558 tests pass; build clean.
-- **Next plan:** 08-03 (Wave 2 — X-Model-Backend onSend hook; reads `entry.backend === 'ollama-cloud'` to set the response header). 08-04 follows with the circuit breaker around adapter calls. The "killer feature" curl is structurally complete after 08-02 — Waves 2+ add resilience.
+- **Plan:** 08-03 (Wave 2, ROUTE-10 — X-Model-Backend response header) — COMPLETE. Single Fastify onSend hook in app.ts reads `req.resolvedBackend` (new optional FastifyRequest field via module augmentation in middleware/agentId.ts) and stamps `X-Model-Backend: <backend>` on every successful chat/messages/embeddings response. Three route handlers stamp `req.resolvedBackend = entry.backend` immediately after registry.resolve. count-tokens deliberately does NOT stamp (D-F1). 7-test integration suite covers all happy + negative paths including the ollama-cloud success case. Commits: 95df963 (test RED) + c0318e4 (feat GREEN). 563/565 tests pass; build clean. Zero deviations. ROUTE-10 closes — CLOUD-02 transparency vertical slice (08-02 backend + 08-03 wire signal) is structurally complete.
+- **Next plan:** 08-04 (Wave 2 — circuit breaker around adapter calls). The X-Model-Backend header continues to surface on the error responses the breaker may produce (the stamp runs BEFORE the adapter call, so post-resolve errors still carry the header).
 - **Phase 7 carry-over:** Plan 07-06 task 3 still PENDING-HUMAN (operator approval on RTX 5060 Ti host). Recipe in 07-06-SUMMARY.md §User Setup Required.
 
 ### Progress
@@ -45,10 +45,10 @@ Phase 4: ░░░░░░░░░░ 0% (0/16 requirements)
 Phase 5: ░░░░░░░░░░ 0% (0/8 requirements)
 Phase 6: ░░░░░░░░░░ 0% (0/11 requirements)
 Phase 7: █████████░ 86% (6/7 requirements coded; smoke scripts in tree; OBS-05 already complete from Phase 5; awaiting operator human-verify on 07-06 task 3)
-Phase 8: ████░░░░░░ 44% (5/9 requirements — CLOUD-01 precondition closed via Plan 08-00; DATA-06 foundation closed via Plan 08-01; CLOUD-01 + CLOUD-02 + EMBED-02 vertical slice closed via Plan 08-02)
+Phase 8: █████░░░░░ 56% (6/9 requirements — CLOUD-01 precondition closed via Plan 08-00; DATA-06 foundation closed via Plan 08-01; CLOUD-01 + CLOUD-02 + EMBED-02 vertical slice closed via Plan 08-02; ROUTE-10 closed via Plan 08-03)
 Phase 9: ░░░░░░░░░░ 0% (0/4 requirements)
 
-Overall: ███░░░░░░░ 29% (22/76 v1 requirements)
+Overall: ███░░░░░░░ 30% (23/76 v1 requirements)
 ```
 
 ## Performance Metrics
@@ -103,8 +103,8 @@ Overall: ███░░░░░░░ 29% (22/76 v1 requirements)
 
 ## Session Continuity
 
-Last session: 2026-05-17T15:56:10Z
-Stopped at: Phase 8 Plan 02 (CLOUD-01 + CLOUD-02 + EMBED-02 vertical slice) COMPLETE — OllamaCloudAdapter targets https://ollama.com/v1 with bearer OLLAMA_API_KEY; registry widened (LocalBackendEnum + .nonnegative()); env.ts adds optional OLLAMA_API_KEY cross-checked at boot via assertCloudEnvIfConfigured; factory split into LOCAL_ADAPTERS + CLOUD_ADAPTERS with MakeAdapterDeps.cloudApiKey; app.ts pre-binds the key in makeAdapterWithCloudKey closure; models.yaml gains gpt-oss:120b-cloud + gpt-oss:20b-cloud. Commits: 720fff7 + ab42b5c + 3cf3c27. 556/558 tests pass (2 skipped, +24 new). Build clean. 2 deviations auto-fixed (Rule 3: stale Phase-3 ollama-cloud rejection test flipped; Rule 3: isMainModule gate around index.ts main() so vitest can import the assertCloudEnvIfConfigured helper without triggering process.exit). CLOUD-01 + CLOUD-02 + EMBED-02 closed.
+Last session: 2026-05-17T16:05:14Z
+Stopped at: Phase 8 Plan 03 (ROUTE-10 — X-Model-Backend response header) COMPLETE — single Fastify onSend hook in app.ts reads req.resolvedBackend (new FastifyRequest module-augmentation field on middleware/agentId.ts) and stamps `X-Model-Backend: <backend>` on every successful chat/messages/embeddings response. Three route handlers stamp req.resolvedBackend = entry.backend immediately after registry.resolve. count-tokens deliberately does NOT stamp (D-F1). 7-test integration suite at router/tests/app/x-model-backend.test.ts. Commits: 95df963 (test RED) + c0318e4 (feat GREEN). 563/565 tests pass (+7 new). Build clean. Zero deviations. ROUTE-10 closes; CLOUD-02 transparency vertical slice (08-02 backend + 08-03 wire signal) structurally complete.
 
 **Next action:** Operator runs the recipe in 07-06-SUMMARY.md §User Setup Required: `docker compose --profile vllm up -d` → wait for vllm healthy → `bash bin/smoke-test-observability.sh && bash bin/smoke-test-router.sh` → visual Grafana check → reply `approved` (or list failing assertions for re-execution).
 
