@@ -1,0 +1,298 @@
+{
+  "uid": "local-llms",
+  "title": "local-llms — Router + GPU + Backends",
+  "description": "Phase 7 OBS-04 dashboard: VRAM utilization, request rate by protocol/backend, TTFT p95, request duration p95, error rate by status_class, backend selection by model, vLLM throughput. All panels reference the pinned datasource UID 'prometheus-default' (Plan 07-02 / Pitfall P-1). Router metrics use the prom-client native names from router/src/metrics/registry.ts — _seconds_bucket, not _ms_bucket.",
+  "tags": ["local-llms", "phase-7"],
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timezone": "browser",
+  "editable": true,
+  "graphTooltip": 1,
+  "fiscalYearStartMonth": 0,
+  "liveNow": false,
+  "weekStart": "",
+  "style": "dark",
+  "annotations": {
+    "list": []
+  },
+  "templating": {
+    "list": []
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "VRAM Utilization (per-GPU)",
+      "description": "Fraction of VRAM in use, per GPU index. Source: nvidia_gpu_exporter (Plan 07-02). Thresholds: green < 75%, yellow 75-90%, red >= 90%.",
+      "type": "gauge",
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus-default" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus-default" },
+          "expr": "nvidia_smi_memory_used_bytes / nvidia_smi_memory_total_bytes",
+          "legendFormat": "GPU {{index}}",
+          "instant": false,
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.75 },
+              { "color": "red", "value": 0.9 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "auto",
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true,
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        }
+      },
+      "pluginVersion": "12.4.3"
+    },
+    {
+      "id": 2,
+      "title": "Request Rate (per protocol, per backend)",
+      "description": "Per-second request rate, broken down by wire protocol (openai | anthropic) and backend (ollama | llamacpp | vllm | ollama_cloud). 5m rate window.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 18, "x": 6, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus-default" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus-default" },
+          "expr": "sum(rate(router_requests_total[5m])) by (protocol, backend)",
+          "legendFormat": "{{protocol}} / {{backend}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "pointSize": 5,
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": { "mode": "none", "group": "A" }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": { "mode": "multi", "sort": "desc" },
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] }
+      },
+      "pluginVersion": "12.4.3"
+    },
+    {
+      "id": 3,
+      "title": "TTFT p95 (s)",
+      "description": "95th-percentile time-to-first-token in seconds, broken down by backend. Histogram source: router_ttft_seconds (prom-client buckets [0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10]). Native router metric is in seconds — NOT milliseconds.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus-default" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus-default" },
+          "expr": "histogram_quantile(0.95, sum(rate(router_ttft_seconds_bucket[5m])) by (le, backend))",
+          "legendFormat": "p95 / {{backend}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "pointSize": 5,
+            "showPoints": "auto",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": { "mode": "multi", "sort": "desc" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      },
+      "pluginVersion": "12.4.3"
+    },
+    {
+      "id": 4,
+      "title": "Request Duration p95 (s)",
+      "description": "End-to-end request latency 95th percentile in seconds, broken down by backend. Histogram source: router_request_duration_seconds (prom-client buckets [0.1, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300]). Native router metric is in seconds — NOT milliseconds.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus-default" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus-default" },
+          "expr": "histogram_quantile(0.95, sum(rate(router_request_duration_seconds_bucket[5m])) by (le, backend))",
+          "legendFormat": "p95 / {{backend}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "pointSize": 5,
+            "showPoints": "auto",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": { "mode": "multi", "sort": "desc" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      },
+      "pluginVersion": "12.4.3"
+    },
+    {
+      "id": 5,
+      "title": "Error Rate (by status_class)",
+      "description": "Non-success request rate per second, stacked by status_class label (client_error | server_error | upstream_error | timeout — see Phase 5 deriveStatusClass). 5m rate window.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "prometheus-default" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus-default" },
+          "expr": "sum(rate(router_requests_total{status_class!=\"success\"}[5m])) by (status_class)",
+          "legendFormat": "{{status_class}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "bars",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 60,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "mode": "normal", "group": "A" }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": { "mode": "multi", "sort": "desc" },
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] }
+      },
+      "pluginVersion": "12.4.3"
+    },
+    {
+      "id": 6,
+      "title": "Backend Selection (per-model request rate)",
+      "description": "Per-second request rate by model name and the backend that served it. Visualizes how the registry dispatches each declared model to its concrete backend. 5m rate window.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "prometheus-default" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus-default" },
+          "expr": "sum(rate(router_requests_total[5m])) by (model, backend)",
+          "legendFormat": "{{model}} ({{backend}})",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "pointSize": 5,
+            "showPoints": "auto",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": { "mode": "multi", "sort": "desc" },
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] }
+      },
+      "pluginVersion": "12.4.3"
+    },
+    {
+      "id": 7,
+      "title": "vLLM Generation Throughput (tokens/sec)",
+      "description": "vLLM's native /metrics counter vllm:generation_tokens_total, rate over 5m. Empty when --profile vllm is NOT active (vllm + vllm-embed scrape targets show up=0). Shows generated tokens per second while vLLM serves requests.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 24 },
+      "datasource": { "type": "prometheus", "uid": "prometheus-default" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus-default" },
+          "expr": "rate(vllm:generation_tokens_total[5m])",
+          "legendFormat": "vllm tokens/s ({{job}})",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "tps",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "pointSize": 5,
+            "showPoints": "auto",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": { "mode": "multi", "sort": "desc" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      },
+      "pluginVersion": "12.4.3"
+    }
+  ]
+}
