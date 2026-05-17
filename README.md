@@ -1013,6 +1013,211 @@ Plan 07-06 brings these scripts in. Until then, the dashboard + provisioning
 files in this plan are inert — they get exercised on the next `docker compose
 up -d` run with `${GRAFANA_ADMIN_PASSWORD}` set in `.env`.
 
+## Phase 8 — Cloud fallback + resilience
+
+Phase 8 closes the v1 router with five complementary layers: Ollama Cloud
+as a declared first-class backend (CLOUD-01 / CLOUD-02 / EMBED-02), per-backend
+circuit breaker (CLOUD-03), per-bearer rate limit (ROUTE-11), `max_tokens`
+safety cap on cloud models (CLOUD-04), Idempotency-Key multiplexer for
+retry-safe agents (ROUTE-12), the `X-Model-Backend` response header on every
+chat/messages/embeddings route (ROUTE-10), the `cloud_spend_daily` Postgres
+view for cost introspection (CLOUD-05), and Valkey infrastructure +
+registry-cache (DATA-06).
+
+### Bring up Valkey
+
+Valkey runs on the internal `data` network and is required by every Phase 8
+resilience layer (breaker counters, rate-limit buckets, idempotency mux,
+registry cache).
+
+```bash
+docker compose up -d valkey postgres
+docker compose ps valkey   # expect: running, healthy
+```
+
+Generate `VALKEY_PASSWORD` once (8+ chars; rotate by stopping valkey,
+updating .env, restarting):
+
+```bash
+echo "VALKEY_PASSWORD=$(openssl rand -hex 24)" >> .env
+```
+
+### Cloud models (CLOUD-01 / CLOUD-02 / EMBED-02)
+
+1. Get a Cloud API key at <https://ollama.com> → Settings → API Keys →
+   *Create new key*.
+2. Set `OLLAMA_API_KEY=oss_...` in `.env`.
+3. Confirm the two cloud entries Plan 08-02 added to `router/models.yaml`:
+   - `gpt-oss:120b-cloud`
+   - `gpt-oss:20b-cloud`
+4. Restart router: `docker compose restart router`.
+5. Smoke a cloud chat:
+
+```bash
+curl -fsS -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"gpt-oss:20b-cloud","messages":[{"role":"user","content":"hi"}],"stream":false}' \
+  http://127.0.0.1:3000/v1/chat/completions | jq '.choices[0].message.content'
+```
+
+If `OLLAMA_API_KEY` is empty, the router still loads — cloud-tagged models
+simply return upstream auth errors when called.
+
+### X-Model-Backend header (ROUTE-10)
+
+Every `/v1/chat/completions`, `/v1/messages`, and `/v1/embeddings` response
+carries `X-Model-Backend: <backend>` (Plan 08-03 onSend hook). `/v1/models`
+has no single resolved backend by design and therefore does NOT stamp the
+header.
+
+```bash
+curl -fsS -D - -o /dev/null \
+  -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"gpt-oss:20b-cloud","messages":[{"role":"user","content":"hi"}],"stream":false}' \
+  http://127.0.0.1:3000/v1/chat/completions \
+  | grep -i '^x-model-backend:'
+# Expected: X-Model-Backend: ollama-cloud
+```
+
+### Circuit breaker (CLOUD-03)
+
+Per-backend rolling-window breaker keyed in Valkey:
+
+```
+breaker:<backend>:state        'open' | 'half-open' (absent = closed)
+breaker:<backend>:fail_count   INCR with EXPIRE = CIRCUIT_WINDOW_MS
+breaker:<backend>:probe_at     epoch_ms when the next half-open probe is allowed
+```
+
+`CIRCUIT_FAILURE_THRESHOLD` consecutive failures in `CIRCUIT_WINDOW_MS`
+flips the breaker; subsequent calls return 503 + `code=backend_circuit_open`
++ `Retry-After: <CIRCUIT_COOLDOWN_MS/1000>` until the cooldown elapses.
+
+Inspect state:
+
+```bash
+docker compose exec -T valkey valkey-cli -a "${VALKEY_PASSWORD}" KEYS 'breaker:*'
+```
+
+Manual reset (incident only — normal operation does NOT require this):
+
+```bash
+docker compose exec -T valkey valkey-cli -a "${VALKEY_PASSWORD}" \
+  DEL breaker:ollama-cloud:state breaker:ollama-cloud:fail_count breaker:ollama-cloud:probe_at
+```
+
+### max_tokens cap (CLOUD-04)
+
+Cloud-tagged models reject `max_tokens > 16384` BEFORE any upstream call.
+The router returns 400 + an `error.code = "cloud_max_tokens_exceeded"`
+envelope so a misbehaving agent can't accidentally spend through a 100K
+`max_tokens` budget. Verify:
+
+```bash
+curl -s -o /tmp/cap.json -w '%{http_code}\n' \
+  -X POST -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"gpt-oss:20b-cloud","messages":[{"role":"user","content":"hi"}],"max_tokens":32768,"stream":false}' \
+  http://127.0.0.1:3000/v1/chat/completions
+# Expected: 400
+jq '.error.code' /tmp/cap.json
+# Expected: "cloud_max_tokens_exceeded"
+```
+
+### Rate limit (ROUTE-11)
+
+Per-bearer-token, per-epoch-minute counter (Plan 08-06). Default 600 RPM;
+override via `ROUTER_RATE_LIMIT_RPM` in `.env`. On overflow: 429 +
+`code=rate_limit_exceeded` + `Retry-After: 60`.
+
+Inspect counters:
+
+```bash
+docker compose exec -T valkey valkey-cli -a "${VALKEY_PASSWORD}" KEYS 'ratelimit:*'
+```
+
+Each key shape: `ratelimit:${bearer_hash_8char}:${epoch_minute}` with TTL 65s.
+
+### Idempotency-Key (ROUTE-12)
+
+Retry-safe agent recipe — pass an `Idempotency-Key` header on any
+`/v1/chat/completions` or `/v1/messages` request (non-stream OR stream).
+Concurrent or sequential retries with the same key reuse the leader's
+generation; the SAME upstream_message_id appears across all rows in
+`request_log` for that key. Cloud cost is paid ONCE no matter how many
+agent retries hit.
+
+```bash
+KEY=$(uuidgen)
+for i in 1 2 3; do
+  curl -fsS -X POST \
+    -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+    -H "Idempotency-Key: ${KEY}" \
+    -H 'Content-Type: application/json' \
+    -d '{"model":"llama3.2:3b-instruct-q4_K_M","messages":[{"role":"user","content":"hi"}],"max_tokens":8,"stream":false}' \
+    http://127.0.0.1:3000/v1/chat/completions \
+    | md5sum &
+done
+wait
+# Expected: 3 identical md5 sums.
+docker compose exec -T postgres psql -U app -d router -c \
+  "SELECT COUNT(*), COUNT(DISTINCT upstream_message_id) FROM request_log WHERE idempotency_key = '${KEY}';"
+# Expected: 3 | 1
+```
+
+Key must match `^[A-Za-z0-9._:-]{1,256}$`; invalid keys → 400 +
+`code=invalid_idempotency_key`.
+
+### cloud_spend_daily view (CLOUD-05)
+
+Operator-facing cost view; aggregates `request_log` over `backend='ollama-cloud'`
+into daily buckets with `request_count`, `distinct_generations` (collapses
+idempotency followers to billable units), `spend_ms` (proxy via
+`SUM(latency_ms)`), and `avg_latency_ms`.
+
+```bash
+docker compose exec -T postgres psql -U app -d router \
+  -c "SELECT * FROM cloud_spend_daily;"
+```
+
+The view is read-only and refreshes on every query — no materialised state
+to maintain.
+
+### Registry cache (DATA-06)
+
+`router/models.yaml` is loaded once into Valkey at key
+`registry:models-yaml:cache:v1` with a 30s TTL (Plan 08-09). Subsequent
+router boots within the TTL skip the YAML parse + zod validation. Hot
+reloads (fs.watch on models.yaml) propagate the new snapshot to Valkey
+via the `watchRegistry.onReload` callback.
+
+```bash
+docker compose exec -T valkey valkey-cli -a "${VALKEY_PASSWORD}" \
+  GET registry:models-yaml:cache:v1 | jq '.models | length'
+docker compose exec -T valkey valkey-cli -a "${VALKEY_PASSWORD}" \
+  TTL registry:models-yaml:cache:v1
+# Expected: integer in 1..30
+```
+
+### Phase 8 smoke tests
+
+Two scripts under `bin/`:
+
+- `bin/smoke-test-cloud.sh` — Phase 8 dedicated smoke. Covers all 10
+  Phase 8 requirement IDs in 9 sections (Sections 2 + 3 SKIP cleanly if
+  `OLLAMA_API_KEY` is empty — local-only verification mode is the
+  default).
+- `bin/smoke-test-router.sh` — canonical smoke; Plan 08-10 appended a
+  `=== Phase 8 — Resilience + Cloud + Telemetry ===` block that mirrors
+  the 7 local-only sections of the dedicated cloud smoke. Running the
+  canonical smoke now gets Phase 8 coverage without a separate invocation.
+
+```bash
+bash bin/smoke-test-router.sh    # canonical: Phases 2-5 + 7 + 8 local-only
+bash bin/smoke-test-cloud.sh     # dedicated: full Phase 8 incl. live cloud
+```
+
 ## Anti-patterns rejected by this stack
 
 - `:latest` image tags anywhere — every image pinned to a specific tag.

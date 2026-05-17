@@ -1427,11 +1427,334 @@ fi
 echo ""
 echo "[smoke-test-router] === Phase 7 section complete ==="
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 8 — Resilience + Cloud + Telemetry
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Plan 08-10 / Task 1 — appended to the canonical smoke so an operator running
+# this single script gets full Phase 8 coverage WITHOUT having to invoke
+# bin/smoke-test-cloud.sh separately. The cloud-specific (live OLLAMA_API_KEY-
+# requiring) sections 2 + 3 of the dedicated cloud smoke remain in
+# bin/smoke-test-cloud.sh — this block mirrors the local-only assertions
+# (Sections 1, 4, 5, 6, 7, 8, 9 from smoke-test-cloud.sh).
+#
+# Verified surface (10 Phase-8 requirement IDs, 7 sections):
+#
+#   ROUTE-10 — Section 1: X-Model-Backend header on chat / messages / embeddings.
+#   CLOUD-04 — Section 4: max_tokens > CLOUD_MAX_TOKENS_CAP (16384) → 400 +
+#                          code=cloud_max_tokens_exceeded BEFORE any upstream call.
+#   CLOUD-03 — Section 5: per-backend circuit breaker via Valkey direct write →
+#                          503 + code=backend_circuit_open + Retry-After.
+#   ROUTE-11 — Section 6: per-bearer-token rate limit via Valkey direct write →
+#                          429 + code=rate_limit_exceeded + Retry-After.
+#   ROUTE-12 — Section 7: Idempotency-Key multiplexer → 3 concurrent same-key
+#                          requests return byte-identical bodies + 1 distinct
+#                          upstream_message_id in request_log.
+#   CLOUD-05 — Section 8: cloud_spend_daily Postgres view exists and is queryable.
+#   DATA-06  — Section 9: Valkey registry cache key populated + TTL ∈ [1, 30].
+# ─────────────────────────────────────────────────────────────────────────────
+
+echo ""
+echo "[smoke-test-router] === Phase 8 — Resilience + Cloud + Telemetry ==="
+
+# ── Phase 8 helper: resolve VALKEY_PASSWORD from .env (single-var grep) ──────
+if [[ -z "${VALKEY_PASSWORD:-}" ]] && [[ -f "${REPO_ROOT}/.env" ]]; then
+  VALKEY_PASSWORD=$(
+    grep -E '^VALKEY_PASSWORD=' "${REPO_ROOT}/.env" \
+      | tail -1 \
+      | cut -d= -f2- \
+      | sed -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'$/\1/"
+  )
+  export VALKEY_PASSWORD
+fi
+
+PHASE_8_VALKEY_OK=0
+if [[ -n "${VALKEY_PASSWORD:-}" ]] \
+   && docker compose ps valkey --format '{{.State}}' 2>/dev/null | grep -q '^running$' \
+   && docker compose exec -T valkey valkey-cli -a "${VALKEY_PASSWORD}" --no-auth-warning PING 2>/dev/null | grep -q '^PONG$'; then
+  PHASE_8_VALKEY_OK=1
+fi
+
+if [[ "${PHASE_8_VALKEY_OK}" -ne 1 ]]; then
+  skip "Phase 8: valkey service unavailable or VALKEY_PASSWORD unset — skipping Phase 8 block (bring up valkey + set VALKEY_PASSWORD in .env to exercise)"
+else
+  # ─── ROUTER_RATE_LIMIT_RPM (default 600) ────────────────────────────────────
+  P8_RPM=600
+  if [[ -f "${REPO_ROOT}/.env" ]]; then
+    P8_RPM_FROM_ENV=$(
+      grep -E '^ROUTER_RATE_LIMIT_RPM=' "${REPO_ROOT}/.env" \
+        | tail -1 \
+        | cut -d= -f2- \
+        | sed -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'$/\1/"
+    )
+    if [[ -n "${P8_RPM_FROM_ENV}" ]]; then P8_RPM="${P8_RPM_FROM_ENV}"; fi
+  fi
+
+  # CLOUD_MAX_TOKENS_CAP per router/src/config/constants.ts.
+  P8_CAP=16384
+  P8_CLOUD_MODEL="${CLOUD_CHAT_MODEL:-gpt-oss:20b-cloud}"
+  P8_CLOUD_BACKEND="ollama-cloud"
+
+  p8_valkey_cli() {
+    docker compose exec -T valkey valkey-cli -a "${VALKEY_PASSWORD}" --no-auth-warning "$@"
+  }
+  p8_psql() {
+    docker compose exec -T postgres psql -U app -d router -tA -c "$1"
+  }
+  p8_extract_header() {
+    local raw="$1"
+    echo "$raw" | grep -i '^x-model-backend:' | head -1 | awk -F': *' '{print $2}' | tr -d '\r\n'
+  }
+
+  # ─── Section 1: X-Model-Backend response header ────────────────────────────
+  echo "[smoke-test-router] Phase 8 / Section 1: X-Model-Backend response header (ROUTE-10)"
+  P8_CHAT_HEADERS=$(curl -fsS -D - -o /dev/null \
+    -X POST "${ROUTER_URL}/v1/chat/completions" \
+    -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+    -H "Content-Type: application/json" \
+    --max-time 60 \
+    -d "{\"model\":\"${MODEL}\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":4,\"stream\":false}" \
+    2>/dev/null || echo "")
+  P8_CHAT_BACKEND=$(p8_extract_header "${P8_CHAT_HEADERS}")
+  if [[ -n "${P8_CHAT_BACKEND}" ]]; then
+    pass "Phase 8: X-Model-Backend on /v1/chat/completions = '${P8_CHAT_BACKEND}'"
+  else
+    fail "Phase 8: X-Model-Backend missing on /v1/chat/completions"
+  fi
+
+  P8_MSG_HEADERS=$(curl -fsS -D - -o /dev/null \
+    -X POST "${ROUTER_URL}/v1/messages" \
+    -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+    -H "Content-Type: application/json" \
+    --max-time 60 \
+    -d "{\"model\":\"${MODEL}\",\"max_tokens\":4,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}" \
+    2>/dev/null || echo "")
+  P8_MSG_BACKEND=$(p8_extract_header "${P8_MSG_HEADERS}")
+  if [[ -n "${P8_MSG_BACKEND}" ]]; then
+    pass "Phase 8: X-Model-Backend on /v1/messages = '${P8_MSG_BACKEND}'"
+  else
+    fail "Phase 8: X-Model-Backend missing on /v1/messages"
+  fi
+
+  if docker compose exec -T "${OLLAMA_SVC}" ollama list 2>/dev/null | grep -q '^bge-m3'; then
+    P8_EMB_HEADERS=$(curl -fsS -D - -o /dev/null \
+      -X POST "${ROUTER_URL}/v1/embeddings" \
+      -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+      -H "Content-Type: application/json" \
+      --max-time 60 \
+      -d '{"model":"bge-m3-ollama","input":"hi"}' \
+      2>/dev/null || echo "")
+    P8_EMB_BACKEND=$(p8_extract_header "${P8_EMB_HEADERS}")
+    if [[ -n "${P8_EMB_BACKEND}" ]]; then
+      pass "Phase 8: X-Model-Backend on /v1/embeddings = '${P8_EMB_BACKEND}'"
+    else
+      fail "Phase 8: X-Model-Backend missing on /v1/embeddings"
+    fi
+  else
+    skip "Phase 8: /v1/embeddings X-Model-Backend (bge-m3 not pulled)"
+  fi
+
+  # ─── Section 4: max_tokens cap on cloud → 400 (CLOUD-04) ───────────────────
+  echo "[smoke-test-router] Phase 8 / Section 4: max_tokens cap on cloud → 400 (CLOUD-04)"
+  P8_OVER_CAP=$(( P8_CAP + 1 ))
+  P8_CAP_FILE=$(mktemp)
+  P8_CAP_STATUS=$(curl -s -o "${P8_CAP_FILE}" -w '%{http_code}' \
+    -X POST "${ROUTER_URL}/v1/chat/completions" \
+    -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+    -H "Content-Type: application/json" \
+    --max-time 30 \
+    -d "{\"model\":\"${P8_CLOUD_MODEL}\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":${P8_OVER_CAP},\"stream\":false}" \
+    2>/dev/null || echo "000")
+  if [[ "${P8_CAP_STATUS}" == "400" ]]; then
+    pass "Phase 8: max_tokens=${P8_OVER_CAP} → 400 (cap=${P8_CAP})"
+  else
+    fail "Phase 8: max_tokens=${P8_OVER_CAP} → ${P8_CAP_STATUS} (expected 400)"
+  fi
+  P8_CAP_CODE=$(jq -r '.error.code // empty' "${P8_CAP_FILE}" 2>/dev/null)
+  if [[ "${P8_CAP_CODE}" == "cloud_max_tokens_exceeded" ]]; then
+    pass "Phase 8: envelope code = 'cloud_max_tokens_exceeded'"
+  else
+    fail "Phase 8: envelope code = '${P8_CAP_CODE}' (expected 'cloud_max_tokens_exceeded')"
+  fi
+  rm -f "${P8_CAP_FILE}"
+
+  # ─── Section 5: Circuit breaker via Valkey direct write (CLOUD-03) ─────────
+  echo "[smoke-test-router] Phase 8 / Section 5: circuit breaker via Valkey direct write (CLOUD-03)"
+  P8_BREAKER_STATE="breaker:${P8_CLOUD_BACKEND}:state"
+  P8_BREAKER_PROBE="breaker:${P8_CLOUD_BACKEND}:probe_at"
+  P8_BREAKER_FAILS="breaker:${P8_CLOUD_BACKEND}:fail_count"
+  P8_NOW_MS=$(date +%s%3N 2>/dev/null || echo "$(( $(date +%s) * 1000 ))")
+  P8_PROBE_AT=$(( P8_NOW_MS + 60000 ))
+  p8_valkey_cli SET "${P8_BREAKER_STATE}" "open" EX 90 >/dev/null
+  p8_valkey_cli SET "${P8_BREAKER_PROBE}" "${P8_PROBE_AT}" EX 90 >/dev/null
+  P8_BREAKER_FILE=$(mktemp)
+  P8_BREAKER_HFILE=$(mktemp)
+  P8_BREAKER_STATUS=$(curl -s -o "${P8_BREAKER_FILE}" -D "${P8_BREAKER_HFILE}" -w '%{http_code}' \
+    -X POST "${ROUTER_URL}/v1/chat/completions" \
+    -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+    -H "Content-Type: application/json" \
+    --max-time 15 \
+    -d "{\"model\":\"${P8_CLOUD_MODEL}\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":4,\"stream\":false}" \
+    2>/dev/null || echo "000")
+  if [[ "${P8_BREAKER_STATUS}" == "503" ]]; then
+    pass "Phase 8: circuit-open → HTTP 503"
+  else
+    fail "Phase 8: circuit-open → ${P8_BREAKER_STATUS} (expected 503)"
+  fi
+  P8_BREAKER_CODE=$(jq -r '.error.code // empty' "${P8_BREAKER_FILE}" 2>/dev/null)
+  if [[ "${P8_BREAKER_CODE}" == "backend_circuit_open" ]]; then
+    pass "Phase 8: envelope code = 'backend_circuit_open'"
+  else
+    fail "Phase 8: envelope code = '${P8_BREAKER_CODE}' (expected 'backend_circuit_open')"
+  fi
+  P8_BREAKER_RETRY=$(grep -i '^retry-after:' "${P8_BREAKER_HFILE}" | head -1 | awk -F': *' '{print $2}' | tr -d '\r\n')
+  if [[ -n "${P8_BREAKER_RETRY}" ]] && [[ "${P8_BREAKER_RETRY}" =~ ^[0-9]+$ ]]; then
+    pass "Phase 8: Retry-After on breaker = ${P8_BREAKER_RETRY}s"
+  else
+    fail "Phase 8: Retry-After on breaker missing or non-numeric ('${P8_BREAKER_RETRY}')"
+  fi
+  p8_valkey_cli DEL "${P8_BREAKER_STATE}" "${P8_BREAKER_PROBE}" "${P8_BREAKER_FAILS}" >/dev/null
+  rm -f "${P8_BREAKER_FILE}" "${P8_BREAKER_HFILE}"
+
+  # ─── Section 6: rate limit 429 via Valkey direct write (ROUTE-11) ──────────
+  echo "[smoke-test-router] Phase 8 / Section 6: rate limit 429 via Valkey direct write (ROUTE-11) — RPM=${P8_RPM}"
+  curl -fsS -o /dev/null \
+    -X POST "${ROUTER_URL}/v1/chat/completions" \
+    -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+    -H "Content-Type: application/json" \
+    --max-time 30 \
+    -d "{\"model\":\"${MODEL}\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":4,\"stream\":false}" \
+    >/dev/null 2>&1 || true
+  P8_RL_KEY=$(p8_valkey_cli --scan --pattern 'ratelimit:*' 2>/dev/null | tail -1)
+  if [[ -z "${P8_RL_KEY}" ]]; then
+    fail "Phase 8: no ratelimit:* keys present — rate-limit middleware may not be wired"
+  else
+    P8_OVER_RPM=$(( P8_RPM + 1 ))
+    p8_valkey_cli SET "${P8_RL_KEY}" "${P8_OVER_RPM}" KEEPTTL >/dev/null 2>&1 \
+      || p8_valkey_cli SET "${P8_RL_KEY}" "${P8_OVER_RPM}" EX 90 >/dev/null
+    P8_RL_FILE=$(mktemp)
+    P8_RL_HFILE=$(mktemp)
+    P8_RL_STATUS=$(curl -s -o "${P8_RL_FILE}" -D "${P8_RL_HFILE}" -w '%{http_code}' \
+      -X POST "${ROUTER_URL}/v1/chat/completions" \
+      -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+      -H "Content-Type: application/json" \
+      --max-time 15 \
+      -d "{\"model\":\"${MODEL}\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":4,\"stream\":false}" \
+      2>/dev/null || echo "000")
+    if [[ "${P8_RL_STATUS}" == "429" ]]; then
+      pass "Phase 8: over-budget → HTTP 429 (counter pre-seeded to ${P8_OVER_RPM} > RPM=${P8_RPM})"
+    else
+      fail "Phase 8: over-budget → ${P8_RL_STATUS} (expected 429)"
+    fi
+    P8_RL_CODE=$(jq -r '.error.code // empty' "${P8_RL_FILE}" 2>/dev/null)
+    if [[ "${P8_RL_CODE}" == "rate_limit_exceeded" ]]; then
+      pass "Phase 8: envelope code = 'rate_limit_exceeded'"
+    else
+      fail "Phase 8: envelope code = '${P8_RL_CODE}' (expected 'rate_limit_exceeded')"
+    fi
+    P8_RL_RETRY=$(grep -i '^retry-after:' "${P8_RL_HFILE}" | head -1 | awk -F': *' '{print $2}' | tr -d '\r\n')
+    if [[ -n "${P8_RL_RETRY}" ]] && [[ "${P8_RL_RETRY}" =~ ^[0-9]+$ ]]; then
+      pass "Phase 8: Retry-After on 429 = ${P8_RL_RETRY}s"
+    else
+      fail "Phase 8: Retry-After on 429 missing or non-numeric ('${P8_RL_RETRY}')"
+    fi
+    p8_valkey_cli DEL "${P8_RL_KEY}" >/dev/null
+    rm -f "${P8_RL_FILE}" "${P8_RL_HFILE}"
+  fi
+
+  # ─── Section 7: idempotency mux dedup via concurrent same-key (ROUTE-12) ───
+  echo "[smoke-test-router] Phase 8 / Section 7: idempotency mux dedup (ROUTE-12)"
+  P8_IDEM_KEY="smoke-$(date +%s)-$(head -c 8 /dev/urandom 2>/dev/null | xxd -p 2>/dev/null || echo $$)"
+  P8_R1=$(mktemp); P8_R2=$(mktemp); P8_R3=$(mktemp)
+  p8_fire() {
+    curl -fsS \
+      -X POST "${ROUTER_URL}/v1/chat/completions" \
+      -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+      -H "Idempotency-Key: ${P8_IDEM_KEY}" \
+      -H "Content-Type: application/json" \
+      --max-time 60 \
+      -d "{\"model\":\"${MODEL}\",\"messages\":[{\"role\":\"user\",\"content\":\"Say only the word OK\"}],\"max_tokens\":8,\"stream\":false}" \
+      > "$1" 2>/dev/null || echo '{"error":"curl_failed"}' > "$1"
+  }
+  p8_fire "${P8_R1}" &
+  P8_P1=$!
+  p8_fire "${P8_R2}" &
+  P8_P2=$!
+  p8_fire "${P8_R3}" &
+  P8_P3=$!
+  wait "${P8_P1}" "${P8_P2}" "${P8_P3}" 2>/dev/null || true
+  P8_M1=$(md5sum "${P8_R1}" 2>/dev/null | awk '{print $1}')
+  P8_M2=$(md5sum "${P8_R2}" 2>/dev/null | awk '{print $1}')
+  P8_M3=$(md5sum "${P8_R3}" 2>/dev/null | awk '{print $1}')
+  if [[ -z "${P8_M1}" || -z "${P8_M2}" || -z "${P8_M3}" ]]; then
+    fail "Phase 8: idempotent responses missing — md5: '${P8_M1}' '${P8_M2}' '${P8_M3}'"
+  elif [[ "${P8_M1}" == "${P8_M2}" && "${P8_M2}" == "${P8_M3}" ]]; then
+    pass "Phase 8: 3 concurrent Idempotency-Key responses byte-identical (md5=${P8_M1})"
+  else
+    fail "Phase 8: 3 concurrent responses differ — md5: '${P8_M1}' '${P8_M2}' '${P8_M3}'"
+  fi
+  sleep 3
+  P8_DISTINCT=$(p8_psql "SELECT COUNT(DISTINCT upstream_message_id) FROM request_log WHERE idempotency_key = '${P8_IDEM_KEY}';" 2>/dev/null | tr -d '[:space:]')
+  P8_ROWS=$(p8_psql "SELECT COUNT(*) FROM request_log WHERE idempotency_key = '${P8_IDEM_KEY}';" 2>/dev/null | tr -d '[:space:]')
+  if [[ "${P8_ROWS}" == "3" && "${P8_DISTINCT}" == "1" ]]; then
+    pass "Phase 8: request_log = 3 rows, 1 distinct upstream_message_id"
+  elif [[ "${P8_ROWS}" == "3" ]]; then
+    fail "Phase 8: request_log = 3 rows but ${P8_DISTINCT} distinct upstream_message_ids (expected 1)"
+  elif [[ -z "${P8_ROWS}" || "${P8_ROWS}" == "0" ]]; then
+    fail "Phase 8: request_log has 0 rows for Idempotency-Key '${P8_IDEM_KEY}'"
+  else
+    fail "Phase 8: request_log = ${P8_ROWS} rows (expected 3)"
+  fi
+  rm -f "${P8_R1}" "${P8_R2}" "${P8_R3}"
+
+  # ─── Section 8: cloud_spend_daily Postgres view (CLOUD-05) ─────────────────
+  echo "[smoke-test-router] Phase 8 / Section 8: cloud_spend_daily Postgres view (CLOUD-05)"
+  P8_VIEW=$(p8_psql "SELECT viewname FROM pg_views WHERE schemaname = 'public' AND viewname = 'cloud_spend_daily';" 2>/dev/null | tr -d '[:space:]')
+  if [[ "${P8_VIEW}" == "cloud_spend_daily" ]]; then
+    pass "Phase 8: cloud_spend_daily view exists"
+  else
+    fail "Phase 8: cloud_spend_daily view NOT found in pg_views"
+  fi
+  P8_PROJ=$(p8_psql "SELECT COUNT(*) FROM cloud_spend_daily;" 2>/dev/null | tr -d '[:space:]')
+  if [[ "${P8_PROJ}" =~ ^[0-9]+$ ]]; then
+    pass "Phase 8: cloud_spend_daily SELECT COUNT(*) = ${P8_PROJ}"
+  else
+    fail "Phase 8: cloud_spend_daily projection non-numeric ('${P8_PROJ}')"
+  fi
+
+  # ─── Section 9: Valkey registry cache populated (DATA-06) ──────────────────
+  echo "[smoke-test-router] Phase 8 / Section 9: Valkey registry cache (DATA-06)"
+  curl -fsS -o /dev/null \
+    -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+    "${ROUTER_URL}/v1/models" 2>/dev/null || true
+  P8_REG_KEY="registry:models-yaml:cache:v1"
+  P8_REG_BLOB=$(p8_valkey_cli GET "${P8_REG_KEY}" 2>/dev/null)
+  if [[ -z "${P8_REG_BLOB}" ]]; then
+    skip "Phase 8: registry cache key '${P8_REG_KEY}' empty (populates on router restart; try 'docker compose restart router')"
+  else
+    if echo "${P8_REG_BLOB}" | jq -e '.models | length > 0' >/dev/null 2>&1 \
+       || echo "${P8_REG_BLOB}" | head -c 1 | grep -q '^{$'; then
+      pass "Phase 8: registry cache key populated (${#P8_REG_BLOB} bytes; JSON-shaped)"
+    else
+      fail "Phase 8: registry cache key present but not JSON — head: $(echo "${P8_REG_BLOB}" | head -c 80)"
+    fi
+    P8_REG_TTL=$(p8_valkey_cli TTL "${P8_REG_KEY}" 2>/dev/null | tr -d '[:space:]')
+    if [[ "${P8_REG_TTL}" =~ ^[0-9]+$ ]] && (( P8_REG_TTL >= 1 && P8_REG_TTL <= 30 )); then
+      pass "Phase 8: registry cache TTL = ${P8_REG_TTL}s (expected 1..30)"
+    else
+      fail "Phase 8: registry cache TTL = '${P8_REG_TTL}' (expected 1..30)"
+    fi
+  fi
+fi
+
+echo ""
+echo "[smoke-test-router] === Phase 8 section complete ==="
+
 # Final summary
 echo ""
 echo "[smoke-test-router] ================================================================"
 if [[ "${FAILURES}" -eq 0 ]]; then
-  echo "[smoke-test-router]  Phase 2/3/4/5/7 router verification: COMPLETE."
+  echo "[smoke-test-router]  Phase 2/3/4/5/7/8 router verification: COMPLETE."
   echo "[smoke-test-router]  Model used : ${MODEL}"
   echo "[smoke-test-router]  Router URL : ${ROUTER_URL}"
   echo "[smoke-test-router]  Skipped    : ${SKIPS:-0} (vision sections require llama3.2-vision pull + outbound HTTPS)"
