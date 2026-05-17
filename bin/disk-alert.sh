@@ -119,6 +119,60 @@ USAGE
 
 THRESHOLD_OVERRIDE=""
 
+# ─── Internal: URL → host-only extractor (CR-01 fix) ─────────────────────────
+# Pure function — given an NTFY_URL string, prints the host-only portion to
+# stdout. Two adversarial cases the original sed pattern leaked:
+#   1) URL without a scheme prefix → sed returned the input unchanged →
+#      the whole "host/topic" landed in the log line (topic == credential).
+#   2) URL with userinfo (user:pass@host) → the host capture included the
+#      userinfo segment → basic-auth credentials in the log line.
+# This function returns "<no-scheme-configured>" for case (1) and strips
+# userinfo for case (2). Exercised by `--self-test-url-host`.
+extract_url_host() {
+  local url="$1"
+  if [[ "${url}" =~ ^[a-zA-Z][a-zA-Z0-9+.-]*://[^/]+ ]]; then
+    printf '%s' "${url}" \
+      | sed -E 's|^[a-zA-Z][a-zA-Z0-9+.-]*://||' \
+      | sed -E 's|^[^/@]*@||' \
+      | sed -E 's|/.*$||'
+  else
+    printf '<no-scheme-configured>'
+  fi
+}
+
+# ─── Internal: regression-locking self-test for extract_url_host ─────────────
+# `bin/disk-alert.sh --self-test-url-host` runs a handful of canned
+# inputs through extract_url_host and asserts each maps to the expected
+# host-only string. Exit 0 on PASS, exit 1 (with diff) on FAIL.
+# This lock-in prevents future regressions of CR-01.
+self_test_url_host() {
+  local rc=0
+  local cases=(
+    "https://ntfy.sh/secret-topic|ntfy.sh"
+    "http://ntfy.sh/topic|ntfy.sh"
+    "https://user:pass@ntfy.example.com/topic|ntfy.example.com"
+    "https://user@ntfy.example.com/topic|ntfy.example.com"
+    "ntfy.sh/secret-topic-abc123|<no-scheme-configured>"
+    "/just/a/path|<no-scheme-configured>"
+    "https://ntfy.example.com:8443/topic|ntfy.example.com:8443"
+  )
+  for tc in "${cases[@]}"; do
+    local input="${tc%%|*}"
+    local expected="${tc#*|}"
+    local actual
+    actual="$(extract_url_host "${input}")"
+    if [[ "${actual}" == "${expected}" ]]; then
+      echo "[disk-alert] PASS extract_url_host('${input}') = '${actual}'"
+    else
+      echo "[disk-alert] FAIL extract_url_host('${input}')" >&2
+      echo "[disk-alert]   expected: '${expected}'" >&2
+      echo "[disk-alert]   actual:   '${actual}'" >&2
+      rc=1
+    fi
+  done
+  return ${rc}
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --threshold)
@@ -133,6 +187,10 @@ while [[ $# -gt 0 ]]; do
     --threshold=*)
       THRESHOLD_OVERRIDE="${1#*=}"
       shift
+      ;;
+    --self-test-url-host)
+      self_test_url_host
+      exit $?
       ;;
     -h|--help)
       usage
@@ -294,8 +352,12 @@ if [[ "${LEVEL}" == "WARN" ]] && [[ -n "${NTFY_URL}" ]]; then
   set -e
 
   if [[ "${CURL_EXIT}" -ne 0 ]]; then
-    # Extract HOST portion only via sed — full URL never logged.
-    URL_HOST=$(echo "${NTFY_URL}" | sed -E 's|^[a-z]+://([^/]+).*|\1|')
+    # Host-only extraction via extract_url_host (CR-01). The function
+    # returns "<no-scheme-configured>" for malformed URLs (no `scheme://`
+    # prefix) instead of returning the raw input — preserves T-09-I-05.
+    # It also strips any `userinfo@` segment so basic-auth credentials
+    # embedded in NTFY_URL never reach the log line.
+    URL_HOST="$(extract_url_host "${NTFY_URL}")"
     printf '[disk-alert] LEVEL=WARN hook=ntfy curl_exit=%s url_host=%s ts=%s hostname=%s\n' \
       "${CURL_EXIT}" \
       "${URL_HOST}" \
