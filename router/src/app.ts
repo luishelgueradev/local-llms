@@ -44,6 +44,10 @@ import { agentIdPreHandler as defaultAgentIdPreHandler } from './middleware/agen
 import { makeRateLimitPreHandler } from './middleware/rateLimit.js';
 import { closeValkey, type ValkeyClient } from './clients/valkey.js';
 import { makeCircuitBreaker, type CircuitBreaker } from './resilience/circuitBreaker.js';
+import {
+  makeIdempotencyMultiplexer,
+  type IdempotencyMultiplexer,
+} from './resilience/idempotency.js';
 import { RateLimitExceededError } from './errors/envelope.js';
 import type { Env } from './config/env.js';
 import type { Logger } from 'pino';
@@ -543,6 +547,32 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
     ? Math.ceil(opts.env.CIRCUIT_COOLDOWN_MS / 1000)
     : 60;
 
+  // Plan 08-07 (ROUTE-12 / D-D5 / D-D6) — Idempotency-Key multiplexer.
+  // Gated on opts.valkey (the multiplexer NEEDS pub/sub — there is no
+  // sensible no-op fallback because the wire semantics differ when keys
+  // are honored vs. ignored). When valkey is absent (test fixtures, dev
+  // without Valkey), the multiplexer is undefined and the route helpers
+  // skip the idempotency branch entirely — the header is silently ignored
+  // (better than a 503 when the operator hasn't deployed Valkey yet).
+  //
+  // Production wiring (index.ts) always passes opts.valkey, so the
+  // multiplexer is always constructed at runtime. Subscriber-mode
+  // connections are created via valkey.duplicate() per ioredis pub/sub
+  // semantics — a subscribed connection cannot issue other commands.
+  let idempotency: IdempotencyMultiplexer | undefined;
+  if (opts.valkey) {
+    idempotency = makeIdempotencyMultiplexer({
+      valkey: opts.valkey,
+      log: app.log as Logger,
+      // Type-safe-ish: ioredis exposes `.duplicate()` on Redis instances.
+      // Cast through unknown because the ValkeyClient alias doesn't expose
+      // the duplicate method in its public type (test fixtures often
+      // hand-roll mocks without it).
+      subscriberFactory: () =>
+        (opts.valkey as unknown as { duplicate(): typeof opts.valkey }).duplicate() as NonNullable<typeof opts.valkey>,
+    });
+  }
+
   // Shutdown hook (D-D7) — clears all timers so process exit is clean.
   // semaphoreMap.clear() tidies the Map; active timer waiters inside the semaphore
   // will reject on their own setTimeout fires (process is exiting).
@@ -639,6 +669,7 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
     recordOutcome,
     breaker,
     breakerCooldownSec,
+    idempotency,
   });
 
   // Plan 04-02 (ANTHR-02, ANTHR-03, ANTHR-04, ANTHR-05):
@@ -652,6 +683,7 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
     recordOutcome,
     breaker,
     breakerCooldownSec,
+    idempotency,
   });
   registerCountTokensRoute(app, { registry: opts.registry });
 
@@ -671,6 +703,7 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
     recordOutcome,
     breaker,
     breakerCooldownSec,
+    idempotency,
   });
 
   // Plan 05-04 — start the usage_daily scheduler last, after all routes are

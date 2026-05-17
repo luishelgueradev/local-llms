@@ -19,6 +19,8 @@ import {
 } from '../../errors/envelope.js';
 import { CLOUD_MAX_TOKENS_CAP } from '../../config/constants.js';
 import type { CircuitBreaker } from '../../resilience/circuitBreaker.js';
+import type { IdempotencyMultiplexer } from '../../resilience/idempotency.js';
+import { extractIdempotencyKey } from '../../middleware/idempotencyKey.js';
 import {
   deriveStatusClass,
   mapErrorToCode,
@@ -81,6 +83,16 @@ export interface RegisterChatCompletionsOpts {
    * doesn't need access to the env object.
    */
   breakerCooldownSec: number;
+  /**
+   * Plan 08-07 (ROUTE-12 / D-D5 / D-D6) — optional idempotency multiplexer.
+   * When present AND an Idempotency-Key header is supplied, the route
+   * either acts as the leader (first request with this key — executes the
+   * adapter call and publishes events) or as a follower (subsequent
+   * requests with the same key — subscribes and replays the leader's
+   * response). When opts.idempotency is undefined (test fixtures without
+   * Valkey) the header is silently ignored.
+   */
+  idempotency?: IdempotencyMultiplexer;
 }
 
 /**
@@ -237,6 +249,19 @@ export function registerChatCompletionsRoute(
       let caughtErr: Error | undefined;
       let canonicalResult: CanonicalResponse | undefined;
 
+      // Plan 08-07 (ROUTE-12 / D-D5) — extract + validate Idempotency-Key. The
+      // extraction throws InvalidIdempotencyKeyError (400) on regex violation;
+      // the centralized error handler maps it to the OpenAI envelope. Done
+      // BEFORE the try block so the listener cleanup is irrelevant (no socket
+      // listener attached yet). When opts.idempotency is undefined (no Valkey)
+      // we skip the multiplexer dance entirely — the key is silently ignored.
+      const idempotencyKey = extractIdempotencyKey(req.headers);
+      let idempotencyRole: 'leader' | 'follower' | undefined;
+      // For follower replay, capture the shared upstream_message_id so the
+      // request_log row records it under the SAME upstream_message_id as the
+      // leader (Plan 08-08 cost-attribution dashboard groups by this field).
+      let followerUpstreamMessageId: string | undefined;
+
       try {
         // Plan 08-04 (CLOUD-03) — per-backend circuit breaker gate. Fires AFTER
         // capability gating (above) and BEFORE semaphore acquire so a backend
@@ -250,6 +275,34 @@ export function registerChatCompletionsRoute(
           // BackendSaturatedError's Retry-After pattern below).
           void reply.header('Retry-After', String(opts.breakerCooldownSec));
           throw new BreakerOpenError(entry.backend, opts.breakerCooldownSec);
+        }
+
+        // Plan 08-07 (ROUTE-12 / D-D5 / D-D6) — Idempotency-Key acquire. Runs
+        // AFTER breaker.check (so a backend-out request fails fast and doesn't
+        // pollute the idempotency key) and BEFORE semaphore.acquire (followers
+        // must NOT consume a slot — that's the cost-saving the multiplexer
+        // provides). On follower role for the NON-STREAM branch we replay the
+        // cached body and return without acquiring the semaphore or calling
+        // the adapter. Stream-branch follower replay is wired in Task 3.
+        if (idempotencyKey && opts.idempotency) {
+          const acq = await opts.idempotency.acquire(idempotencyKey, req.id);
+          idempotencyRole = acq.role;
+          if (acq.role === 'follower' && body.stream !== true) {
+            const { body: cachedBody, upstreamMessageId } =
+              await opts.idempotency.awaitNonStreamResult(idempotencyKey, req.id);
+            followerUpstreamMessageId = upstreamMessageId;
+            // Mark this request as an idempotency replay so the metrics tag
+            // can distinguish it from the leader's request in downstream
+            // observability (D-D5 + Plan 08-08 cost-attribution).
+            req.raw.socket?.off('close', onClose);
+            // The outer finally records the outcome for this follower — using
+            // the cached body's upstream_message_id for grouping. We send the
+            // body as-is (it's already in OpenAI wire shape from the leader).
+            return reply.send(cachedBody);
+          }
+          // Leader role: fall through and execute the adapter call. The
+          // non-stream branch's reply.send completion site calls
+          // publishNonStream; the stream branch's wiring is in Task 3.
         }
 
         // Lookup the semaphore for the resolved backend. Inside the try so a missing
@@ -439,7 +492,31 @@ export function registerChatCompletionsRoute(
         // breaker's `log.warn`; the route is unaffected.
         void opts.breaker.recordSuccess(entry.backend);
         req.raw.socket?.off('close', onClose);
-        return reply.send(canonicalToOpenAIResponse(canonicalResult, { displayModel: entry.name }));
+        const wireBody = canonicalToOpenAIResponse(canonicalResult, {
+          displayModel: entry.name,
+        });
+        // Plan 08-07 (ROUTE-12 / D-D5 / D-D6) — leader publishes the wire
+        // body so concurrent followers waiting on the channel can replay it
+        // byte-identically. Fire-and-forget IS NOT used here: we await so
+        // that any follower currently subscribed sees the result BEFORE the
+        // response is flushed. Failure here is logged but does not block the
+        // 200 response — multiplexer publish failures should not fail the
+        // leader's request from the client's POV.
+        if (idempotencyKey && idempotencyRole === 'leader' && opts.idempotency) {
+          try {
+            await opts.idempotency.publishNonStream(
+              idempotencyKey,
+              wireBody,
+              canonicalResult.id,
+            );
+          } catch (err) {
+            req.log.warn(
+              { err, idempotencyKey },
+              'idempotency: publishNonStream failed (leader response still returned)',
+            );
+          }
+        }
+        return reply.send(wireBody);
       } catch (err) {
         // Defense in depth — anything thrown synchronously / from the non-stream branch
         // ends up here. setErrorHandler in app.ts will turn it into the OpenAI envelope;
@@ -508,6 +585,11 @@ export function registerChatCompletionsRoute(
             errorMessage: caughtErr?.message,
             agentId: req.agentId,
             requestId: req.id,
+            // Plan 08-07 (D-D5) — follower request_log row carries the leader's
+            // upstream_message_id so Plan 08-08's cost-attribution dashboard
+            // can collapse the 1 leader + N followers into a single charged
+            // generation via GROUP BY upstream_message_id.
+            upstreamMessageId: followerUpstreamMessageId,
             timestamp: new Date(),
           });
         }

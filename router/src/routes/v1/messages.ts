@@ -54,6 +54,8 @@ import {
 } from '../../errors/envelope.js';
 import { CLOUD_MAX_TOKENS_CAP } from '../../config/constants.js';
 import type { CircuitBreaker } from '../../resilience/circuitBreaker.js';
+import type { IdempotencyMultiplexer } from '../../resilience/idempotency.js';
+import { extractIdempotencyKey } from '../../middleware/idempotencyKey.js';
 import {
   deriveStatusClass,
   mapErrorToCode,
@@ -100,6 +102,14 @@ export interface RegisterMessagesRouteOpts {
   breaker: CircuitBreaker;
   /** Plan 08-04 — Retry-After header value when the breaker is open. */
   breakerCooldownSec: number;
+  /**
+   * Plan 08-07 (ROUTE-12 / D-D5 / D-D6) — optional idempotency multiplexer.
+   * Same semantics as RegisterChatCompletionsOpts.idempotency: leader (first
+   * request with this key) runs the adapter; followers (subsequent requests
+   * with the same key) replay the leader's response. Stream-branch wiring
+   * is in Task 3; this opt is consumed by the non-stream branch in Task 2.
+   */
+  idempotency?: IdempotencyMultiplexer;
 }
 
 /**
@@ -251,6 +261,14 @@ export function registerMessagesRoute(
       let caughtErr: Error | undefined;
       let canonicalResult: CanonicalResponse | undefined;
 
+      // Plan 08-07 (ROUTE-12 / D-D5) — extract + validate Idempotency-Key. See
+      // chat-completions.ts for the full rationale. Mirrors that wiring
+      // byte-for-byte; only the wire shape on follower replay differs (the
+      // cached body is in Anthropic message-response shape, not OpenAI).
+      const idempotencyKey = extractIdempotencyKey(req.headers);
+      let idempotencyRole: 'leader' | 'follower' | undefined;
+      let followerUpstreamMessageId: string | undefined;
+
       try {
         // Plan 08-04 (CLOUD-03) — per-backend circuit breaker. Mirrors
         // chat-completions.ts: fires AFTER capability gate, BEFORE semaphore
@@ -260,6 +278,21 @@ export function registerMessagesRoute(
         if (breakerResult.state === 'open') {
           void reply.header('Retry-After', String(opts.breakerCooldownSec));
           throw new BreakerOpenError(entry.backend, opts.breakerCooldownSec);
+        }
+
+        // Plan 08-07 (ROUTE-12 / D-D5 / D-D6) — Idempotency-Key acquire +
+        // follower replay. Same shape as chat-completions.ts. Stream-branch
+        // wiring follows in Task 3; here we handle the non-stream replay.
+        if (idempotencyKey && opts.idempotency) {
+          const acq = await opts.idempotency.acquire(idempotencyKey, req.id);
+          idempotencyRole = acq.role;
+          if (acq.role === 'follower' && body.stream !== true) {
+            const { body: cachedBody, upstreamMessageId } =
+              await opts.idempotency.awaitNonStreamResult(idempotencyKey, req.id);
+            followerUpstreamMessageId = upstreamMessageId;
+            req.raw.socket?.off('close', onClose);
+            return reply.send(cachedBody);
+          }
         }
 
         const semaphore = opts.semaphores.get(entry.backend);
@@ -456,9 +489,28 @@ export function registerMessagesRoute(
         // The canonical object is NOT mutated — downstream observers (Phase 5
         // logging, tests) still see canonical.model verbatim.
         req.raw.socket?.off('close', onClose);
-        return reply.send(
-          canonicalToAnthropicResponse(canonicalResult, { displayModel: entry.name }),
-        );
+        const wireBody = canonicalToAnthropicResponse(canonicalResult, {
+          displayModel: entry.name,
+        });
+        // Plan 08-07 (ROUTE-12 / D-D5 / D-D6) — leader publishes the wire
+        // body (Anthropic-shaped) so concurrent followers can replay it.
+        // canonicalResult.id is the Anthropic msg_<ulid> — the shared
+        // upstream_message_id for cost-attribution grouping (Plan 08-08).
+        if (idempotencyKey && idempotencyRole === 'leader' && opts.idempotency) {
+          try {
+            await opts.idempotency.publishNonStream(
+              idempotencyKey,
+              wireBody,
+              canonicalResult.id,
+            );
+          } catch (err) {
+            req.log.warn(
+              { err, idempotencyKey },
+              'idempotency: publishNonStream failed (leader response still returned)',
+            );
+          }
+        }
+        return reply.send(wireBody);
       } catch (err) {
         if (err instanceof BackendSaturatedError) {
           void reply.header('Retry-After', String(Math.ceil(err.waitedMs / 1000)));
@@ -513,7 +565,12 @@ export function registerMessagesRoute(
             errorMessage: caughtErr?.message,
             agentId: req.agentId,
             requestId: req.id,
-            upstreamMessageId: canonicalResult?.id,
+            // Plan 08-07 (D-D5) — follower rows carry the leader's
+            // upstream_message_id (followerUpstreamMessageId); leader / non-
+            // follower rows carry canonicalResult.id. Both code paths feed the
+            // same column so Plan 08-08's GROUP BY upstream_message_id sees
+            // 1 leader + N followers as a single charged generation.
+            upstreamMessageId: followerUpstreamMessageId ?? canonicalResult?.id,
             timestamp: new Date(),
           });
         }

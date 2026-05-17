@@ -39,6 +39,8 @@ import {
   mapToHttpStatus,
 } from '../../errors/envelope.js';
 import type { CircuitBreaker } from '../../resilience/circuitBreaker.js';
+import type { IdempotencyMultiplexer } from '../../resilience/idempotency.js';
+import { extractIdempotencyKey } from '../../middleware/idempotencyKey.js';
 import {
   deriveStatusClass,
   mapErrorToCode,
@@ -89,6 +91,16 @@ export interface RegisterEmbeddingsOpts {
   breaker: CircuitBreaker;
   /** Plan 08-04 — Retry-After seconds when the breaker is open. */
   breakerCooldownSec: number;
+  /**
+   * Plan 08-07 (ROUTE-12 / D-D5 / D-D6) — optional idempotency multiplexer.
+   * Embeddings is non-streaming, so the wiring is simpler than chat /
+   * messages: leader runs the adapter and publishes the response body;
+   * followers replay the cached body. EMBED requests are typically
+   * idempotent by nature (same input → same embedding) but PITFALLS
+   * Pitfall 14 (SDK retry-storms) still applies — the multiplexer
+   * collapses N concurrent retries into 1 upstream call.
+   */
+  idempotency?: IdempotencyMultiplexer;
 }
 
 export function registerEmbeddingsRoute(
@@ -153,6 +165,16 @@ export function registerEmbeddingsRoute(
         | Awaited<ReturnType<BackendAdapter['embeddings']>>
         | undefined;
 
+      // Plan 08-07 (ROUTE-12 / D-D5) — extract + validate Idempotency-Key.
+      // Outside the try block because extractIdempotencyKey throws an
+      // InvalidIdempotencyKeyError that the centralized handler maps to 400
+      // — we want the standard path, not the route's safeRecord (which would
+      // populate the backend/model labels). With no socket listener attached
+      // yet, this is safe.
+      const idempotencyKey = extractIdempotencyKey(req.headers);
+      let idempotencyRole: 'leader' | 'follower' | undefined;
+      let followerUpstreamMessageId: string | undefined;
+
       try {
         // Capability gate (T-07-11 mitigate, defense-in-depth layer 1). Inside
         // the try block so the outer finally records the error path with the
@@ -173,6 +195,21 @@ export function registerEmbeddingsRoute(
           throw new BreakerOpenError(entry.backend, opts.breakerCooldownSec);
         }
 
+        // Plan 08-07 (ROUTE-12 / D-D5 / D-D6) — Idempotency-Key acquire +
+        // follower replay. Embeddings is always non-stream, so the follower
+        // path always uses awaitNonStreamResult.
+        if (idempotencyKey && opts.idempotency) {
+          const acq = await opts.idempotency.acquire(idempotencyKey, req.id);
+          idempotencyRole = acq.role;
+          if (acq.role === 'follower') {
+            const { body: cachedBody, upstreamMessageId } =
+              await opts.idempotency.awaitNonStreamResult(idempotencyKey, req.id);
+            followerUpstreamMessageId = upstreamMessageId;
+            req.raw.socket?.off('close', onClose);
+            return reply.send(cachedBody);
+          }
+        }
+
         const semaphore = opts.semaphores.get(entry.backend);
         release = await semaphore.acquire(controller.signal);
         released = false;
@@ -189,6 +226,24 @@ export function registerEmbeddingsRoute(
         // Plan 08-04 — fire-and-forget breaker success signal.
         void opts.breaker.recordSuccess(entry.backend);
         req.raw.socket?.off('close', onClose);
+        // Plan 08-07 (ROUTE-12 / D-D5 / D-D6) — leader publishes the embeddings
+        // response body so concurrent followers can replay it. Embedding
+        // responses don't carry an Anthropic-style msg_<ulid>; we use the
+        // OpenAI completion id field if present (sentence-transformer servers
+        // commonly omit it) or undefined. Plan 08-08 cost-attribution groups
+        // by upstream_message_id but embeddings rarely needs that grouping
+        // (single tier, predictable cost) — undefined is acceptable.
+        if (idempotencyKey && idempotencyRole === 'leader' && opts.idempotency) {
+          try {
+            const upstreamId = (result as { id?: string }).id;
+            await opts.idempotency.publishNonStream(idempotencyKey, result, upstreamId);
+          } catch (err) {
+            req.log.warn(
+              { err, idempotencyKey },
+              'idempotency: publishNonStream failed (leader response still returned)',
+            );
+          }
+        }
         return reply.send(result);
       } catch (err) {
         // BackendSaturatedError: set Retry-After before re-throw — same pattern as
@@ -232,6 +287,9 @@ export function registerEmbeddingsRoute(
           errorMessage: caughtErr?.message,
           agentId: req.agentId,
           requestId: req.id,
+          // Plan 08-07 (D-D5) — follower request_log row carries the leader's
+          // upstream_message_id for cost-attribution grouping (Plan 08-08).
+          upstreamMessageId: followerUpstreamMessageId,
           timestamp: new Date(),
         });
       }
