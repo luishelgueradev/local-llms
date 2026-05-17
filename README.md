@@ -1420,7 +1420,93 @@ At-rest encryption of `.env` itself (via sops / age / vault) is deferred to v2 p
 - **Backup is fire-and-forget.** Failures surface only via crontab `MAILTO` and the log redirection. Set up Postfix / msmtp if you want the email actually delivered. A Grafana panel for "last successful off-host backup age" is operator-deferred — add a `restic snapshots --json | jq` panel later if desired.
 - **Concurrent invocations serialize on the repo lock.** If a manual `bash bin/backup-postgres.sh` overlaps with the crontab entry, restic emits "unable to acquire lock" + exits 1; the script surfaces that clearly. Avoid overlapping schedules.
 
-<!-- OPS-03 — Plan 09-03 will add `### Disk-usage alert (OPS-03)` here. -->
+<!-- OPS-03 anchor for Plan 09-03 — Disk-usage alert subsection follows. -->
+
+### Disk-usage alert (OPS-03)
+
+The single most likely way this stack stops responding is the disk filling up: model files (GGUFs are 4–14 GB each), daily Postgres dumps, Valkey AOF, Open WebUI uploads, Prometheus + Grafana state — all live under `${HOST_DATA_ROOT}` on the same mount. A stuck `pg-backup` write or a `docker compose exec ollama ollama pull qwen2.5:32b` against a near-full disk fails with `ENOSPC` and takes the dependent services down with it. `bin/disk-alert.sh` is a single-shot threshold check invoked from the host crontab: it parses `df -P "${HOST_DATA_ROOT}"`, emits one structured log line per run, and (optionally) POSTs a one-liner to an `NTFY_URL` push receiver when the configured threshold is exceeded. This closes OPS-03.
+
+**Why this script and not Grafana alerts / Alertmanager:**
+
+- Grafana 12.4.3 (Phase 7) ships alerting in OSS, but configuring contact points + notification policies for ONE alert is overkill on a single-host single-operator stack. CONTEXT D-claude-discretion line 32 picks "the simpler path that meets SC3" (the success criterion: "a disk-usage alert fires visibly").
+- Alertmanager (REQUIREMENTS.md ALERT-01) is explicitly v2 — CONTEXT §Deferred line 84.
+- A cron-driven script with a structured stdout log line is observable everywhere — `journalctl`, crontab MAILTO, `tail -F`, future Loki/Promtail ingest, and a Grafana panel can all consume the same key=value line shape.
+
+**What it monitors:** the filesystem backing `${HOST_DATA_ROOT}` only (the Phase 1 D-02 single-mount layout where `models-gguf/`, `models-hf/`, `postgres-data/`, `postgres-backups/`, `valkey/`, `openwebui/`, `prometheus/`, `grafana/` all live). NOT `/`. NOT individual subdirectories. If `${HOST_DATA_ROOT}` is missing or unset the script exits 1 — it does NOT silently fall back to `/` (a wrong-target alert is worse than no alert).
+
+**Threshold knob:** `DISK_ALERT_THRESHOLD_PCT` in `.env` (default `80`; valid range `1..99` — the script asserts the bound). One-shot override (does NOT mutate `.env`):
+
+```bash
+bash bin/disk-alert.sh --threshold 90
+```
+
+Lowering `DISK_ALERT_THRESHOLD_PCT` to `70` gives more lead time on a small disk; raising to `90` reduces alert noise on a large disk where 20% headroom is still tens of GB. The default `80` is the recommended starting point.
+
+**Crontab entry (recommended):**
+
+```cron
+# /etc/crontab or `crontab -e` — host crontab, NOT inside a container
+# Every 15 minutes; at most 4 alerts/hour (the de-facto cooldown).
+*/15 * * * * cd /path/to/local-llms && bash bin/disk-alert.sh >> /var/log/local-llms-disk.log 2>&1
+```
+
+Create the log file with the right ownership the first time:
+
+```bash
+sudo touch /var/log/local-llms-disk.log
+sudo chown "$USER:$USER" /var/log/local-llms-disk.log
+sudo chmod 600 /var/log/local-llms-disk.log
+```
+
+**Alert sinks:**
+
+1. **Stdout structured log line — always emitted (INFO on no-breach, WARN on breach).** Sample lines:
+
+   ```text
+   [disk-alert] LEVEL=INFO target=/srv/local-llms used_pct=42 threshold_pct=80 fs=/dev/nvme0n1p2 ts=2026-05-17T18:30:00Z hostname=local-llms-host
+   [disk-alert] LEVEL=WARN target=/srv/local-llms used_pct=85 threshold_pct=80 fs=/dev/nvme0n1p2 ts=2026-05-17T18:30:00Z hostname=local-llms-host
+   ```
+
+   The structured key=value shape is grep-friendly:
+
+   ```bash
+   grep 'LEVEL=WARN' /var/log/local-llms-disk.log | tail -10
+   ```
+
+2. **Optional HTTP push** — set `NTFY_URL` in `.env` (empty default = disabled). The script POSTs a plain-text one-liner via `curl --fail -sS --max-time 10` on WARN. Tested with [ntfy.sh](https://ntfy.sh); also works with Discord / Slack incoming webhooks. Pick a value:
+
+   - `https://ntfy.sh/local-llms-alerts-$(openssl rand -hex 8)` — hosted ntfy.sh, unguessable topic.
+   - `https://ntfy.<your-tailnet>.ts.net/local-llms-alerts` — self-hosted ntfy via Tailscale Serve.
+   - `https://discord.com/api/webhooks/<id>/<token>` — Discord incoming webhook.
+
+   **The URL is the credential** (anyone with the path can publish/subscribe). `.env` is created with mode 600 by `bin/bootstrap-host.sh`; keep it that way. The script NEVER logs the full URL — on curl failure it emits a secondary log line with `url_host=<host-only>` (T-09-I-05 mitigation).
+
+   Curl failure does NOT fail the script — the structured log is the canonical alert sink; the HTTP hook is best-effort.
+
+3. **MAILTO-only-on-breach** — for cron operators who prefer email-only-on-breach without log files. Pipe the script's output through `grep` so cron's MAILTO machinery sees stdout only when WARN fires:
+
+   ```cron
+   MAILTO=admin@host
+   */15 * * * * cd /path/to/local-llms && bash bin/disk-alert.sh | grep -E '^\[disk-alert\] LEVEL=WARN'
+   ```
+
+   On no-breach: `grep` finds no match → cron sees empty stdout → no email. On breach: `grep` matches → cron mails the line.
+
+**Remediation pointers** (when you see WARN — the script does NOT auto-remediate):
+
+- **(a) Unreferenced model files:** `bash bin/gc-models.sh` (dry-run); then `bash bin/gc-models.sh --apply` after reviewing. See §Garbage-collecting unused model files (OPS-01) above. Typical wins on a model-storage host are multi-GB per stale checkpoint.
+- **(b) On-host backup retention:** tighten `BACKUP_KEEP_POLICY` in `.env` (Plan 09-02 default keeps ~17 snapshots). Trimming to `--keep-daily 3 --keep-weekly 2` frees ~12 dumps worth (~12 × `pg_dump` size).
+- **(c) Ollama-managed blobs:** `docker compose exec ollama ollama rm <model-tag>` for tags you no longer need (gc-models.sh treats `models-gguf/ollama/` as opaque).
+- **(d) Valkey state bloat (rare — Valkey is small):** `docker compose exec valkey valkey-cli FLUSHDB` clears registry cache + rate-limit counters. Both rebuild automatically on next request.
+- **(e) Last resort — manual `du`:** `du -sh ${HOST_DATA_ROOT}/*` to find the heavy subdirectory, then decide.
+
+**What is NOT included (v2 territory):**
+
+- **Alertmanager integration** — REQUIREMENTS.md ALERT-01, v2.
+- **Grafana panel for disk usage** — operator can add one later via Promtail-to-Loki ingest of `/var/log/local-llms-disk.log` (the structured key=value line shape is purpose-built for that).
+- **Auto-remediation** (running `bin/gc-models.sh` from this script) — explicit non-goal: the GC tool requires a `GC` confirmation phrase by design; auto-running it would violate the destructive-op contract.
+- **Hysteresis / cooldown** — the 15-min cron cadence is the de-facto cooldown (at most 4 alerts/hour). No state file needed.
+- **Inode-usage / per-subdirectory trends / rate-of-fill** — separate concerns; out of scope for the threshold check.
 
 <!-- OPS-04 — Plan 09-04 will add `### Rotating the bearer token (OPS-04)` here. -->
 
