@@ -224,8 +224,9 @@ This same flake was present in the pre-08-02 baseline (531 passing / 1 hotreload
 - `router/src/backends/ollama-cloud.ts` — FOUND
 - `router/tests/backends/ollama-cloud.test.ts` — FOUND
 - `router/tests/config/registry-cloud.test.ts` — FOUND
-- Commit `720fff7` — FOUND
-- Commit `ab42b5c` — FOUND
-- Commit `3cf3c27` — FOUND
+- Commit `720fff7` (Task 1) — FOUND
+- Commit `ab42b5c` (Task 2) — FOUND
+- Commit `3cf3c27` (Task 3) — FOUND
+- Commit `b0ab7d8` (this SUMMARY + STATE/ROADMAP/REQUIREMENTS) — FOUND
 
 ## Self-Check: PASSED
