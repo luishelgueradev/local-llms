@@ -1395,14 +1395,25 @@ ROWS=$(docker compose exec -T postgres psql -U app -d router -tA -c \
 if [[ -z "${ROWS}" ]]; then
   fail "Phase 7: request_log query returned empty — recordRequestOutcome may not be wired (check Plan 07-04)"
 else
-  if echo "${ROWS}" | grep -qE '^ollama\|[1-9][0-9]*$'; then
-    pass "Phase 7: request_log has rows for backend=ollama on /v1/embeddings"
+  # 07-REVIEW WR-06: parse psql -tA's pipe-separated output explicitly rather
+  # than rely on the `[1-9][0-9]*$` regex. The old regex rejected `ollama|0`
+  # with a confusing "missing ollama rows" FAIL when the actual condition is
+  # "row exists but count is 0". Extract count via awk and assert >= 1 so the
+  # diagnostic message matches the actual failure mode.
+  OLLAMA_COUNT=$(echo "${ROWS}" | awk -F'|' '$1 == "ollama" { print $2; exit }')
+  if [[ -n "${OLLAMA_COUNT}" && "${OLLAMA_COUNT}" -ge 1 ]]; then
+    pass "Phase 7: request_log has ${OLLAMA_COUNT} row(s) for backend=ollama on /v1/embeddings"
+  elif [[ -n "${OLLAMA_COUNT}" ]]; then
+    fail "Phase 7: request_log ollama row present but count=${OLLAMA_COUNT} (expected >=1) — buffered writer may not have flushed; raise sleep"
   else
     fail "Phase 7: request_log missing ollama rows for /v1/embeddings — got:\n${ROWS}"
   fi
   if [[ "${VLLM_EMBED_EXERCISED}" == "1" ]]; then
-    if echo "${ROWS}" | grep -qE '^vllm-embed\|[1-9][0-9]*$'; then
-      pass "Phase 7: request_log has rows for backend=vllm-embed on /v1/embeddings"
+    VLLM_EMBED_COUNT=$(echo "${ROWS}" | awk -F'|' '$1 == "vllm-embed" { print $2; exit }')
+    if [[ -n "${VLLM_EMBED_COUNT}" && "${VLLM_EMBED_COUNT}" -ge 1 ]]; then
+      pass "Phase 7: request_log has ${VLLM_EMBED_COUNT} row(s) for backend=vllm-embed on /v1/embeddings"
+    elif [[ -n "${VLLM_EMBED_COUNT}" ]]; then
+      fail "Phase 7: request_log vllm-embed row present but count=${VLLM_EMBED_COUNT} (expected >=1)"
     else
       fail "Phase 7: request_log missing vllm-embed rows for /v1/embeddings (vLLM happy path succeeded) — got:\n${ROWS}"
     fi
