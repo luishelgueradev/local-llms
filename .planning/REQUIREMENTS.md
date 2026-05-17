@@ -24,7 +24,7 @@
 ### Cloud fallback (Ollama Cloud)
 
 - [x] **CLOUD-01**: Ollama Cloud is registered as `backend: ollama-cloud` in `models.yaml` with its own bearer token from `.env`
-- [ ] **CLOUD-02**: Models declared with `backend: ollama-cloud` route remotely with no client-visible difference from local models
+- [x] **CLOUD-02**: Models declared with `backend: ollama-cloud` route remotely with no client-visible difference from local models
 - [ ] **CLOUD-03**: Per-backend circuit breaker (N failures in M seconds → cooldown) prevents cascading failures during cloud outages
 - [ ] **CLOUD-04**: `max_tokens` is hard-capped at 16,384 for cloud-served models
 - [ ] **CLOUD-05**: A `cloud_spend_daily` metric (sum of generation_duration_ms scoped to cloud-backed requests) is recorded in Postgres
@@ -80,7 +80,7 @@
 ### Embeddings
 
 - [x] **EMBED-01**: `/v1/embeddings` works against Ollama embedding models AND a vLLM-served embedding model
-- [ ] **EMBED-02**: `/v1/embeddings` passthrough works against Ollama Cloud's compat endpoint
+- [x] **EMBED-02**: `/v1/embeddings` passthrough works against Ollama Cloud's compat endpoint
 
 ### Data / state
 
@@ -242,12 +242,12 @@ Each requirement maps to exactly one phase. Mapping derived from research-recomm
 | BCKND-03 | Phase 7 — Embeddings + vLLM + GPU Telemetry | Complete |
 | OAI-02 | Phase 7 — Embeddings + vLLM + GPU Telemetry | Complete |
 | EMBED-01 | Phase 7 — Embeddings + vLLM + GPU Telemetry | Complete |
-| EMBED-02 | Phase 8 — Ollama Cloud Fallback + Resilience Hardening | Pending |
+| EMBED-02 | Phase 8 — Ollama Cloud Fallback + Resilience Hardening | Complete |
 | OBS-02 | Phase 7 — Embeddings + vLLM + GPU Telemetry | Complete |
 | OBS-03 | Phase 7 — Embeddings + vLLM + GPU Telemetry | Complete |
 | OBS-04 | Phase 7 — Embeddings + vLLM + GPU Telemetry | Complete |
 | CLOUD-01 | Phase 8 — Ollama Cloud Fallback + Resilience Hardening | Complete |
-| CLOUD-02 | Phase 8 — Ollama Cloud Fallback + Resilience Hardening | Pending |
+| CLOUD-02 | Phase 8 — Ollama Cloud Fallback + Resilience Hardening | Complete |
 | CLOUD-03 | Phase 8 — Ollama Cloud Fallback + Resilience Hardening | Pending |
 | CLOUD-04 | Phase 8 — Ollama Cloud Fallback + Resilience Hardening | Pending |
 | CLOUD-05 | Phase 8 — Ollama Cloud Fallback + Resilience Hardening | Pending |

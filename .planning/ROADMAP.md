@@ -223,7 +223,7 @@ Plans:
 
 **Wave 1** *(parallel pair — disjoint files: 08-01 owns compose.yml + Valkey client + boot; 08-02 owns adapter + registry + models.yaml + cloud env)*
 - [x] 08-01-PLAN.md — Valkey service in compose.yml + ioredis client wired in router boot + onClose ordering (DATA-06 infrastructure)
-- [ ] 08-02-PLAN.md — OllamaCloudAdapter + LocalBackendEnum widening + factory dispatch + 2 cloud model entries + assertCloudEnvIfConfigured (CLOUD-01, CLOUD-02, EMBED-02)
+- [x] 08-02-PLAN.md — OllamaCloudAdapter + LocalBackendEnum widening + factory dispatch + 2 cloud model entries + assertCloudEnvIfConfigured (CLOUD-01, CLOUD-02, EMBED-02)
 
 **Wave 2** *(four parallel-safe plans — all depend on either 08-01 Valkey or 08-02 cloud entries; disjoint file ownership within wave)*
 - [ ] 08-03-PLAN.md — X-Model-Backend onSend hook + 3 route stamps (ROUTE-10)
@@ -263,7 +263,7 @@ Plans:
 | 5. Postgres + Observability Seam | 6/6 | Complete    | 2026-05-15 |
 | 6. Traefik + TLS + Open WebUI | 0/4 | Planned | - |
 | 7. Embeddings + vLLM + GPU Telemetry | 7/7 | Complete   | 2026-05-17 |
-| 8. Ollama Cloud Fallback + Resilience Hardening | 0/11 | Planned | - |
+| 8. Ollama Cloud Fallback + Resilience Hardening | 3/11 | In progress | - |
 | 9. Operations Hardening | 0/0 | Not started | - |
 
 ## Coverage Summary
