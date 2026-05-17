@@ -23,7 +23,17 @@
 // the QUIT command itself wedges (rare — usually only on a half-open socket),
 // the race throws and the caller logs + force-disconnects. Same pattern as
 // bufferedWriter.drain(3_000).
-import IORedis, { type Redis as IORedisClient, type RedisOptions } from 'ioredis';
+// ioredis is published as CommonJS. The .d.ts re-exports both a `default`
+// AND a named `Redis` (both alias the same class). The runtime sets
+// `module.exports = require('./Redis').default` so `require('ioredis')` IS
+// the Redis class. Under tsconfig `module: nodenext` + `verbatimModuleSyntax`,
+// importing the default + a type-only named import in the same statement
+// triggers TS2351 (the default value is seen as the namespace, not the
+// class). Resolution: import the named `Redis` export (which IS the same
+// class — see node_modules/ioredis/built/index.d.ts) as the runtime value,
+// and lift options/instance types via `import type`.
+import { Redis as IORedis } from 'ioredis';
+import type { Redis as IORedisClient, RedisOptions } from 'ioredis';
 import type { Logger } from 'pino';
 
 export interface MakeValkeyClientOpts {
@@ -42,7 +52,7 @@ export function makeValkeyClient(opts: MakeValkeyClientOpts): IORedisClient {
     connectTimeout: 2_000,
   };
   const client = new IORedis(url, ioRedisOpts);
-  client.on('error', (err) => log.warn({ err }, 'valkey client error'));
+  client.on('error', (err: Error) => log.warn({ err }, 'valkey client error'));
   client.on('connect', () => log.info({ url }, 'valkey connected'));
   return client;
 }

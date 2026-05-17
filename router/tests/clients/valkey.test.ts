@@ -51,9 +51,10 @@ function makeMockClient(): MockClient {
 }
 
 vi.mock('ioredis', () => {
-  // The IORedis default-export is a CONSTRUCTOR. The router code does
-  // `new IORedis(url, opts)`, so we return a class-like factory whose
-  // `new` produces the current mock client and records the ctor args.
+  // The router imports the NAMED `Redis` export and uses `new IORedis(url, opts)`.
+  // We return a class-like factory keyed on both `Redis` (the runtime path the
+  // router code uses) and `default` (for any future code that imports the
+  // default export). Either binding points at the same constructor spy.
   const Ctor = vi.fn(function MockIORedis(this: unknown, url: string, opts: Record<string, unknown>) {
     mockHolder.ctorCalls.push([url, opts]);
     // Return the currentClient so the test can assert on the same instance
@@ -61,7 +62,7 @@ vi.mock('ioredis', () => {
     // valid JS and overrides the implicit `this`.)
     return mockHolder.currentClient ?? makeMockClient();
   });
-  return { default: Ctor };
+  return { Redis: Ctor, default: Ctor };
 });
 
 import { makeValkeyClient, closeValkey } from '../../src/clients/valkey.js';

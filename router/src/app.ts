@@ -41,12 +41,18 @@ import {
   truncateAndRedact,
 } from './metrics/recordOutcome.js';
 import { agentIdPreHandler as defaultAgentIdPreHandler } from './middleware/agentId.js';
+import { closeValkey, type ValkeyClient } from './clients/valkey.js';
+import type { Logger } from 'pino';
 
 // Fastify module augmentation so TypeScript knows about app.liveness + app.semaphores (decorators).
 declare module 'fastify' {
   interface FastifyInstance {
     liveness: LivenessScheduler;
     semaphores: { get(backend: string): BackendSemaphore };
+    // Plan 08-01 (DATA-06) — optional decorator; test fixtures may omit.
+    // Consumed by Plans 08-04 (breaker), 08-06 (rate limit), 08-07 (idempotency),
+    // 08-09 (models cache).
+    valkey?: ValkeyClient;
   }
 }
 
@@ -121,6 +127,17 @@ export interface BuildAppOpts {
    * (index.ts) always passes the real pool.
    */
   pool?: Pool;
+  /**
+   * Plan 08-01 (DATA-06) — required for production wiring; tests omit when
+   * not exercising rate-limit / breaker / idempotency / models-cache paths.
+   * Consumed by Plans 08-04 (breaker), 08-06 (rate limit), 08-07 (idempotency),
+   * 08-09 (models cache). The client is opened in router/src/index.ts BEFORE
+   * buildApp so the boot fails fast on a wrong VALKEY_PASSWORD / unreachable
+   * service. closeValkey is awaited in onClose BEFORE bufferedWriter.drain so
+   * any pending Valkey writes (e.g. a breaker state increment from an
+   * in-flight request) flush before the pg drain races its 3 s timeout.
+   */
+  valkey?: ValkeyClient;
 }
 
 /**
@@ -384,6 +401,12 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
 
   app.decorate('semaphores', semaphores);
 
+  // Plan 08-01 (DATA-06) — decorate Valkey when present so Phase 8 consumers
+  // (breaker / rate-limit / idempotency / models-cache) can read `app.valkey`.
+  // The decorator is conditional because most test fixtures construct buildApp
+  // without a Valkey client — they exercise routes that don't touch it.
+  if (opts.valkey) app.decorate('valkey', opts.valkey);
+
   // Shutdown hook (D-D7) — clears all timers so process exit is clean.
   // semaphoreMap.clear() tidies the Map; active timer waiters inside the semaphore
   // will reject on their own setTimeout fires (process is exiting).
@@ -392,6 +415,13 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
   // is cleared, in-flight requests have stopped. The 3 s race lets a final
   // flush land before SIGTERM hardstops. Compose's default stop_grace_period
   // is 10s, so 3s fits comfortably.
+  //
+  // Phase 8 (DATA-06): closeValkey runs BETWEEN usageDailyScheduler.stop() and
+  // bufferedWriter.drain(). Rationale: a Valkey write from an in-flight request
+  // (breaker state, rate-limit INCR, idempotency SETNX) should flush BEFORE the
+  // pg drain races its 3 s timeout — otherwise the request_log row might land
+  // pointing at a "current breaker state" that never made it into Valkey.
+  // closeValkey races its own 1 s timeout (see clients/valkey.ts).
   app.addHook('onClose', async () => {
     liveness.stop();
     probeAdapters.clear();
@@ -400,6 +430,10 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
     // drain. Both are idempotent + synchronous (stop just clears timers).
     // The drain is awaited LAST because it races a setTimeout(3_000).
     opts.usageDailyScheduler?.stop();
+    // Plan 08-01 (DATA-06) — close Valkey BEFORE bufferedWriter.drain so any
+    // pending Valkey-bound writes (breaker / rate-limit / idempotency state)
+    // settle before the pg drain runs.
+    if (opts.valkey) await closeValkey(opts.valkey, app.log as Logger);
     await opts.bufferedWriter.drain(3_000);
   });
 

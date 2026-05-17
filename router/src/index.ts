@@ -8,6 +8,7 @@ import { runMigrations } from './db/migrate.js';
 import { makeBufferedWriter } from './db/bufferedWriter.js';
 import { makeUsageDailyScheduler } from './db/usageDaily.js';
 import { makeMetricsRegistry } from './metrics/registry.js';
+import { makeValkeyClient } from './clients/valkey.js';
 
 async function main(): Promise<void> {
   const env = loadEnv();
@@ -27,6 +28,20 @@ async function main(): Promise<void> {
   const pool = makePool(env.ROUTER_DATABASE_URL);
   const db = makeDb(pool);
   await runMigrations(db, bootLog);
+
+  // Plan 08-01 (DATA-06) — open the Valkey connection BEFORE buildApp so any
+  // misconfiguration (wrong VALKEY_PASSWORD, network unreachable) surfaces as
+  // a fast boot failure rather than a silent runtime first-INCR throw. The
+  // client is configured with enableOfflineQueue: false + maxRetriesPerRequest: 1
+  // (see clients/valkey.ts) so it does NOT block the boot path; a Valkey outage
+  // emits a 'error' log line, and downstream consumers (rate-limit / breaker /
+  // idempotency / models-cache) handle the per-route fallback per their own
+  // policy (Plans 08-04, 08-06, 08-07, 08-09).
+  const valkey = makeValkeyClient({
+    url: env.ROUTER_VALKEY_URL,
+    password: env.ROUTER_VALKEY_PASSWORD,
+    log: bootLog,
+  });
 
   // Plan 05-02 (D-C3, OBS-01) — fresh prom-client registry per process.
   // Constructed BEFORE the bufferedWriter so its logBufferDroppedTotal
@@ -60,6 +75,7 @@ async function main(): Promise<void> {
     metrics,
     usageDailyScheduler,
     pool, // Plan 05-04 D-G2 — enables /readyz postgres probe
+    valkey, // Plan 08-01 DATA-06 — decorates app.valkey for Phase 8 consumers
   });
 
   // RESEARCH A4 / Pitfall 7 — operator opts into polling fallback for WSL2 + Docker
