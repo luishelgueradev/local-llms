@@ -1218,6 +1218,93 @@ bash bin/smoke-test-router.sh    # canonical: Phases 2-5 + 7 + 8 local-only
 bash bin/smoke-test-cloud.sh     # dedicated: full Phase 8 incl. live cloud
 ```
 
+## Operations
+
+Cross-cutting operational tooling. Each subsection is a stand-alone runbook for an OPS-* requirement from `.planning/REQUIREMENTS.md` (Phase 9).
+
+### Garbage-collecting unused model files (OPS-01)
+
+Model files accumulate on disk over time: GGUFs you pulled and then swapped out, HF snapshots from experiments, Ollama tags you no longer use. `bin/gc-models.sh` reads `router/models.yaml` as the source of truth for "what should still be on disk" and names everything else as a GC candidate. Default mode is dry-run — nothing on the filesystem changes until you pass `--apply` and type the `GC` confirmation phrase.
+
+**Prerequisites:** every model you want to KEEP must have an entry in `router/models.yaml`. To retire a model, remove (or comment out) its entry first, wait for `fs.watch` hot-reload to pick up the change, then run the GC.
+
+**Dry-run (default — safe to run anytime):**
+
+```bash
+bash bin/gc-models.sh
+```
+
+Sample output:
+
+```text
+[gc-models] Scanning 6 candidate(s) under /srv/local-llms/{models-gguf/gguf,models-hf}
+
+[gc-models] ============================================================
+[gc-models]  MODE: dry-run (no filesystem changes)
+[gc-models]  HOST_DATA_ROOT: /srv/local-llms
+[gc-models]  models.yaml   : /home/luis/proyectos/local-llms/router/models.yaml
+[gc-models]  Candidates    : 6
+[gc-models]  Unreferenced  : 2
+[gc-models] ============================================================
+
+[gc-models] Unreferenced files / dirs:
+      4.3G  models-gguf/gguf/llama3.1-8b-instruct-q4_K_M.gguf
+       12G  models-hf/Foo--LegacyModel-7B
+
+[gc-models] Total reclaimable: 16G
+
+[gc-models] Dry-run complete. Re-run with --apply to move these to .gc-trash/.
+```
+
+Exit code is 0 on success even when nothing is reclaimable; exit code 1 means a pre-flight failure (missing `router/models.yaml`, unreadable `HOST_DATA_ROOT`, `tsx` not installed under `router/node_modules/`).
+
+**Destructive apply (interactive `GC` phrase):**
+
+```bash
+bash bin/gc-models.sh --apply
+# Type 'GC' at the prompt to proceed
+```
+
+For non-interactive contexts (CI, scripted maintenance):
+
+```bash
+bash bin/gc-models.sh --apply --yes
+```
+
+**Move-to-trash semantics:** `--apply` does NOT call `rm`. Each unreferenced file or directory is moved via `mv` into `${HOST_DATA_ROOT}/.gc-trash/<ISO-timestamp>/<relative-path>`. The `mv` is atomic when the trash directory is on the same filesystem as the source roots (the default — `.gc-trash/` is a sibling of `models-gguf/` and `models-hf/`). Trash is NOT auto-purged; remove it manually after you have confirmed the GC was correct:
+
+```bash
+rm -rf /srv/local-llms/.gc-trash/2026-05-17T18-30-00
+```
+
+If the dry-run lied or you change your mind, `mv` the file back from the trash directory.
+
+**Allowlist guarantee (T-09-E mitigation):** the script REFUSES to act on any path whose `readlink -f` resolution does not start with `${HOST_DATA_ROOT}/models-gguf/` or `${HOST_DATA_ROOT}/models-hf/`. Symlinks are excluded from the candidate scan (`find ... -not -type l`). The classifier in `router/src/ops/gcModels.ts` re-asserts the same allowlist at the parser level as defense-in-depth.
+
+**What is NOT garbage-collected:**
+
+- **`models-gguf/ollama/`** — Ollama's internal blob store. The GC script treats this directory as opaque because matching individual blob filenames against `models.yaml` would require parsing Ollama's manifest tree (out of scope for v1). To reclaim Ollama blobs, use Ollama's own GC:
+
+  ```bash
+  docker compose exec ollama ollama rm <model-tag>
+  ```
+
+  After `ollama rm`, the blob is unlinked from Ollama's manifests and will be cleaned by Ollama on next prune.
+
+- **Anything matching a substring of a `name:` or `backend_model:` entry in `router/models.yaml`** — the matcher is intentionally COARSE. A token like `qwen2.5` will mark every file whose name contains that substring as referenced, even files for unrelated `qwen2.5` variants you may want to GC. The bias is deliberate: false-positives (keeping a file you could delete) are safe; false-negatives (deleting a referenced file) are not. To retire a model variant, edit `router/models.yaml` first.
+
+- **Dotfiles and dot-directories** under either root (`.gc-trash/`, `.cache/`, etc.) — never queued for GC.
+
+- **Re-pulling after deletion:** if you GC an Ollama-pulled model and a later request needs it, run `docker compose exec ollama ollama pull <name>` and the file is restored at LAN speed.
+
+**Pattern reference:** the `--apply` / `--yes` / interactive-phrase contract mirrors `bin/restore-drill.sh` (see `.planning/phases/05-postgres-observability-seam/05-03-SUMMARY.md` §patterns-established for the canonical destructive-ops template).
+
+<!-- OPS-02 — Plan 09-02 will add `### Off-host backups (OPS-02)` here. -->
+
+<!-- OPS-03 — Plan 09-03 will add `### Disk-usage alert (OPS-03)` here. -->
+
+<!-- OPS-04 — Plan 09-04 will add `### Rotating the bearer token (OPS-04)` here. -->
+
 ## Anti-patterns rejected by this stack
 
 - `:latest` image tags anywhere — every image pinned to a specific tag.
