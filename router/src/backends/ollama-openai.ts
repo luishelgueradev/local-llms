@@ -207,6 +207,25 @@ export class OllamaOpenAIAdapter implements BackendAdapter {
       return { ok: false, latencyMs: Date.now() - t0, error: err instanceof Error ? err.message : String(err) };
     }
   }
+
+  /**
+   * Plan 07-04 (OAI-02 + EMBED-01): passthrough call to Ollama's OpenAI-compat
+   * /v1/embeddings shim. Ollama serves embeddings via the same /v1 surface as
+   * chat completions, so the SDK call works verbatim. The route at
+   * routes/v1/embeddings.ts returns the response shape directly to the wire.
+   */
+  async embeddings(
+    input: string | string[],
+    model: string,
+    signal: AbortSignal,
+  ): Promise<{
+    object: 'list';
+    data: Array<{ object: 'embedding'; index: number; embedding: number[] | string }>;
+    model: string;
+    usage: { prompt_tokens: number; total_tokens: number };
+  }> {
+    return this.client.embeddings.create({ model, input }, { signal });
+  }
 }
 
 /** Convenience factory: build an OllamaOpenAIAdapter from a ModelEntry. */

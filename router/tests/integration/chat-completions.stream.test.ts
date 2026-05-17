@@ -159,6 +159,10 @@ describe('POST /v1/chat/completions stream=true — abort signal wiring (SC3 rea
       async probeLiveness(_signal: AbortSignal): Promise<{ ok: boolean; latencyMs: number; error?: string }> {
         return { ok: true, latencyMs: 0 };
       }
+      // Plan 07-04: BackendAdapter widened with .embeddings(); not exercised by this stream-abort fixture.
+      async embeddings(_input: string | string[], _model: string, _signal: AbortSignal): Promise<never> {
+        throw new Error('not used in stream test');
+      }
       async chatCompletionsCanonicalStream(_req: CanonicalRequest, signal: AbortSignal): Promise<AsyncIterable<CanonicalStreamEvent>> {
         capturedSignal = signal;
         return (async function* () {
@@ -313,6 +317,14 @@ describe('CR-02 — stream pre-stream error records exactly one row (05-VERIFICA
       ): Promise<{ ok: boolean; latencyMs: number; error?: string }> {
         return { ok: true, latencyMs: 0 };
       },
+      // Plan 07-04: BackendAdapter widened with .embeddings(); not exercised here.
+      async embeddings(
+        _input: string | string[],
+        _model: string,
+        _signal: AbortSignal,
+      ): Promise<never> {
+        throw new Error('not used in stream test');
+      },
       async chatCompletionsCanonicalStream(
         _req: CanonicalRequest,
         _signal: AbortSignal,
@@ -444,6 +456,14 @@ describe('CR-03 — mid-stream upstream error records server_error (05-VERIFICAT
         _signal: AbortSignal,
       ): Promise<{ ok: boolean; latencyMs: number; error?: string }> {
         return { ok: true, latencyMs: 0 };
+      },
+      // Plan 07-04: BackendAdapter widened with .embeddings(); not exercised here.
+      async embeddings(
+        _input: string | string[],
+        _model: string,
+        _signal: AbortSignal,
+      ): Promise<never> {
+        throw new Error('not used in stream test');
       },
       async chatCompletionsCanonicalStream(
         _req: CanonicalRequest,

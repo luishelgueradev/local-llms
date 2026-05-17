@@ -336,6 +336,14 @@ describe('POST /v1/messages stream=true — abort propagation (Pitfall 8 + SC3 m
       ): Promise<{ ok: boolean; latencyMs: number; error?: string }> {
         return { ok: true, latencyMs: 0 };
       }
+      // Plan 07-04: BackendAdapter widened with .embeddings(); not exercised here.
+      async embeddings(
+        _input: string | string[],
+        _model: string,
+        _signal: AbortSignal,
+      ): Promise<never> {
+        throw new Error('not used in stream test');
+      }
       async chatCompletionsCanonicalStream(
         _req: CanonicalRequest,
         signal: AbortSignal,
@@ -447,6 +455,14 @@ describe('POST /v1/messages stream=true — adapter receives inputTokensHint (Is
         _signal: AbortSignal,
       ): Promise<{ ok: boolean; latencyMs: number; error?: string }> {
         return { ok: true, latencyMs: 0 };
+      }
+      // Plan 07-04: BackendAdapter widened with .embeddings(); not exercised here.
+      async embeddings(
+        _input: string | string[],
+        _model: string,
+        _signal: AbortSignal,
+      ): Promise<never> {
+        throw new Error('not used');
       }
       async chatCompletionsCanonicalStream(
         _req: CanonicalRequest,
@@ -713,6 +729,14 @@ describe('CR-02 — stream pre-stream error records exactly one row (05-VERIFICA
       ): Promise<{ ok: boolean; latencyMs: number; error?: string }> {
         return { ok: true, latencyMs: 0 };
       },
+      // Plan 07-04: BackendAdapter widened with .embeddings(); not exercised here.
+      async embeddings(
+        _input: string | string[],
+        _model: string,
+        _signal: AbortSignal,
+      ): Promise<never> {
+        throw new Error('not used in stream test');
+      },
       async chatCompletionsCanonicalStream(
         _req: CanonicalRequest,
         _signal: AbortSignal,
@@ -843,6 +867,14 @@ describe('CR-03 — mid-stream upstream error records server_error (05-VERIFICAT
         _signal: AbortSignal,
       ): Promise<{ ok: boolean; latencyMs: number; error?: string }> {
         return { ok: true, latencyMs: 0 };
+      },
+      // Plan 07-04: BackendAdapter widened with .embeddings(); not exercised here.
+      async embeddings(
+        _input: string | string[],
+        _model: string,
+        _signal: AbortSignal,
+      ): Promise<never> {
+        throw new Error('not used in stream test');
       },
       async chatCompletionsCanonicalStream(
         _req: CanonicalRequest,

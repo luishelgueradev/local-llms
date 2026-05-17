@@ -43,12 +43,22 @@ export class RegistryUnknownModelError extends Error {
  * or `tools` once Plan 04-04 lands tool calling). Maps to 400 + invalid_request_error
  * on both wire surfaces (OpenAI envelope: code=`model_capability_mismatch`,
  * Anthropic envelope: type=`invalid_request_error`).
+ *
+ * Plan 07-04 widening: also thrown by the /v1/embeddings route when the requested
+ * model lacks the `embeddings` capability (e.g. a chat-only model like
+ * `qwen2.5-7b-instruct-awq` is asked to embed). Same 400 / model_capability_mismatch
+ * mapping — the third allowed value of `missingCapability` is `'embeddings'`.
+ * Additionally, LlamacppOpenAIAdapter.embeddings() throws this error
+ * unconditionally (with `backend` synthesized as the modelName argument
+ * `'llamacpp'`) as defense-in-depth: llama.cpp-server does not expose /v1/embeddings,
+ * so adapter-level throws back the route-level capability gate. See Plan 07-04
+ * `<interfaces>` block for the contract.
  */
 export class CapabilityNotSupportedError extends Error {
   readonly code = 'model_capability_mismatch';
   constructor(
     public readonly modelName: string,
-    public readonly missingCapability: 'vision' | 'tools',
+    public readonly missingCapability: 'vision' | 'tools' | 'embeddings',
   ) {
     super(
       `Model "${modelName}" does not support capability "${missingCapability}". ` +

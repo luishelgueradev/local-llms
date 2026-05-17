@@ -10,6 +10,7 @@ import {
   openAIChatCompletionToCanonical,
   openAIChunksToCanonicalEvents,
 } from '../translation/openai-out.js';
+import { CapabilityNotSupportedError } from '../errors/envelope.js';
 
 /**
  * LlamacppOpenAIAdapter — mirrors OllamaOpenAIAdapter exactly modulo the apiKey
@@ -97,6 +98,29 @@ export class LlamacppOpenAIAdapter implements BackendAdapter {
     } catch (err) {
       return { ok: false, latencyMs: Date.now() - t0, error: err instanceof Error ? err.message : String(err) };
     }
+  }
+
+  /**
+   * Plan 07-04 (OAI-02 + EMBED-01): llama.cpp-server does NOT expose an
+   * OpenAI-compat /v1/embeddings endpoint (the upstream HTTP server's
+   * `--embedding` flag enables a non-OpenAI shape; integrating it would
+   * require a translator and is out of scope for Phase 7). Defense-in-depth
+   * throw: the route-level capability gate already prevents this call when
+   * llama.cpp models declare only `[chat, tools]` capabilities in models.yaml,
+   * but the adapter enforces the contract independently per the threat model
+   * T-07-11 (dual-layer capability gate).
+   *
+   * The `modelName` arg is passed as `'llamacpp'` (backend name, not entry name)
+   * so the resulting CapabilityNotSupportedError message identifies the backend
+   * rather than the model — operationally useful when debugging misdeclared
+   * registry entries (the model name lives in the route-level throw).
+   */
+  async embeddings(
+    _input: string | string[],
+    _model: string,
+    _signal: AbortSignal,
+  ): Promise<never> {
+    throw new CapabilityNotSupportedError('llamacpp', 'embeddings');
   }
 }
 

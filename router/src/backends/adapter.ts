@@ -60,6 +60,38 @@ export interface BackendAdapter {
    * Adapters: OllamaOpenAIAdapter, LlamacppOpenAIAdapter (Phase 3); Phase 8: OllamaCloudAdapter.
    */
   probeLiveness(signal: AbortSignal): Promise<{ ok: boolean; latencyMs: number; error?: string }>;
+
+  /**
+   * Plan 07-04 (OAI-02 + EMBED-01): OpenAI-shape embedding call. Returns the
+   * OpenAI SDK's `CreateEmbeddingResponse` shape verbatim — `{ object: 'list',
+   * data: [{ object: 'embedding', index, embedding: number[] | string }],
+   * model, usage: { prompt_tokens, total_tokens } }`. The route handler at
+   * `routes/v1/embeddings.ts` returns this object directly as the wire body
+   * (no translation step — embeddings have a single OpenAI surface; the
+   * Anthropic protocol has no embeddings analog).
+   *
+   * Adapters whose backend does not support embeddings throw
+   * `CapabilityNotSupportedError(modelName, 'embeddings')`. As of Phase 7 the
+   * non-supporting backend is `llamacpp` (llama.cpp-server has no /v1/embeddings
+   * endpoint). The route-level capability gate fires FIRST against
+   * `entry.capabilities`; the adapter-level throw is defense in depth in case
+   * capabilities are misdeclared in models.yaml.
+   *
+   * Adapters: OllamaOpenAIAdapter (Ollama exposes /v1/embeddings as an
+   * OpenAI-compat shim), VLLMOpenAIAdapter (the vllm-embed pool serves
+   * /v1/embeddings natively via `--runner pooling`); LlamacppOpenAIAdapter
+   * throws. Phase 8: OllamaCloudAdapter will implement the same passthrough.
+   */
+  embeddings(
+    input: string | string[],
+    model: string,
+    signal: AbortSignal,
+  ): Promise<{
+    object: 'list';
+    data: Array<{ object: 'embedding'; index: number; embedding: number[] | string }>;
+    model: string;
+    usage: { prompt_tokens: number; total_tokens: number };
+  }>;
 }
 
 /**

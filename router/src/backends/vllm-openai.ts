@@ -125,6 +125,27 @@ export class VLLMOpenAIAdapter implements BackendAdapter {
       return { ok: false, latencyMs: Date.now() - t0, error: err instanceof Error ? err.message : String(err) };
     }
   }
+
+  /**
+   * Plan 07-04 (OAI-02 + EMBED-01): passthrough call to vLLM's OpenAI-compat
+   * /v1/embeddings endpoint. The vllm-embed container is started with
+   * `--runner pooling` (Plan 07-01 / D-A3) so /v1/embeddings is served by a
+   * dedicated pool with `--task embed`; the same class is reused for both the
+   * `vllm` (chat) and `vllm-embed` (embed) backend entries — only baseURL
+   * differs. Identical implementation to Ollama since the SDK shape is the same.
+   */
+  async embeddings(
+    input: string | string[],
+    model: string,
+    signal: AbortSignal,
+  ): Promise<{
+    object: 'list';
+    data: Array<{ object: 'embedding'; index: number; embedding: number[] | string }>;
+    model: string;
+    usage: { prompt_tokens: number; total_tokens: number };
+  }> {
+    return this.client.embeddings.create({ model, input }, { signal });
+  }
 }
 
 /** Convenience factory: build a VLLMOpenAIAdapter from a ModelEntry. */
