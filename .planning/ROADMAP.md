@@ -250,7 +250,13 @@ Plans:
   2. An off-host backup destination (restic or rclone target) is configured and a successful run is verified end-to-end (Postgres dump → off-host → restore on a scratch instance).
   3. A disk-usage alert fires (visibly — log line, Grafana alert, or simple cron-ntfy hook) when `/srv/models` exceeds a configurable threshold; the threshold is documented.
   4. The bearer-token rotation procedure is documented in the project README — including how to update Open WebUI's stored token without recreating its admin user, and how to verify zero log lines mention the old token before deleting it.
-**Plans:** TBD
+**Plans:** 4 plans
+Plans:
+**Wave 1**
+- [ ] 09-01-PLAN.md — OPS-01: bin/gc-models.sh dry-run + --apply with GC confirmation phrase + allowlist + move-to-trash (T-09-D / T-09-E mitigations); router/src/ops/gcModels.ts parser + vitest test; README §Operations §Garbage-collecting unused model files
+- [ ] 09-02-PLAN.md — OPS-02: bin/backup-postgres.sh restic publish wrapper around the existing pg-backup sidecar's daily dumps; BACKUP_RESTIC_REPO + BACKUP_RESTIC_PASSWORD + optional BACKUP_KEEP_POLICY env contract; README §Operations §Off-host backups + off-host restore-drill extension
+- [ ] 09-03-PLAN.md — OPS-03: bin/disk-alert.sh df -P + threshold check + structured log line + optional ntfy hook; DISK_ALERT_THRESHOLD_PCT + optional NTFY_URL env contract; README §Operations §Disk-usage alert
+- [ ] 09-04-PLAN.md — OPS-04: README §Operations §Rotating the bearer token — 10-step procedure incl. OWUI PersistentConfig pivot (admin-UI + direct-SQL paths) + OLD_PREFIX verification grep + rollback note + cross-references to VALKEY/POSTGRES/GRAFANA/RESTIC password rotation (v2)
 
 ## Progress
 
@@ -264,7 +270,7 @@ Plans:
 | 6. Traefik + TLS + Open WebUI | 0/4 | Planned | - |
 | 7. Embeddings + vLLM + GPU Telemetry | 7/7 | Complete   | 2026-05-17 |
 | 8. Ollama Cloud Fallback + Resilience Hardening | 9/11 | In Progress|  |
-| 9. Operations Hardening | 0/0 | Not started | - |
+| 9. Operations Hardening | 0/4 | Planned | - |
 
 ## Coverage Summary
 
