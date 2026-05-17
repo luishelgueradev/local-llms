@@ -76,11 +76,24 @@ export function makeRateLimitPreHandler(opts: MakeRateLimitOpts) {
     if (path && PUBLIC_PATHS.has(path)) return;
 
     const auth = req.headers.authorization;
-    // The bearer-auth hook runs BEFORE this one and throws BearerAuthError on
-    // missing / malformed headers. If we got here without a usable Authorization
-    // header, something is wrong but it's NOT the rate-limit hook's job to
-    // diagnose it — defensive skip preserves fail-open semantics.
-    if (typeof auth !== 'string' || auth.length < 8) {
+    // The bearer-auth hook runs BEFORE this one (hook registration order in
+    // app.ts:240-258) and throws BearerAuthError on missing / malformed
+    // headers, so this hook should never observe an absent Authorization
+    // on a non-public path. The check below is a defense-in-depth assertion
+    // — if hook ordering ever drifts (e.g. someone reorders the calls), we
+    // surface the misconfiguration at error level rather than silently
+    // failing open with no audit trail.
+    //
+    // 08-REVIEW WR-02 fix: the pre-fix `auth.length < 8` magic number was
+    // misleading — it claimed to defend against "no usable Authorization
+    // header" but a 1-char-token "Bearer x" (9 chars total) sailed past it
+    // and was hashed normally. Replace with a structural check on the
+    // bearer prefix that matches what auth/bearer.ts expects.
+    if (typeof auth !== 'string' || !auth.toLowerCase().startsWith('bearer ')) {
+      log.error(
+        { url: req.url },
+        'rate-limit: missing or malformed Authorization (bearer hook ordering broken?)',
+      );
       return;
     }
 
