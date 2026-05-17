@@ -222,7 +222,7 @@ Plans:
 - [x] 08-00-PLAN.md — CR-02 precondition fix: registry validator + probeAdapterFor cache key widening (CLOUD-01 prerequisite)
 
 **Wave 1** *(parallel pair — disjoint files: 08-01 owns compose.yml + Valkey client + boot; 08-02 owns adapter + registry + models.yaml + cloud env)*
-- [ ] 08-01-PLAN.md — Valkey service in compose.yml + ioredis client wired in router boot + onClose ordering (DATA-06 infrastructure)
+- [x] 08-01-PLAN.md — Valkey service in compose.yml + ioredis client wired in router boot + onClose ordering (DATA-06 infrastructure)
 - [ ] 08-02-PLAN.md — OllamaCloudAdapter + LocalBackendEnum widening + factory dispatch + 2 cloud model entries + assertCloudEnvIfConfigured (CLOUD-01, CLOUD-02, EMBED-02)
 
 **Wave 2** *(four parallel-safe plans — all depend on either 08-01 Valkey or 08-02 cloud entries; disjoint file ownership within wave)*

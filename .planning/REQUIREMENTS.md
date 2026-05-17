@@ -89,7 +89,7 @@
 - [x] **DATA-03**: Each `request_log` row contains: backend, protocol, model, tokens_in, tokens_out, latency_ms, ttft_ms, error, agent_id, timestamp
 - [x] **DATA-04**: A `usage_daily` aggregation table is populated from `request_log` for time-series queries
 - [x] **DATA-05**: A `pg_dump` cron job runs daily; a tested restore drill exists and is documented
-- [ ] **DATA-06**: Valkey 8 runs as a Compose service used for rate-limit counters and a small `models.yaml` cache
+- [x] **DATA-06**: Valkey 8 runs as a Compose service used for rate-limit counters and a small `models.yaml` cache
 
 ### Edge / networking
 
@@ -251,7 +251,7 @@ Each requirement maps to exactly one phase. Mapping derived from research-recomm
 | CLOUD-03 | Phase 8 — Ollama Cloud Fallback + Resilience Hardening | Pending |
 | CLOUD-04 | Phase 8 — Ollama Cloud Fallback + Resilience Hardening | Pending |
 | CLOUD-05 | Phase 8 — Ollama Cloud Fallback + Resilience Hardening | Pending |
-| DATA-06 | Phase 8 — Ollama Cloud Fallback + Resilience Hardening | Pending |
+| DATA-06 | Phase 8 — Ollama Cloud Fallback + Resilience Hardening | Complete |
 | ROUTE-10 | Phase 8 — Ollama Cloud Fallback + Resilience Hardening | Pending |
 | ROUTE-11 | Phase 8 — Ollama Cloud Fallback + Resilience Hardening | Pending |
 | ROUTE-12 | Phase 8 — Ollama Cloud Fallback + Resilience Hardening | Pending |

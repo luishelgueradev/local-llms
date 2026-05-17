@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v0.9.0
 milestone_name: milestone
 status: executing
-stopped_at: "Phase 8 Plan 00 (precondition) complete — RegistrySchema.superRefine rejects shared backend_url across distinct backends; probeAdapterFor cache keyed by ${backend}|${url}; scheduler probe callback resolves backend by URL before delegating. Closes 07-REVIEW-FIX §CR-02. Commits: eb79103 (RED: failing regression tests in tests/config/registry.test.ts + tests/app/probe-adapter.test.ts) + e790918 (GREEN: registry + app widening; honors opts.makeAdapter per BuildAppOpts contract). 528/530 tests pass (2 skipped); build clean. 1 deviation auto-fixed (Rule 2: probeAdapterFor previously hardcoded defaultMakeAdapter, bypassing the documented opts.makeAdapter injection point — fixed to make Test 3 hermetic). Phase 7 Plan 06 task 3 still PENDING-HUMAN."
-last_updated: "2026-05-17T15:22:28.660Z"
+stopped_at: "Phase 8 Plan 01 (DATA-06 foundation) COMPLETE — Valkey/valkey:8-alpine on data network, ioredis client at boot, BuildAppOpts.valkey + onClose ordering. Commits: 69bc155 (RED) + ee3a6a0 (GREEN factory + dep) + bc60b4b (compose) + f6415bb (env.ts + app.ts + index.ts). 532/534 tests pass; build clean. 1 deviation auto-fixed (Rule 1: TS2351 under nodenext + verbatimModuleSyntax → switched to named Redis import). DATA-06 marked complete."
+last_updated: "2026-05-17T15:38:41.250Z"
 progress:
   total_phases: 9
   completed_phases: 7
   total_plans: 50
-  completed_plans: 40
-  percent: 80
+  completed_plans: 41
+  percent: 82
 ---
 
 # Project State: local-llms
@@ -27,12 +27,12 @@ progress:
 ## Current Position
 
 Phase: 08 (Ollama Cloud Fallback + Resilience Hardening) — EXECUTING
-Plan: 2 of 11
+Plan: 3 of 11
 
 - **Milestone:** v1
 - **Phase:** 8
-- **Plan:** 08-00 (precondition) — COMPLETE. RegistrySchema.superRefine rejects shared backend_url across distinct backends; probeAdapterFor keyed by `${backend}|${url}`. 07-REVIEW-FIX §CR-02 closed. Commits: eb79103 (RED) + e790918 (GREEN).
-- **Next plan:** 08-01 (Wave 1) — see ROADMAP for sequencing.
+- **Plan:** 08-01 (Wave 1, DATA-06 foundation) — COMPLETE. Valkey/valkey:8-alpine service on data network; ioredis singleton at boot; BuildAppOpts.valkey + app.valkey decorator; closeValkey runs between usageDaily.stop() and bufferedWriter.drain() so in-flight breaker/rate-limit/idempotency writes flush before pg drain races its 3s timeout. Commits: 69bc155 (RED) + ee3a6a0 (GREEN factory + dep) + bc60b4b (compose) + f6415bb (env + app + index wiring).
+- **Next plan:** 08-02 (Wave 1 — cloud adapter; reads app.ts state established by 08-01). 08-01 owns clients/ + onClose; 08-02 owns adapter + registry + cloud env validator. Sequential dispatch in autonomous orchestrator avoids git contention on app.ts.
 - **Phase 7 carry-over:** Plan 07-06 task 3 still PENDING-HUMAN (operator approval on RTX 5060 Ti host). Recipe in 07-06-SUMMARY.md §User Setup Required.
 
 ### Progress
@@ -45,10 +45,10 @@ Phase 4: ░░░░░░░░░░ 0% (0/16 requirements)
 Phase 5: ░░░░░░░░░░ 0% (0/8 requirements)
 Phase 6: ░░░░░░░░░░ 0% (0/11 requirements)
 Phase 7: █████████░ 86% (6/7 requirements coded; smoke scripts in tree; OBS-05 already complete from Phase 5; awaiting operator human-verify on 07-06 task 3)
-Phase 8: █░░░░░░░░░ 11% (1/9 requirements — CLOUD-01 precondition closed via Plan 08-00)
+Phase 8: ██░░░░░░░░ 22% (2/9 requirements — CLOUD-01 precondition closed via Plan 08-00; DATA-06 foundation closed via Plan 08-01)
 Phase 9: ░░░░░░░░░░ 0% (0/4 requirements)
 
-Overall: ███░░░░░░░ 28% (21/76 v1 requirements)
+Overall: ███░░░░░░░ 29% (22/76 v1 requirements)
 ```
 
 ## Performance Metrics
@@ -103,8 +103,8 @@ Overall: ███░░░░░░░ 28% (21/76 v1 requirements)
 
 ## Session Continuity
 
-Last session: 2026-05-17T15:22:28.641Z
-Stopped at: Phase 7 Plan 06 (live smoke scripts) tasks 1-2 auto-complete. Commits c9a3369 (feat: bin/smoke-test-observability.sh — OBS-02/03/04 smoke with Prometheus targets, nvidia_smi_memory_used_bytes sample, Grafana datasource + dashboard provisioning checks) + 61ded93 (feat: extend bin/smoke-test-router.sh with `=== Phase 7 — /v1/embeddings + request_log ===` section covering bge-m3-ollama 1024-dim, capability gate, zod empty-input gate, bge-m3-vllm 1024-dim, request_log distinct backend rows). Task 3 PENDING-HUMAN — operator must approve on the RTX 5060 Ti host. No deviations: tasks 1-2 executed exactly as planned.
+Last session: 2026-05-17T15:38:41.187Z
+Stopped at: Phase 8 Plan 01 (DATA-06 foundation) COMPLETE — Valkey/valkey:8-alpine on data network, ioredis client at boot, BuildAppOpts.valkey + onClose ordering. Commits: 69bc155 (RED) + ee3a6a0 (GREEN factory + dep) + bc60b4b (compose) + f6415bb (env.ts + app.ts + index.ts). 532/534 tests pass; build clean. 1 deviation auto-fixed (Rule 1: TS2351 under nodenext + verbatimModuleSyntax → switched to named Redis import). DATA-06 marked complete.
 
 **Next action:** Operator runs the recipe in 07-06-SUMMARY.md §User Setup Required: `docker compose --profile vllm up -d` → wait for vllm healthy → `bash bin/smoke-test-observability.sh && bash bin/smoke-test-router.sh` → visual Grafana check → reply `approved` (or list failing assertions for re-execution).
 
