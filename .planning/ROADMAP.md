@@ -234,7 +234,7 @@ Plans:
 **Wave 3** *(three parallel plans — depend on Waves 1 + 2)*
 - [x] 08-07-PLAN.md — Idempotency-Key multiplexer (Valkey SETNX + pub/sub + cached chunks list + stream/non-stream replay) (ROUTE-12)
 - [x] 08-08-PLAN.md — cloud_spend_daily Postgres view migration (CLOUD-05)
-- [ ] 08-09-PLAN.md — Valkey-backed 30s registry cache + watchRegistry onReload propagation (DATA-06 cache)
+- [x] 08-09-PLAN.md — Valkey-backed 30s registry cache + watchRegistry onReload propagation (DATA-06 cache)
 
 **Wave 4** *(blocks on Waves 0-3; live verification + human-verify)*
 - [ ] 08-10-PLAN.md — bin/smoke-test-cloud.sh + bin/smoke-test-router.sh §Phase 8 + .env.example + README §Phase 8 + human-verify checkpoint
