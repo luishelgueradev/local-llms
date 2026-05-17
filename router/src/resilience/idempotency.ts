@@ -318,12 +318,56 @@ export function makeIdempotencyMultiplexer(
       upstreamMessageId,
     };
     const serialized = JSON.stringify(payload);
-    // Cache result with 15-min TTL (D-D6).
-    await (valkey as unknown as {
-      set(k: string, v: string, ...args: (string | number)[]): Promise<string | null>;
-    }).set(keys.result(key), serialized, 'EX', IDEMPOTENCY_DATA_TTL_SEC);
-    // Publish the terminal marker so subscribed followers wake up.
-    await valkey.publish(keys.channel(key), serialized);
+    // 08-REVIEW WR-05 fix: cache + publish are independent transports.
+    //
+    // - cache (SET ... EX) → covers LATE followers (arrive after this call):
+    //   they GET the result key in awaitNonStreamResult and short-circuit.
+    // - publish (PUBLISH) → covers LIVE followers (already subscribed):
+    //   they wake on the channel message and return immediately.
+    //
+    // Pre-fix: both were awaited without try/catch. A transient Valkey
+    // blip on EITHER call rejected the entire helper, and (worse) a SET
+    // success followed by a PUBLISH failure left live followers blocked
+    // on sub.next(30s) until they timed out — outcome incoherence (leader
+    // 200, follower 504).
+    //
+    // Post-fix: each call is independently wrapped; we throw only if
+    // BOTH fail. The wire effect for a coexisting set of followers is:
+    //   - SET ok + PUBLISH ok → leader + live + late all agree
+    //   - SET ok + PUBLISH fail → live followers time out at 30s (existing
+    //     limit); late followers see the cache; leader returns 200
+    //   - SET fail + PUBLISH ok → live followers see the terminal; late
+    //     followers see nothing and time out
+    //   - SET fail + PUBLISH fail → throw so the leader's catch can log
+    //     and decide whether to fall through (currently the call site
+    //     logs and continues — followers all time out)
+    let cacheOk = false;
+    let publishOk = false;
+    try {
+      await (valkey as unknown as {
+        set(k: string, v: string, ...args: (string | number)[]): Promise<string | null>;
+      }).set(keys.result(key), serialized, 'EX', IDEMPOTENCY_DATA_TTL_SEC);
+      cacheOk = true;
+    } catch (err) {
+      log.warn(
+        { err, key },
+        'idempotency: publishNonStream SET result failed (late followers will time out)',
+      );
+    }
+    try {
+      await valkey.publish(keys.channel(key), serialized);
+      publishOk = true;
+    } catch (err) {
+      log.warn(
+        { err, key },
+        'idempotency: publishNonStream PUBLISH failed (live followers will time out)',
+      );
+    }
+    if (!cacheOk && !publishOk) {
+      throw new Error(
+        'idempotency: publishNonStream failed both cache + publish; all followers will time out',
+      );
+    }
   }
 
   async function publishStreamEvent(key: string, event: unknown): Promise<void> {
