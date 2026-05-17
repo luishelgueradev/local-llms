@@ -562,6 +562,12 @@ services:
       # consumer will read it directly from compose at that point.
       - ROUTER_DATABASE_URL=postgresql://app:${POSTGRES_PASSWORD}@postgres:5432/router
       - OPENWEBUI_DATABASE_URL=postgresql://app:${POSTGRES_PASSWORD}@postgres:5432/openwebui
+      # Phase 8 (DATA-06): Valkey connection for rate-limit / circuit-breaker /
+      # idempotency / models-cache (Plans 08-04, 08-06, 08-07, 08-09). The URL
+      # is hardcoded here (not in .env) because operators don't override the
+      # internal data-plane hostname; the password is the single tunable.
+      - ROUTER_VALKEY_URL=redis://valkey:6379
+      - ROUTER_VALKEY_PASSWORD=${VALKEY_PASSWORD}
       # OLLAMA_URL removed: parsed from env.ts but never consumed — backend URLs
       # are authoritative from models.yaml backend_url fields (03-REVIEW WR-04).
     # ── No host ports (EDGE-03 / Phase 6 D-A4) ───────────────────────────────
@@ -624,6 +630,9 @@ services:
       postgres:
         condition: service_healthy
         required: false      # Phase 5 (D-E4) — router boots without postgres (D-B5)
+      valkey:
+        condition: service_healthy
+        required: false      # Phase 8 (DATA-06) — router boots without valkey; downstream consumers fail-fast per their own policy
 
   # ─── router-dev (D-A3) ──────────────────────────────────────────────────────
   # Dev-only sibling of `router:` — same networks + healthcheck + env, but
@@ -650,6 +659,9 @@ services:
       # Phase 5 (D-B6) — same env contract as `router:` so dev mode is also Phase-5-ready.
       - ROUTER_DATABASE_URL=postgresql://app:${POSTGRES_PASSWORD}@postgres:5432/router
       - OPENWEBUI_DATABASE_URL=postgresql://app:${POSTGRES_PASSWORD}@postgres:5432/openwebui
+      # Phase 8 (DATA-06) — Valkey connection mirrored from router: (same env contract).
+      - ROUTER_VALKEY_URL=redis://valkey:6379
+      - ROUTER_VALKEY_PASSWORD=${VALKEY_PASSWORD}
     volumes:
       - ./router/src:/app/src:ro
       - ./router/tsconfig.json:/app/tsconfig.json:ro
@@ -668,6 +680,9 @@ services:
       postgres:
         condition: service_healthy
         required: false      # Phase 5 (D-E4) — router-dev boots without postgres (D-B5)
+      valkey:
+        condition: service_healthy
+        required: false      # Phase 8 (DATA-06) — router-dev boots without valkey (mirrors router:)
     healthcheck:
       test: ["CMD-SHELL", "node -e \"fetch('http://localhost:3000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
       interval: 10s
@@ -728,6 +743,67 @@ services:
       retries: 5
     # No depends_on — postgres has no upstream dependency. No ports — internal
     # network only (D-E1).
+
+  # ── Valkey (Phase 8 — D-D1; DATA-06) ───────────────────────────────────────
+  # Single Valkey instance for: rate-limit counters (ROUTE-11 — Plan 08-06),
+  # circuit-breaker state (CLOUD-03 — Plan 08-04), idempotency multiplexer
+  # (ROUTE-12 — Plan 08-07), and a 30s models.yaml cache (DATA-06 — Plan 08-09).
+  #
+  # BSD-3 license (vs. Redis 8's tri-license including AGPLv3 — per project
+  # STACK.md "What NOT to Use" line + research). API-compatible with Redis 7
+  # protocol; the `ioredis` Node client speaks both transparently.
+  #
+  # Persistence (`--save 60 1`): RDB snapshot every 60 seconds if at least 1
+  # key changed. Acceptable for the four use cases — rate-limit counters lose
+  # at most 60 s of history on a crash (no big deal at 600 RPM default);
+  # idempotency keys with 15-min TTL are still recent enough to be valid;
+  # circuit-breaker state recovers on the next failure. AOF is NOT enabled —
+  # the writes are too high-frequency (rate-limit INCR per request) to make
+  # the durability tradeoff worthwhile.
+  #
+  # Auth: `--requirepass ${VALKEY_PASSWORD}`. Required because the `data`
+  # network is internal-only but defense-in-depth — if the router is ever
+  # compromised, the attacker should still need the password to talk to
+  # Valkey (vs. the postgres pattern where the password is the same gate).
+  #
+  # Network: `data` only (internal: true). NO published host ports.
+  # Bind mount: ${HOST_DATA_ROOT}/valkey → /data; first-up may need
+  # `mkdir -p ${HOST_DATA_ROOT}/valkey && chown 999:1000 ${HOST_DATA_ROOT}/valkey`
+  # on the host (Valkey image runs as uid 999 by default — README updates
+  # land in Plan 08-10's smoke/docs section).
+  valkey:
+    image: valkey/valkey:8-alpine
+    container_name: ${COMPOSE_PROJECT_NAME:-local-llms}-valkey
+    restart: unless-stopped
+    command:
+      - valkey-server
+      - --save
+      - "60"
+      - "1"
+      - --requirepass
+      - ${VALKEY_PASSWORD}
+      - --loglevel
+      - warning
+    environment:
+      # Re-export VALKEY_PASSWORD inside the container so the healthcheck shell
+      # can expand $VALKEY_PASSWORD (escaped as $$ in the YAML to defer
+      # Compose interpolation). Compose v2 reads .env into project-level env
+      # but the healthcheck shell needs the value INSIDE the container's env.
+      - VALKEY_PASSWORD=${VALKEY_PASSWORD}
+    networks:
+      - data
+    volumes:
+      - ${HOST_DATA_ROOT:-/srv/local-llms}/valkey:/data
+    healthcheck:
+      # `$$VALKEY_PASSWORD` — the double-$ tells Compose to pass a literal `$`
+      # to the shell, which then expands the in-container VALKEY_PASSWORD env.
+      # Mirrors the pg-backup pattern (compose.yml ~line 770).
+      test: ["CMD-SHELL", "valkey-cli -a $$VALKEY_PASSWORD ping | grep -q PONG || exit 1"]
+      interval: 10s
+      timeout: 3s
+      start_period: 10s
+      retries: 5
+    # No depends_on — Valkey has no upstream dependency. No ports — internal.
 
   # ── pg-backup sidecar (Phase 5 — D-F2 path A; DATA-05) ─────────────────────
   # Daily pg_dump in custom format, writing to a bind-mounted host directory.
