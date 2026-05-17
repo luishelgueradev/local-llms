@@ -237,7 +237,7 @@ Plans:
 - [x] 08-09-PLAN.md — Valkey-backed 30s registry cache + watchRegistry onReload propagation (DATA-06 cache)
 
 **Wave 4** *(blocks on Waves 0-3; live verification + human-verify)*
-- [ ] 08-10-PLAN.md — bin/smoke-test-cloud.sh + bin/smoke-test-router.sh §Phase 8 + .env.example + README §Phase 8 + human-verify checkpoint
+- [x] 08-10-PLAN.md — bin/smoke-test-cloud.sh + bin/smoke-test-router.sh §Phase 8 + .env.example + README §Phase 8 + human-verify checkpoint
 **Research flag:** yes — needs `/gsd-research-phase` for current 2026 Ollama Cloud quotas (intentionally vague in docs), cloud-model naming conventions (`gpt-oss:120b` vs `gpt-oss:120b-cloud`), and idempotency-key patterns over SSE; per SUMMARY.md, PITFALLS Pitfall 9 is the load-bearing risk.
 
 ### Phase 9: Operations Hardening
