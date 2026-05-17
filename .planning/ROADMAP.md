@@ -185,8 +185,25 @@ Plans:
   3. vLLM `/metrics` and llama.cpp `/metrics` are scraped by Prometheus; a GPU exporter (DCGM or `nvidia_gpu_exporter`) is running and scraped; `nvidia-smi` shows realistic concurrent VRAM usage when one vLLM model and one Ollama model are simultaneously hot (or — per VRAM partitioning policy — only one is hot per Compose profile).
   4. A Grafana dashboard exists and shows VRAM utilization, request rate, time-to-first-token, error rate, and backend selection, fed by both the router metrics (Phase 5) and the new vLLM/llama.cpp/GPU exporters.
   5. The router's request_log shows distinct rows for embedding requests routed to Ollama and vLLM, proving the registry/dispatch layer handles a non-chat protocol surface without code changes specific to embeddings.
-**Plans:** TBD
-**Research flag:** yes — needs `/gsd-research-phase` to pick the right vLLM image tag for the host driver (`cu129` vs `cu126` vs `cu124`), an AWQ model that fits 16 GB at the chosen `max-model-len`, and to budget the KV cache for `max-model-len × max-num-seqs × dtype`; per SUMMARY.md, PITFALLS Pitfalls 6 and 7 are load-bearing here.
+**Plans:** 7 plans
+Plans:
+**Wave 0** *(gate — Pitfall V-1 sm_120 cold-start smoke; blocks Wave 1 until OUTCOME is recorded)*
+- [x] 07-00-PLAN.md — bin/smoke-test-vllm-coldstart.sh + human-verify Pitfall V-1 gate + SUMMARY records OUTCOME=locked|fallback-env|fallback-quant (BCKND-03 pre-gate)
+
+**Wave 1** *(blocked on Wave 0 — vLLM compose surface; owns compose.yml first edit + .env.example mutations)*
+- [x] 07-01-PLAN.md — compose.yml vllm + vllm-embed services (v0.21.0-cu129 image; D-A1..A8 + D-B5(a); applies Wave 0 outcome — fallback env vars / quant flag if needed) + .env.example GRAFANA_ADMIN_PASSWORD + HUGGINGFACE_HUB_TOKEN (BCKND-03)
+
+**Wave 2** *(parallel pair — both depend on Wave 1; disjoint file ownership: 07-02 owns compose.yml second edit + prometheus/ + grafana datasource; 07-03 owns router/ source)*
+- [x] 07-02-PLAN.md — compose.yml nvidia_gpu_exporter (v1.4.1) + prometheus (v3.10.0) + grafana (12.4.3) services + prometheus/prometheus.yml (5 scrape jobs) + grafana/provisioning/datasources/datasource.yml (uid:prometheus-default) — research updated pins from CONTEXT.md (OBS-02, OBS-03)
+- [x] 07-03-PLAN.md — router/src/config/registry.ts LocalBackendEnum widening to vllm + vllm-embed + new router/src/backends/vllm-openai.ts VLLMOpenAIAdapter + factory wiring + liveness scheduler awareness + router/models.yaml 3 new entries (qwen2.5-7b-instruct-awq + bge-m3-ollama + bge-m3-vllm) (BCKND-03, OAI-02 wiring)
+
+**Wave 3** *(parallel pair — 07-04 depends on Wave 2 plan 07-03; 07-05 depends on Wave 2 plan 07-02; disjoint file ownership: 07-04 owns router/src/; 07-05 owns grafana/ dashboards + README.md)*
+- [x] 07-04-PLAN.md — BackendAdapter interface widening with .embeddings() + Ollama/vLLM/llama.cpp adapter impls (last throws CapabilityNotSupportedError) + router/src/routes/v1/embeddings.ts (zod + capability gate + recordRequestOutcome) + router/src/app.ts route registration (OAI-02, EMBED-01)
+- [ ] 07-05-PLAN.md — grafana/provisioning/dashboards/local-llms.yml provider + grafana/provisioning/dashboards/local-llms.json (uid:local-llms with 6+ panels per SC4) + README §Phase 7 (profile commands + embeddings curls + Grafana access + env var generation + Pitfalls P-2 + G-3 + V-2 operator steps) (OBS-04)
+
+**Wave 4** *(blocked on Waves 1–3; live verification + human-verify checkpoint)*
+- [ ] 07-06-PLAN.md — bin/smoke-test-observability.sh (Prometheus targets up + GPU exporter samples + Grafana datasource + dashboard provisioning) + bin/smoke-test-router.sh extension (Phase 7 section: /v1/embeddings both backends + 1024-dim assertion + capability gate + request_log distinct rows) + human-verify checkpoint against live stack with --profile vllm active (BCKND-03, OAI-02, EMBED-01, OBS-02, OBS-03, OBS-04)
+**Research flag:** yes — `/gsd-research-phase` produced `07-RESEARCH.md` closing 6 open items + flagging Pitfall V-1 (sm_120 prebuilt-wheel risk MEDIUM; Wave 0 cold-start smoke is the mandatory gate). Pin updates over CONTEXT.md: vLLM v0.21.0-cu129 (was v0.20.2); Grafana 12.4.3 (was 11.x — Pitfall G-1); nvidia_gpu_exporter 1.4.1 (was 1.3.0 — Pitfall G-2); Prometheus v3.10.0. D-B5 closed as option (a): separate vllm-embed container (vLLM cannot serve generation + pooling in one process). Tool-call parser closed as `hermes` (CLOSED R-2). EMBED-02 (Ollama Cloud passthrough) deferred to Phase 8 per CONTEXT — the ROADMAP requirement line above includes EMBED-02 but Phase 7 plans cover only six requirements; EMBED-02 lands in Phase 8.
 
 ### Phase 8: Ollama Cloud Fallback + Resilience Hardening
 **Goal:** Land the killer feature ("local when it fits, cloud when it doesn't") in the same phase as the resilience features that protect against retry storms and runaway cloud spend — they share the router surface and shouldn't ship independently.
@@ -224,7 +241,7 @@ Plans:
 | 4. Anthropic Surface — `/v1/messages`, Tool Calling, Vision | 5/5 | Complete | 2026-05-14 |
 | 5. Postgres + Observability Seam | 6/6 | Complete    | 2026-05-15 |
 | 6. Traefik + TLS + Open WebUI | 0/4 | Planned | - |
-| 7. Embeddings + vLLM + GPU Telemetry | 0/0 | Not started | - |
+| 7. Embeddings + vLLM + GPU Telemetry | 0/7 | Planned | - |
 | 8. Ollama Cloud Fallback + Resilience Hardening | 0/0 | Not started | - |
 | 9. Operations Hardening | 0/0 | Not started | - |
 
@@ -244,6 +261,7 @@ Plans:
 - **Phase 3 plans were revised 2026-05-12** in response to `gsd-plan-checker` blockers — see the Wave block above for the new layout (Wave 1: 03-02 owns models.yaml; Waves 2–5 serialize the rest to avoid file-level collisions on `router/models.yaml` and `router/src/app.ts`).
 - **Phase 5 plans added 2026-05-14** — 4 plans across 4 waves; Wave 2 (Plan 02) is the load-bearing observable slice (metrics + recordOutcome + agent-id); Wave 4 (Plan 04) closes SC2 via the pause-postgres-5s smoke regression gate.
 - **Phase 6 plans added 2026-05-16** — 4 plans across 4 waves; all four waves serialize on compose.yml file ownership (Wave 1 owns traefik: block + .env.example, Wave 2 owns router: mutations, Wave 3 owns openwebui: addition, Wave 4 owns smoke + README). Tailscale Services replaces Let's Encrypt-in-Traefik per 06-CONTEXT D-A2 — third path from EDGE-01's enumeration documented in research.
+- **Phase 7 plans added 2026-05-16** — 7 plans across 5 waves (0..4). Wave 0 is the mandatory Pitfall V-1 sm_120 cold-start gate. Wave 1 owns vllm + vllm-embed compose blocks. Wave 2 parallel pair: 07-02 (observability compose + prometheus/grafana provisioning) + 07-03 (router registry widening + VLLMOpenAIAdapter + models.yaml). Wave 3 parallel pair: 07-04 (embeddings route + adapter interface widening) + 07-05 (grafana dashboard JSON + README). Wave 4 closes the phase with smoke + human-verify checkpoint. Plans cover six of the seven Phase 7 requirement IDs; EMBED-02 (Ollama Cloud passthrough) is explicitly deferred to Phase 8 per 07-CONTEXT D-B-deferred — the ROADMAP requirements line above will be updated accordingly when Phase 8 plans land.
 
 ---
 *Roadmap created: 2026-05-10*
@@ -251,3 +269,4 @@ Plans:
 *Phase 3 revision 1 applied: 2026-05-12 — wave reorder + Blocker 4 (D-C3) + Warnings 5/6/7*
 *Phase 5 plans added: 2026-05-14*
 *Phase 6 plans added: 2026-05-16*
+*Phase 7 plans added: 2026-05-16*

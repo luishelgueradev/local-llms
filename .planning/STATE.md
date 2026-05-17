@@ -3,31 +3,31 @@ gsd_state_version: 1.0
 milestone: v0.9.0
 milestone_name: milestone
 status: executing
-stopped_at: "Phase 7 Wave 2 complete (6/7 plans). Wave 3 (07-04 embeddings + 07-05 dashboard) BLOCKED by Claude usage rate limit — resumes 23:00 UTC. Resume with: /clear + /gsd-autonomous --from 7 --skip-research"
-last_updated: "2026-05-16T23:42:05.027Z"
+stopped_at: "Phase 7 Plan 04 (embeddings) complete (07-04 + adapter widening + app.ts wire). Remaining: 07-05 (dashboards) + 07-06 (smoke). Resume with /gsd-autonomous to continue."
+last_updated: "2026-05-17T03:52:13.868Z"
 progress:
   total_phases: 9
   completed_phases: 6
   total_plans: 39
-  completed_plans: 36
-  percent: 92
+  completed_plans: 37
+  percent: 95
 ---
 
 # Project State: local-llms
 
 **Last Updated:** 2026-05-13
-**Status:** Executing Phase 6
+**Status:** Executing Phase 07
 
 ## Project Reference
 
 **Core Value:** Un endpoint único, estable y multi-protocolo para que los agentes del usuario consuman cualquier modelo disponible — local cuando cabe, Ollama Cloud cuando no — sin que el cliente se entere de quién está respondiendo detrás.
 
-**Current Focus:** Phase 6 — Traefik + TLS + Open WebUI
+**Current Focus:** Phase 07 — Embeddings + vLLM + GPU Telemetry
 
 ## Current Position
 
-Phase: 6 (Traefik + TLS + Open WebUI) — EXECUTING
-Plan: 1 of 4
+Phase: 07 (Embeddings + vLLM + GPU Telemetry) — EXECUTING
+Plan: 5 of 7 (07-00..07-04 complete; 07-05 + 07-06 remaining)
 
 - **Milestone:** v1
 - **Phase:** 6
@@ -102,8 +102,8 @@ Overall: ███░░░░░░░ 28% (21/76 v1 requirements)
 
 ## Session Continuity
 
-Last session: 2026-05-16T23:42:04.949Z
-Stopped at: Phase 7 Wave 2 complete (6/7 plans). Wave 3 (07-04 embeddings + 07-05 dashboard) BLOCKED by Claude usage rate limit — resumes 23:00 UTC. Resume with: /clear + /gsd-autonomous --from 7 --skip-research
+Last session: 2026-05-17T03:50:00Z
+Stopped at: Phase 7 Plan 04 (embeddings) complete — POST /v1/embeddings wired into buildApp; BackendAdapter.embeddings() added on all three adapters (ollama+vllm passthrough; llamacpp throws CapabilityNotSupportedError). 520 tests passing. Remaining in Phase 7: 07-05 (dashboards) + 07-06 (live smoke).
 
 **Next action:** Run `/gsd-discuss-phase 4` (recommended) to surface Anthropic-translation tradeoffs (canonical shape, tool-call round-trip, vision routing), or `/gsd-plan-phase --research-phase 4` to research-then-plan in one shot.
 

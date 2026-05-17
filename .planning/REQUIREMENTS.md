@@ -39,7 +39,7 @@
 - [ ] **ROUTE-06**: The router probes per-backend liveness on a schedule and exposes the result on `/readyz`
 - [ ] **ROUTE-07**: Per-backend concurrency cap is configurable via `models.yaml`; excess requests queue or 429
 - [ ] **ROUTE-08**: SSE infrastructure works end-to-end: 15s heartbeat, backpressure via `reply.raw.write()` return-value check + `'drain'` await, `req.raw.on('close')` aborts the upstream `AbortController`
-- [ ] **ROUTE-09**: An `X-Agent-Id` request header is surfaced into structured logs and `request_log` rows
+- [x] **ROUTE-09**: An `X-Agent-Id` request header is surfaced into structured logs and `request_log` rows
 - [ ] **ROUTE-10**: An `X-Model-Backend` response header tells the client which backend served the response
 - [ ] **ROUTE-11**: Server-side per-token-per-minute rate limit is enforced via Valkey
 - [ ] **ROUTE-12**: An `Idempotency-Key` request header attaches retries to the in-flight stream rather than starting a new generation
@@ -47,7 +47,7 @@
 ### OpenAI surface
 
 - [ ] **OAI-01**: `POST /v1/chat/completions` works for non-stream and stream against every local backend
-- [ ] **OAI-02**: `POST /v1/embeddings` works against at least one Ollama embedding model and one vLLM embedding model
+- [x] **OAI-02**: `POST /v1/embeddings` works against at least one Ollama embedding model and one vLLM embedding model
 - [ ] **OAI-03**: `GET /v1/models` lists every registry model with its capabilities (chat, embeddings, vision, tools)
 - [ ] **OAI-04**: SSE responses follow the OpenAI `delta`-based wire format
 - [ ] **OAI-05**: Token usage is echoed in non-stream responses (`prompt_tokens`, `completion_tokens`, `total_tokens`) and in the final SSE chunk for streams
@@ -79,16 +79,16 @@
 
 ### Embeddings
 
-- [ ] **EMBED-01**: `/v1/embeddings` works against Ollama embedding models AND a vLLM-served embedding model
+- [x] **EMBED-01**: `/v1/embeddings` works against Ollama embedding models AND a vLLM-served embedding model
 - [ ] **EMBED-02**: `/v1/embeddings` passthrough works against Ollama Cloud's compat endpoint
 
 ### Data / state
 
-- [ ] **DATA-01**: PostgreSQL 17 service runs in Compose with two logical databases: `router` and `openwebui`
-- [ ] **DATA-02**: `request_log` is populated via a buffered async pipeline (every 1–2 s or N rows) that never blocks the request path
-- [ ] **DATA-03**: Each `request_log` row contains: backend, protocol, model, tokens_in, tokens_out, latency_ms, ttft_ms, error, agent_id, timestamp
-- [ ] **DATA-04**: A `usage_daily` aggregation table is populated from `request_log` for time-series queries
-- [ ] **DATA-05**: A `pg_dump` cron job runs daily; a tested restore drill exists and is documented
+- [x] **DATA-01**: PostgreSQL 17 service runs in Compose with two logical databases: `router` and `openwebui`
+- [x] **DATA-02**: `request_log` is populated via a buffered async pipeline (every 1–2 s or N rows) that never blocks the request path
+- [x] **DATA-03**: Each `request_log` row contains: backend, protocol, model, tokens_in, tokens_out, latency_ms, ttft_ms, error, agent_id, timestamp
+- [x] **DATA-04**: A `usage_daily` aggregation table is populated from `request_log` for time-series queries
+- [x] **DATA-05**: A `pg_dump` cron job runs daily; a tested restore drill exists and is documented
 - [ ] **DATA-06**: Valkey 8 runs as a Compose service used for rate-limit counters and a small `models.yaml` cache
 
 ### Edge / networking
@@ -110,11 +110,11 @@
 
 ### Observability
 
-- [ ] **OBS-01**: A Prometheus `/metrics` endpoint is exposed on the router with request rate, ttft, latency, and per-backend counters
+- [x] **OBS-01**: A Prometheus `/metrics` endpoint is exposed on the router with request rate, ttft, latency, and per-backend counters
 - [ ] **OBS-02**: vLLM `/metrics` and llama.cpp `/metrics` are scraped by Prometheus
 - [ ] **OBS-03**: A GPU exporter (DCGM or `nvidia_gpu_exporter`) is running and scraped
 - [ ] **OBS-04**: A Grafana dashboard shows VRAM utilization, request rate, ttft, error rate, and backend selection
-- [ ] **OBS-05**: `docker compose ps` shows healthy state for every service via real healthchecks
+- [x] **OBS-05**: `docker compose ps` shows healthy state for every service via real healthchecks
 
 ### Operations
 
@@ -220,14 +220,14 @@ Each requirement maps to exactly one phase. Mapping derived from research-recomm
 | VISION-01 | Phase 4 — Anthropic Surface, Tool Calling, Vision | Pending |
 | VISION-02 | Phase 4 — Anthropic Surface, Tool Calling, Vision | Pending |
 | VISION-03 | Phase 4 — Anthropic Surface, Tool Calling, Vision | Pending |
-| DATA-01 | Phase 5 — Postgres + Observability Seam | Pending |
-| DATA-02 | Phase 5 — Postgres + Observability Seam | Pending |
-| DATA-03 | Phase 5 — Postgres + Observability Seam | Pending |
-| DATA-04 | Phase 5 — Postgres + Observability Seam | Pending |
-| DATA-05 | Phase 5 — Postgres + Observability Seam | Pending |
-| OBS-01 | Phase 5 — Postgres + Observability Seam | Pending |
-| OBS-05 | Phase 5 — Postgres + Observability Seam | Pending |
-| ROUTE-09 | Phase 5 — Postgres + Observability Seam | Pending |
+| DATA-01 | Phase 5 — Postgres + Observability Seam | Complete |
+| DATA-02 | Phase 5 — Postgres + Observability Seam | Complete |
+| DATA-03 | Phase 5 — Postgres + Observability Seam | Complete |
+| DATA-04 | Phase 5 — Postgres + Observability Seam | Complete |
+| DATA-05 | Phase 5 — Postgres + Observability Seam | Complete |
+| OBS-01 | Phase 5 — Postgres + Observability Seam | Complete |
+| OBS-05 | Phase 5 — Postgres + Observability Seam | Complete |
+| ROUTE-09 | Phase 5 — Postgres + Observability Seam | Complete |
 | EDGE-01 | Phase 6 — Traefik + TLS + Open WebUI | Pending |
 | EDGE-02 | Phase 6 — Traefik + TLS + Open WebUI | Pending |
 | EDGE-03 | Phase 6 — Traefik + TLS + Open WebUI | Pending |
@@ -240,8 +240,8 @@ Each requirement maps to exactly one phase. Mapping derived from research-recomm
 | WEBUI-04 | Phase 6 — Traefik + TLS + Open WebUI | Pending |
 | WEBUI-05 | Phase 6 — Traefik + TLS + Open WebUI | Pending |
 | BCKND-03 | Phase 7 — Embeddings + vLLM + GPU Telemetry | Pending |
-| OAI-02 | Phase 7 — Embeddings + vLLM + GPU Telemetry | Pending |
-| EMBED-01 | Phase 7 — Embeddings + vLLM + GPU Telemetry | Pending |
+| OAI-02 | Phase 7 — Embeddings + vLLM + GPU Telemetry | Complete |
+| EMBED-01 | Phase 7 — Embeddings + vLLM + GPU Telemetry | Complete |
 | EMBED-02 | Phase 7 — Embeddings + vLLM + GPU Telemetry | Pending |
 | OBS-02 | Phase 7 — Embeddings + vLLM + GPU Telemetry | Pending |
 | OBS-03 | Phase 7 — Embeddings + vLLM + GPU Telemetry | Pending |
