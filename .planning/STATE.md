@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v0.9.0
 milestone_name: milestone
 status: executing
-stopped_at: "Phase 7 Plan 04 (embeddings) complete (07-04 + adapter widening + app.ts wire). Remaining: 07-05 (dashboards) + 07-06 (smoke). Resume with /gsd-autonomous to continue."
-last_updated: "2026-05-17T03:52:13.868Z"
+stopped_at: "Phase 7 Plan 05 (Grafana dashboard + README §Phase 7) complete — local-llms.yml provider + local-llms.json 7-panel dashboard (uid: local-llms) provisioned; README §Phase 7 with 6 operator subsections. OBS-04 complete. Remaining in Phase 7: 07-06 (live smoke)."
+last_updated: "2026-05-17T03:58:27Z"
 progress:
   total_phases: 9
   completed_phases: 6
   total_plans: 39
-  completed_plans: 37
-  percent: 95
+  completed_plans: 38
+  percent: 97
 ---
 
 # Project State: local-llms
@@ -27,7 +27,7 @@ progress:
 ## Current Position
 
 Phase: 07 (Embeddings + vLLM + GPU Telemetry) — EXECUTING
-Plan: 5 of 7 (07-00..07-04 complete; 07-05 + 07-06 remaining)
+Plan: 6 of 7 (07-00..07-05 complete; 07-06 remaining — live smoke)
 
 - **Milestone:** v1
 - **Phase:** 6
@@ -43,7 +43,7 @@ Phase 3: ██████████ 100% (6/6 requirements) — Complete 202
 Phase 4: ░░░░░░░░░░ 0% (0/16 requirements)
 Phase 5: ░░░░░░░░░░ 0% (0/8 requirements)
 Phase 6: ░░░░░░░░░░ 0% (0/11 requirements)
-Phase 7: ░░░░░░░░░░ 0% (0/7 requirements)
+Phase 7: ████████░░ 86% (6/7 requirements) — OBS-04 completed by 07-05
 Phase 8: ░░░░░░░░░░ 0% (0/9 requirements)
 Phase 9: ░░░░░░░░░░ 0% (0/4 requirements)
 
@@ -102,8 +102,8 @@ Overall: ███░░░░░░░ 28% (21/76 v1 requirements)
 
 ## Session Continuity
 
-Last session: 2026-05-17T03:50:00Z
-Stopped at: Phase 7 Plan 04 (embeddings) complete — POST /v1/embeddings wired into buildApp; BackendAdapter.embeddings() added on all three adapters (ollama+vllm passthrough; llamacpp throws CapabilityNotSupportedError). 520 tests passing. Remaining in Phase 7: 07-05 (dashboards) + 07-06 (live smoke).
+Last session: 2026-05-17T03:58:27Z
+Stopped at: Phase 7 Plan 05 (Grafana dashboard + README §Phase 7) complete — local-llms.yml provider + local-llms.json 7-panel dashboard (uid: local-llms; datasource uid prometheus-default at panel + target levels) provisioned. README §Phase 7 covers vLLM profile commands (Pitfall V-2 cold-start), embeddings curls (bge-m3-ollama + bge-m3-vllm, 1024-dim assertion), Grafana access (Tailscale subdomain + LAN bypass), env var generation (openssl rand -hex 24), known operator steps (P-2 chown + G-3 WSL2 fallback + svc:grafana), and Phase 7 smoke test cross-refs. OBS-04 complete. Two deviations (both auto-fixed): Rule 1 router_*_seconds_bucket (not _ms_bucket — source-of-truth in registry.ts); Rule 3 jq missing on host (used node JSON.parse fallback for verification). Remaining in Phase 7: 07-06 (live smoke).
 
 **Next action:** Run `/gsd-discuss-phase 4` (recommended) to surface Anthropic-translation tradeoffs (canonical shape, tool-call round-trip, vision routing), or `/gsd-plan-phase --research-phase 4` to research-then-plan in one shot.
 

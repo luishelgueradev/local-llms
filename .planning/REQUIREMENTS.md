@@ -113,7 +113,7 @@
 - [x] **OBS-01**: A Prometheus `/metrics` endpoint is exposed on the router with request rate, ttft, latency, and per-backend counters
 - [ ] **OBS-02**: vLLM `/metrics` and llama.cpp `/metrics` are scraped by Prometheus
 - [ ] **OBS-03**: A GPU exporter (DCGM or `nvidia_gpu_exporter`) is running and scraped
-- [ ] **OBS-04**: A Grafana dashboard shows VRAM utilization, request rate, ttft, error rate, and backend selection
+- [x] **OBS-04**: A Grafana dashboard shows VRAM utilization, request rate, ttft, error rate, and backend selection
 - [x] **OBS-05**: `docker compose ps` shows healthy state for every service via real healthchecks
 
 ### Operations
@@ -245,7 +245,7 @@ Each requirement maps to exactly one phase. Mapping derived from research-recomm
 | EMBED-02 | Phase 7 — Embeddings + vLLM + GPU Telemetry | Pending |
 | OBS-02 | Phase 7 — Embeddings + vLLM + GPU Telemetry | Pending |
 | OBS-03 | Phase 7 — Embeddings + vLLM + GPU Telemetry | Pending |
-| OBS-04 | Phase 7 — Embeddings + vLLM + GPU Telemetry | Pending |
+| OBS-04 | Phase 7 — Embeddings + vLLM + GPU Telemetry | Complete |
 | CLOUD-01 | Phase 8 — Ollama Cloud Fallback + Resilience Hardening | Pending |
 | CLOUD-02 | Phase 8 — Ollama Cloud Fallback + Resilience Hardening | Pending |
 | CLOUD-03 | Phase 8 — Ollama Cloud Fallback + Resilience Hardening | Pending |

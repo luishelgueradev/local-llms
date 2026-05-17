@@ -199,7 +199,7 @@ Plans:
 
 **Wave 3** *(parallel pair — 07-04 depends on Wave 2 plan 07-03; 07-05 depends on Wave 2 plan 07-02; disjoint file ownership: 07-04 owns router/src/; 07-05 owns grafana/ dashboards + README.md)*
 - [x] 07-04-PLAN.md — BackendAdapter interface widening with .embeddings() + Ollama/vLLM/llama.cpp adapter impls (last throws CapabilityNotSupportedError) + router/src/routes/v1/embeddings.ts (zod + capability gate + recordRequestOutcome) + router/src/app.ts route registration (OAI-02, EMBED-01)
-- [ ] 07-05-PLAN.md — grafana/provisioning/dashboards/local-llms.yml provider + grafana/provisioning/dashboards/local-llms.json (uid:local-llms with 6+ panels per SC4) + README §Phase 7 (profile commands + embeddings curls + Grafana access + env var generation + Pitfalls P-2 + G-3 + V-2 operator steps) (OBS-04)
+- [x] 07-05-PLAN.md — grafana/provisioning/dashboards/local-llms.yml provider + grafana/provisioning/dashboards/local-llms.json (uid:local-llms with 7 panels per SC4) + README §Phase 7 (profile commands + embeddings curls + Grafana access + env var generation + Pitfalls P-2 + G-3 + V-2 operator steps) (OBS-04)
 
 **Wave 4** *(blocked on Waves 1–3; live verification + human-verify checkpoint)*
 - [ ] 07-06-PLAN.md — bin/smoke-test-observability.sh (Prometheus targets up + GPU exporter samples + Grafana datasource + dashboard provisioning) + bin/smoke-test-router.sh extension (Phase 7 section: /v1/embeddings both backends + 1024-dim assertion + capability gate + request_log distinct rows) + human-verify checkpoint against live stack with --profile vllm active (BCKND-03, OAI-02, EMBED-01, OBS-02, OBS-03, OBS-04)
@@ -241,7 +241,7 @@ Plans:
 | 4. Anthropic Surface — `/v1/messages`, Tool Calling, Vision | 5/5 | Complete | 2026-05-14 |
 | 5. Postgres + Observability Seam | 6/6 | Complete    | 2026-05-15 |
 | 6. Traefik + TLS + Open WebUI | 0/4 | Planned | - |
-| 7. Embeddings + vLLM + GPU Telemetry | 0/7 | Planned | - |
+| 7. Embeddings + vLLM + GPU Telemetry | 6/7 | Executing | - |
 | 8. Ollama Cloud Fallback + Resilience Hardening | 0/0 | Not started | - |
 | 9. Operations Hardening | 0/0 | Not started | - |
 
