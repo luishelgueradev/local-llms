@@ -141,6 +141,21 @@ if [[ ! -d "${HOST_DATA_ROOT}" ]]; then
   exit 1
 fi
 
+# Canonicalize HOST_DATA_ROOT itself (WR-01). Operator-provided value may
+# be a symlink (e.g. /srv/local-llms → /mnt/data-volume). Downstream we
+# strip the HOST_DATA_ROOT prefix from `readlink -f`-resolved candidate
+# paths to produce relative paths — if HOST_DATA_ROOT is a literal
+# symlink and ROOT_GGUF/ROOT_HF resolve through it, the strip target
+# differs from the prefix used and no stripping happens. Resolve the
+# root ONCE here and use HOST_DATA_ROOT_CANONICAL everywhere we compute
+# a relative path. The literal HOST_DATA_ROOT stays in user-facing
+# messages so error output keeps matching the operator's mental model.
+HOST_DATA_ROOT_CANONICAL="$(readlink -f "${HOST_DATA_ROOT}" 2>/dev/null || true)"
+if [[ -z "${HOST_DATA_ROOT_CANONICAL}" ]] || [[ ! -d "${HOST_DATA_ROOT_CANONICAL}" ]]; then
+  echo "[gc-models] ERROR: cannot canonicalize HOST_DATA_ROOT=${HOST_DATA_ROOT}" >&2
+  exit 1
+fi
+
 # Resolve the two allowlisted roots once (readlink -f → canonical path).
 ROOT_GGUF="$(readlink -f "${HOST_DATA_ROOT}/models-gguf" 2>/dev/null || true)"
 ROOT_HF="$(readlink -f "${HOST_DATA_ROOT}/models-hf" 2>/dev/null || true)"
@@ -234,8 +249,11 @@ if [[ -d "${ROOT_GGUF}/gguf" ]]; then
           echo "[gc-models] WARN: skipping path outside allowlist: ${f} → ${RESOLVED}" >&2
           continue
         fi
-        # Emit as a path relative to HOST_DATA_ROOT.
-        echo "${RESOLVED#${HOST_DATA_ROOT}/}"
+        # Emit as a path relative to HOST_DATA_ROOT_CANONICAL (WR-01).
+        # Stripping against the literal ${HOST_DATA_ROOT} fails when the
+        # operator-provided path is itself a symlink (e.g. /srv/local-llms
+        # → /mnt/data-volume) because RESOLVED is canonical.
+        echo "${RESOLVED#${HOST_DATA_ROOT_CANONICAL}/}"
       done >> "${CANDIDATES_FILE}"
 fi
 
@@ -255,7 +273,8 @@ find "${ROOT_HF}" \
         echo "[gc-models] WARN: skipping path outside allowlist: ${e} → ${RESOLVED}" >&2
         continue
       fi
-      echo "${RESOLVED#${HOST_DATA_ROOT}/}"
+      # WR-01: strip against canonical root, not the literal operator value.
+      echo "${RESOLVED#${HOST_DATA_ROOT_CANONICAL}/}"
     done >> "${CANDIDATES_FILE}"
 
 CANDIDATE_COUNT="$(wc -l < "${CANDIDATES_FILE}" | tr -d ' ')"
@@ -319,7 +338,13 @@ TOTAL_BYTES=0
 echo ""
 echo "[gc-models] Unreferenced files / dirs:"
 while IFS= read -r REL; do
-  ABS="${HOST_DATA_ROOT}/${REL}"
+  # WR-01: REL was emitted relative to HOST_DATA_ROOT_CANONICAL, so
+  # building the absolute path against the same canonical root ensures
+  # `du -sb` and `-e` see the file (the literal HOST_DATA_ROOT symlink
+  # would also work via kernel resolution, but staying canonical keeps
+  # the path printed alongside `vanished — race?` consistent with the
+  # one downstream `mv` will use).
+  ABS="${HOST_DATA_ROOT_CANONICAL}/${REL}"
   if [[ -e "${ABS}" ]]; then
     # Use du -sb for both files and dirs (apparent size, bytes).
     SIZE_BYTES="$(du -sb "${ABS}" 2>/dev/null | awk '{print $1}')"
@@ -349,7 +374,9 @@ fi
 echo ""
 echo "[gc-models] WARNING: --apply will MOVE the above files into:"
 TS="$(date -u +"%Y-%m-%dT%H-%M-%S")"
-TRASH_DIR="${HOST_DATA_ROOT}/.gc-trash/${TS}"
+# WR-01: trash dir built against canonical root so source + dest live
+# under the same filesystem path (atomic `mv` semantics depend on that).
+TRASH_DIR="${HOST_DATA_ROOT_CANONICAL}/.gc-trash/${TS}"
 echo "[gc-models]            ${TRASH_DIR}/"
 echo "[gc-models]          Trash is NOT auto-purged; remove it manually after"
 echo "[gc-models]          confirming the GC was correct."
@@ -369,12 +396,14 @@ if [[ "${YES}" != "1" ]]; then
 fi
 
 # ─── Move-to-trash (atomic mv within the same filesystem; T-09-D) ────────────
-# Each iteration below does:  mv ${SRC} ${HOST_DATA_ROOT}/.gc-trash/${TS}/${REL}
+# Each iteration below does:  mv ${SRC} ${HOST_DATA_ROOT_CANONICAL}/.gc-trash/${TS}/${REL}
 # This is the load-bearing T-09-D mitigation: `mv` to .gc-trash/ — NEVER `rm`.
+# WR-01: SRC built against canonical root because REL was emitted relative
+# to it; keeps source + dest on the same filesystem for `mv` atomicity.
 mkdir -p "${TRASH_DIR}"
 MOVED=0
 while IFS= read -r REL; do
-  SRC="${HOST_DATA_ROOT}/${REL}"
+  SRC="${HOST_DATA_ROOT_CANONICAL}/${REL}"
   DST="${TRASH_DIR}/${REL}"
   if [[ ! -e "${SRC}" ]]; then
     fail "source vanished (race?): ${SRC}"
