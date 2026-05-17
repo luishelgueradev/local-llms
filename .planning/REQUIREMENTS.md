@@ -17,7 +17,7 @@
 
 - [ ] **BCKND-01**: Ollama backend serves at least one curated model with GPU acceleration verified inside the container
 - [ ] **BCKND-02**: llama.cpp-server backend serves at least one GGUF model with `--n-gpu-layers 99` and `--ctx-size` sized correctly per `--parallel`
-- [ ] **BCKND-03**: vLLM backend serves at least one HuggingFace AWQ model with explicit `--max-model-len` and `--gpu-memory-utilization 0.45`, plus `ipc: host` and `shm_size: 16gb`
+- [x] **BCKND-03**: vLLM backend serves at least one HuggingFace AWQ model with explicit `--max-model-len` and `--gpu-memory-utilization 0.45`, plus `ipc: host` and `shm_size: 16gb`
 - [ ] **BCKND-04**: `models.yaml` declares per-model VRAM budget (max-model-len, expected VRAM share); router rejects load that would exceed the budget
 - [ ] **BCKND-05**: Compose `profiles:` allow the user to bring up only one backend at a time (vLLM, llama.cpp, or Ollama) while keeping the rest of the stack intact
 
@@ -111,8 +111,8 @@
 ### Observability
 
 - [x] **OBS-01**: A Prometheus `/metrics` endpoint is exposed on the router with request rate, ttft, latency, and per-backend counters
-- [ ] **OBS-02**: vLLM `/metrics` and llama.cpp `/metrics` are scraped by Prometheus
-- [ ] **OBS-03**: A GPU exporter (DCGM or `nvidia_gpu_exporter`) is running and scraped
+- [x] **OBS-02**: vLLM `/metrics` and llama.cpp `/metrics` are scraped by Prometheus
+- [x] **OBS-03**: A GPU exporter (DCGM or `nvidia_gpu_exporter`) is running and scraped
 - [x] **OBS-04**: A Grafana dashboard shows VRAM utilization, request rate, ttft, error rate, and backend selection
 - [x] **OBS-05**: `docker compose ps` shows healthy state for every service via real healthchecks
 
@@ -239,12 +239,12 @@ Each requirement maps to exactly one phase. Mapping derived from research-recomm
 | WEBUI-03 | Phase 6 — Traefik + TLS + Open WebUI | Pending |
 | WEBUI-04 | Phase 6 — Traefik + TLS + Open WebUI | Pending |
 | WEBUI-05 | Phase 6 — Traefik + TLS + Open WebUI | Pending |
-| BCKND-03 | Phase 7 — Embeddings + vLLM + GPU Telemetry | Pending |
+| BCKND-03 | Phase 7 — Embeddings + vLLM + GPU Telemetry | Complete |
 | OAI-02 | Phase 7 — Embeddings + vLLM + GPU Telemetry | Complete |
 | EMBED-01 | Phase 7 — Embeddings + vLLM + GPU Telemetry | Complete |
 | EMBED-02 | Phase 7 — Embeddings + vLLM + GPU Telemetry | Pending |
-| OBS-02 | Phase 7 — Embeddings + vLLM + GPU Telemetry | Pending |
-| OBS-03 | Phase 7 — Embeddings + vLLM + GPU Telemetry | Pending |
+| OBS-02 | Phase 7 — Embeddings + vLLM + GPU Telemetry | Complete |
+| OBS-03 | Phase 7 — Embeddings + vLLM + GPU Telemetry | Complete |
 | OBS-04 | Phase 7 — Embeddings + vLLM + GPU Telemetry | Complete |
 | CLOUD-01 | Phase 8 — Ollama Cloud Fallback + Resilience Hardening | Pending |
 | CLOUD-02 | Phase 8 — Ollama Cloud Fallback + Resilience Hardening | Pending |

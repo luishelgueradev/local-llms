@@ -17,7 +17,7 @@ Un endpoint HTTPS único que hable simultáneamente OpenAI y Anthropic, despache
 - [x] **Phase 4: Anthropic Surface — `/v1/messages`, Tool Calling, Vision** ✅ Complete 2026-05-14 — Native Anthropic protocol with typed streaming events, count_tokens, `system`/role-alternation/`anthropic-version` semantics, bidirectional tool translation, and vision in both protocols.
 - [x] **Phase 5: Postgres + Observability Seam** — `request_log` buffered async writes, `usage_daily` aggregation, `pg_dump` cron + tested restore drill, Prometheus `/metrics` on the router, real Compose healthchecks, and `X-Agent-Id` surfaced into logs. (completed 2026-05-15)
 - [ ] **Phase 6: Traefik + TLS + Open WebUI** — Real HTTPS endpoint with four-network topology, SSE-friendly Traefik config, 120s+ E2E streaming verified through the proxy, and Open WebUI on a separate subdomain configured to talk only to the router.
-- [ ] **Phase 7: Embeddings + vLLM + GPU Telemetry** — `/v1/embeddings` (OpenAI surface), vLLM AWQ backend with explicit VRAM partitioning, vLLM/llama.cpp `/metrics` scraped, GPU exporter, and a Grafana dashboard for VRAM/ttft/error rate.
+- [x] **Phase 7: Embeddings + vLLM + GPU Telemetry** — `/v1/embeddings` (OpenAI surface), vLLM AWQ backend with explicit VRAM partitioning, vLLM/llama.cpp `/metrics` scraped, GPU exporter, and a Grafana dashboard for VRAM/ttft/error rate. (completed 2026-05-17)
 - [ ] **Phase 8: Ollama Cloud Fallback + Resilience Hardening** — `backend: ollama-cloud` with bearer auth, circuit breaker, cloud-spend metric, hard `max_tokens` cap, Valkey-backed rate limit, `Idempotency-Key`, and `X-Model-Backend` response header.
 - [ ] **Phase 9: Operations Hardening** — `bin/gc-models.sh` keyed off `models.yaml`, off-host backup destination, disk-usage alert, and documented bearer-token rotation procedure.
 
@@ -185,7 +185,7 @@ Plans:
   3. vLLM `/metrics` and llama.cpp `/metrics` are scraped by Prometheus; a GPU exporter (DCGM or `nvidia_gpu_exporter`) is running and scraped; `nvidia-smi` shows realistic concurrent VRAM usage when one vLLM model and one Ollama model are simultaneously hot (or — per VRAM partitioning policy — only one is hot per Compose profile).
   4. A Grafana dashboard exists and shows VRAM utilization, request rate, time-to-first-token, error rate, and backend selection, fed by both the router metrics (Phase 5) and the new vLLM/llama.cpp/GPU exporters.
   5. The router's request_log shows distinct rows for embedding requests routed to Ollama and vLLM, proving the registry/dispatch layer handles a non-chat protocol surface without code changes specific to embeddings.
-**Plans:** 7 plans
+**Plans:** 7/7 plans complete
 Plans:
 **Wave 0** *(gate — Pitfall V-1 sm_120 cold-start smoke; blocks Wave 1 until OUTCOME is recorded)*
 - [x] 07-00-PLAN.md — bin/smoke-test-vllm-coldstart.sh + human-verify Pitfall V-1 gate + SUMMARY records OUTCOME=locked|fallback-env|fallback-quant (BCKND-03 pre-gate)
@@ -202,7 +202,7 @@ Plans:
 - [x] 07-05-PLAN.md — grafana/provisioning/dashboards/local-llms.yml provider + grafana/provisioning/dashboards/local-llms.json (uid:local-llms with 7 panels per SC4) + README §Phase 7 (profile commands + embeddings curls + Grafana access + env var generation + Pitfalls P-2 + G-3 + V-2 operator steps) (OBS-04)
 
 **Wave 4** *(blocked on Waves 1–3; live verification + human-verify checkpoint)*
-- [ ] 07-06-PLAN.md — bin/smoke-test-observability.sh (Prometheus targets up + GPU exporter samples + Grafana datasource + dashboard provisioning) + bin/smoke-test-router.sh extension (Phase 7 section: /v1/embeddings both backends + 1024-dim assertion + capability gate + request_log distinct rows) + human-verify checkpoint against live stack with --profile vllm active (BCKND-03, OAI-02, EMBED-01, OBS-02, OBS-03, OBS-04)
+- [x] 07-06-PLAN.md — bin/smoke-test-observability.sh (Prometheus targets up + GPU exporter samples + Grafana datasource + dashboard provisioning) + bin/smoke-test-router.sh extension (Phase 7 section: /v1/embeddings both backends + 1024-dim assertion + capability gate + request_log distinct rows) + human-verify checkpoint against live stack with --profile vllm active (BCKND-03, OAI-02, EMBED-01, OBS-02, OBS-03, OBS-04)
 **Research flag:** yes — `/gsd-research-phase` produced `07-RESEARCH.md` closing 6 open items + flagging Pitfall V-1 (sm_120 prebuilt-wheel risk MEDIUM; Wave 0 cold-start smoke is the mandatory gate). Pin updates over CONTEXT.md: vLLM v0.21.0-cu129 (was v0.20.2); Grafana 12.4.3 (was 11.x — Pitfall G-1); nvidia_gpu_exporter 1.4.1 (was 1.3.0 — Pitfall G-2); Prometheus v3.10.0. D-B5 closed as option (a): separate vllm-embed container (vLLM cannot serve generation + pooling in one process). Tool-call parser closed as `hermes` (CLOSED R-2). EMBED-02 (Ollama Cloud passthrough) deferred to Phase 8 per CONTEXT — the ROADMAP requirement line above includes EMBED-02 but Phase 7 plans cover only six requirements; EMBED-02 lands in Phase 8.
 
 ### Phase 8: Ollama Cloud Fallback + Resilience Hardening
@@ -241,7 +241,7 @@ Plans:
 | 4. Anthropic Surface — `/v1/messages`, Tool Calling, Vision | 5/5 | Complete | 2026-05-14 |
 | 5. Postgres + Observability Seam | 6/6 | Complete    | 2026-05-15 |
 | 6. Traefik + TLS + Open WebUI | 0/4 | Planned | - |
-| 7. Embeddings + vLLM + GPU Telemetry | 6/7 | Executing | - |
+| 7. Embeddings + vLLM + GPU Telemetry | 7/7 | Complete   | 2026-05-17 |
 | 8. Ollama Cloud Fallback + Resilience Hardening | 0/0 | Not started | - |
 | 9. Operations Hardening | 0/0 | Not started | - |
 

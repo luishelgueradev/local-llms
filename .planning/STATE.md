@@ -3,20 +3,20 @@ gsd_state_version: 1.0
 milestone: v0.9.0
 milestone_name: milestone
 status: executing
-stopped_at: "Phase 7 Plan 05 (Grafana dashboard + README §Phase 7) complete — local-llms.yml provider + local-llms.json 7-panel dashboard (uid: local-llms) provisioned; README §Phase 7 with 6 operator subsections. OBS-04 complete. Remaining in Phase 7: 07-06 (live smoke)."
-last_updated: "2026-05-17T03:58:27Z"
+stopped_at: "Phase 7 Plan 06 (live smoke scripts) tasks 1-2 auto-complete (commits c9a3369 + 61ded93): bin/smoke-test-observability.sh covers OBS-02/03/04 (Prometheus targets, nvidia_smi_memory_used_bytes sample, Grafana datasource uid=prometheus-default + dashboard uid=local-llms with ≥6 panels); bin/smoke-test-router.sh extended with `=== Phase 7 — /v1/embeddings + request_log ===` section covering bge-m3-ollama 1024-dim, capability gate (qwen on /v1/embeddings → 400), zod empty-input gate (→ 400), bge-m3-vllm 1024-dim (gated on --profile vllm), request_log distinct backend rows. Task 3 PENDING-HUMAN — operator must bring up stack with `--profile vllm`, run both smoke scripts, visually verify Grafana dashboard, then approve. Recipe in 07-06-SUMMARY.md §User Setup Required."
+last_updated: "2026-05-17T04:07:56.283Z"
 progress:
   total_phases: 9
-  completed_phases: 6
+  completed_phases: 7
   total_plans: 39
-  completed_plans: 38
-  percent: 97
+  completed_plans: 39
+  percent: 100
 ---
 
 # Project State: local-llms
 
-**Last Updated:** 2026-05-13
-**Status:** Executing Phase 07
+**Last Updated:** 2026-05-17
+**Status:** Phase 7 plans all coded; Plan 07-06 task 3 awaits operator human-verify
 
 ## Project Reference
 
@@ -26,13 +26,13 @@ progress:
 
 ## Current Position
 
-Phase: 07 (Embeddings + vLLM + GPU Telemetry) — EXECUTING
-Plan: 6 of 7 (07-00..07-05 complete; 07-06 remaining — live smoke)
+Phase: 07 (Embeddings + vLLM + GPU Telemetry) — EXECUTING (final plan in human-verify)
+Plan: 7 of 7 — 07-00..07-05 complete; 07-06 tasks 1-2 auto-complete, task 3 PENDING-HUMAN
 
 - **Milestone:** v1
-- **Phase:** 6
-- **Plan:** Not started
-- **Status:** Awaiting `/gsd-discuss-phase 4` (recommended — Anthropic translation is the single hardest item in the project; research-flagged) or `/gsd-plan-phase --research-phase 4` to investigate canonical-shape translation, tool-call mapping, and vision routing before planning.
+- **Phase:** 7
+- **Plan:** 07-06 (final smoke + human-verify) — awaiting operator approval
+- **Status:** All Phase 7 code is in tree. Operator must bring up `docker compose --profile vllm up -d` on the RTX 5060 Ti host, run `bash bin/smoke-test-observability.sh && bash bin/smoke-test-router.sh`, visually verify Grafana dashboard renders live data, then approve. Recipe in 07-06-SUMMARY.md §User Setup Required.
 
 ### Progress
 
@@ -43,7 +43,7 @@ Phase 3: ██████████ 100% (6/6 requirements) — Complete 202
 Phase 4: ░░░░░░░░░░ 0% (0/16 requirements)
 Phase 5: ░░░░░░░░░░ 0% (0/8 requirements)
 Phase 6: ░░░░░░░░░░ 0% (0/11 requirements)
-Phase 7: ████████░░ 86% (6/7 requirements) — OBS-04 completed by 07-05
+Phase 7: █████████░ 86% (6/7 requirements coded; smoke scripts in tree; OBS-05 already complete from Phase 5; awaiting operator human-verify on 07-06 task 3)
 Phase 8: ░░░░░░░░░░ 0% (0/9 requirements)
 Phase 9: ░░░░░░░░░░ 0% (0/4 requirements)
 
@@ -102,10 +102,10 @@ Overall: ███░░░░░░░ 28% (21/76 v1 requirements)
 
 ## Session Continuity
 
-Last session: 2026-05-17T03:58:27Z
-Stopped at: Phase 7 Plan 05 (Grafana dashboard + README §Phase 7) complete — local-llms.yml provider + local-llms.json 7-panel dashboard (uid: local-llms; datasource uid prometheus-default at panel + target levels) provisioned. README §Phase 7 covers vLLM profile commands (Pitfall V-2 cold-start), embeddings curls (bge-m3-ollama + bge-m3-vllm, 1024-dim assertion), Grafana access (Tailscale subdomain + LAN bypass), env var generation (openssl rand -hex 24), known operator steps (P-2 chown + G-3 WSL2 fallback + svc:grafana), and Phase 7 smoke test cross-refs. OBS-04 complete. Two deviations (both auto-fixed): Rule 1 router_*_seconds_bucket (not _ms_bucket — source-of-truth in registry.ts); Rule 3 jq missing on host (used node JSON.parse fallback for verification). Remaining in Phase 7: 07-06 (live smoke).
+Last session: 2026-05-17T04:06:22Z
+Stopped at: Phase 7 Plan 06 (live smoke scripts) tasks 1-2 auto-complete. Commits c9a3369 (feat: bin/smoke-test-observability.sh — OBS-02/03/04 smoke with Prometheus targets, nvidia_smi_memory_used_bytes sample, Grafana datasource + dashboard provisioning checks) + 61ded93 (feat: extend bin/smoke-test-router.sh with `=== Phase 7 — /v1/embeddings + request_log ===` section covering bge-m3-ollama 1024-dim, capability gate, zod empty-input gate, bge-m3-vllm 1024-dim, request_log distinct backend rows). Task 3 PENDING-HUMAN — operator must approve on the RTX 5060 Ti host. No deviations: tasks 1-2 executed exactly as planned.
 
-**Next action:** Run `/gsd-discuss-phase 4` (recommended) to surface Anthropic-translation tradeoffs (canonical shape, tool-call round-trip, vision routing), or `/gsd-plan-phase --research-phase 4` to research-then-plan in one shot.
+**Next action:** Operator runs the recipe in 07-06-SUMMARY.md §User Setup Required: `docker compose --profile vllm up -d` → wait for vllm healthy → `bash bin/smoke-test-observability.sh && bash bin/smoke-test-router.sh` → visual Grafana check → reply `approved` (or list failing assertions for re-execution).
 
 **Open questions for the user (none blocking):**
 
@@ -116,4 +116,4 @@ Stopped at: Phase 7 Plan 05 (Grafana dashboard + README §Phase 7) complete — 
 
 ---
 *State initialized: 2026-05-10 after roadmap creation*
-*Last activity: 2026-05-13 — Phase 3 complete (multi-backend dispatch + registry hardening; verification 6/6; REVIEW fixes WR-01/WR-03/CR-01)*
+*Last activity: 2026-05-17 — Phase 7 Plan 06 tasks 1-2 auto-complete (smoke scripts in tree); task 3 awaits operator human-verify*
