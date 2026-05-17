@@ -190,10 +190,14 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
     const isAnthropicRoute = route.startsWith('/v1/messages');
     const status = mapToHttpStatus(err);
 
-    // D-D4 — coverage policy. Record /v1/chat/completions and /v1/messages
-    // outcomes (but NOT /v1/messages/count_tokens and NOT 401 BearerAuthError).
+    // D-D4 — coverage policy. Record /v1/chat/completions, /v1/messages, and
+    // /v1/embeddings (Plan 07-04) outcomes (but NOT /v1/messages/count_tokens
+    // and NOT 401 BearerAuthError — D-D4 forbids recording pre-auth failures).
     const isRecordedRoute =
-      (route === '/v1/chat/completions' || route === '/v1/messages') && status !== 401;
+      (route === '/v1/chat/completions' ||
+        route === '/v1/messages' ||
+        route === '/v1/embeddings') &&
+      status !== 401;
     if (isRecordedRoute && req.__recorded !== true) {
       req.__recorded = true;
       recordOutcome({
