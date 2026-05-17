@@ -210,11 +210,16 @@ let app: FastifyInstance;
 let valkey: ValkeyMock;
 let adapter: BackendAdapter;
 let calls: { count: number };
+// Wall-clock fake for the rate-limit hook. Advances independently of
+// valkey.now (breaker uses valkey.now via breakerNow; the rate-limit hook
+// uses this clock via rateLimitNow).
+let rateLimitClock = { now: 0 };
 
 async function setup(opts: { token?: string; withValkey?: boolean } = {}): Promise<void> {
   const token = opts.token ?? TOKEN_A;
   const withValkey = opts.withValkey !== false; // default true
   valkey = new ValkeyMock();
+  rateLimitClock = { now: 0 };
   ({ adapter, calls } = makeFakeAdapter());
   const registry = makeRegistryStore(loadRegistryFromString(YAML));
   app = await buildApp({
@@ -236,6 +241,7 @@ async function setup(opts: { token?: string; withValkey?: boolean } = {}): Promi
           valkey: valkey as unknown as ValkeyClient,
           env: TEST_ENV,
           breakerNow: () => valkey.now,
+          rateLimitNow: () => rateLimitClock.now,
         }
       : {}),
   });
@@ -426,7 +432,7 @@ describe('Rate-limit integration — Plan 08-06 (ROUTE-11)', () => {
 
   it('Test 6: rollover — trip 429; advance time past 60s; next request passes', async () => {
     await setup();
-    // Burn the bucket.
+    // Burn the bucket at minute=0.
     for (let i = 0; i < 5; i++) {
       await app.inject({
         method: 'POST',
@@ -438,7 +444,7 @@ describe('Rate-limit integration — Plan 08-06 (ROUTE-11)', () => {
         payload: { model: LOCAL_MODEL, messages: [{ role: 'user', content: 'hi' }] },
       });
     }
-    // 6th -> 429.
+    // 6th -> 429 (still minute=0).
     const blocked = await app.inject({
       method: 'POST',
       url: '/v1/chat/completions',
@@ -451,33 +457,23 @@ describe('Rate-limit integration — Plan 08-06 (ROUTE-11)', () => {
     expect(blocked.statusCode).toBe(429);
     expect(calls.count).toBe(5);
 
-    // Advance mock-time past the minute boundary. The rate-limit hook uses
-    // Date.now() by default — we can't redirect it via opts.breakerNow (that's
-    // breaker-specific). For this test, we exploit the Valkey TTL mechanism:
-    // valkey.tick advances mock time so the OLD bucket's TTL fires and the
-    // new INCR lands on a fresh key. BUT — the hook computes minute from
-    // Date.now(), not from valkey.now. So we need to use real fake timers.
-    //
-    // Use vi.useFakeTimers with setSystemTime to advance the wall clock.
-    const { vi } = await import('vitest');
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date(60_001));
-    try {
-      // 7th request after rollover -> new bucket, count=1 -> 200.
-      const next = await app.inject({
-        method: 'POST',
-        url: '/v1/chat/completions',
-        headers: {
-          authorization: `Bearer ${TOKEN_A}`,
-          'content-type': 'application/json',
-        },
-        payload: { model: LOCAL_MODEL, messages: [{ role: 'user', content: 'hi' }] },
-      });
-      expect(next.statusCode).toBe(200);
-      expect(calls.count).toBe(6);
-    } finally {
-      vi.useRealTimers();
-    }
+    // Advance the rate-limit hook's clock past the minute boundary. The
+    // rateLimitNow injection seam (buildApp BuildAppOpts) keeps Fastify's
+    // internal timers on real-time so app.inject doesn't hang. minute=1 now.
+    rateLimitClock.now = 60_001;
+
+    // 7th request after rollover -> new bucket, count=1 -> 200.
+    const next = await app.inject({
+      method: 'POST',
+      url: '/v1/chat/completions',
+      headers: {
+        authorization: `Bearer ${TOKEN_A}`,
+        'content-type': 'application/json',
+      },
+      payload: { model: LOCAL_MODEL, messages: [{ role: 'user', content: 'hi' }] },
+    });
+    expect(next.statusCode).toBe(200);
+    expect(calls.count).toBe(6);
   });
 
   it('Test 7: no Valkey -> rate-limit hook NOT registered; 100 requests pass', async () => {

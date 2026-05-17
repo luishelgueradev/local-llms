@@ -41,8 +41,10 @@ import {
   truncateAndRedact,
 } from './metrics/recordOutcome.js';
 import { agentIdPreHandler as defaultAgentIdPreHandler } from './middleware/agentId.js';
+import { makeRateLimitPreHandler } from './middleware/rateLimit.js';
 import { closeValkey, type ValkeyClient } from './clients/valkey.js';
 import { makeCircuitBreaker, type CircuitBreaker } from './resilience/circuitBreaker.js';
+import { RateLimitExceededError } from './errors/envelope.js';
 import type { Env } from './config/env.js';
 import type { Logger } from 'pino';
 
@@ -160,13 +162,19 @@ export interface BuildAppOpts {
    * fixtures omit unless exercising the breaker (in which case they pass an
    * explicit numeric subset alongside opts.valkey).
    *
-   * When opts.valkey OR opts.env is absent, buildApp constructs a no-op
-   * breaker (check always 'closed', record* are no-ops) so existing tests
-   * built without these fields continue to work unmodified.
+   * Plan 08-06 (ROUTE-11) widening — ROUTER_RATE_LIMIT_RPM joins the env
+   * subset so buildApp can construct the rate-limit hook against the same
+   * Pick<Env, ...> shape. The gate is the same as the breaker's:
+   * `opts.valkey && opts.env` — when either is absent, neither the breaker
+   * NOR the rate-limit hook are registered, preserving the "test fixtures
+   * built without these fields continue to work unmodified" contract.
    */
   env?: Pick<
     Env,
-    'CIRCUIT_FAILURE_THRESHOLD' | 'CIRCUIT_WINDOW_MS' | 'CIRCUIT_COOLDOWN_MS'
+    | 'CIRCUIT_FAILURE_THRESHOLD'
+    | 'CIRCUIT_WINDOW_MS'
+    | 'CIRCUIT_COOLDOWN_MS'
+    | 'ROUTER_RATE_LIMIT_RPM'
   >;
   /**
    * Plan 08-04 — test injection seam for the breaker's clock. Tests can pass
@@ -175,6 +183,14 @@ export interface BuildAppOpts {
    * not pass this field.
    */
   breakerNow?: () => number;
+  /**
+   * Plan 08-06 — test injection seam for the rate-limit hook's clock.
+   * Mirrors `breakerNow`: tests advance fake-time deterministically without
+   * `vi.useFakeTimers` (which freezes Fastify's internal timers and breaks
+   * `app.inject`). When omitted, the hook uses `Date.now`. Production
+   * wiring does not pass this field.
+   */
+  rateLimitNow?: () => number;
 }
 
 /**
@@ -219,6 +235,24 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
   // Using 'onRequest' (not 'preHandler') ensures auth is the first gate (Rule 1 fix).
   app.addHook('onRequest', makeBearerHook(opts.bearerToken));
 
+  // Plan 08-06 (ROUTE-11) — per-bearer-token-per-minute rate limit. Runs AFTER
+  // bearer auth (we need a validated token to hash) and BEFORE body parsing
+  // (don't waste parser cycles on requests we'd reject). Gate: only register
+  // when BOTH opts.valkey AND opts.env are present — preserves the contract
+  // that pre-08-06 test fixtures (no valkey, no env) are unaffected.
+  //
+  // Fails open on Valkey errors — the hook logs warn and proceeds. Rationale
+  // in middleware/rateLimit.ts header.
+  if (opts.valkey && opts.env) {
+    const rateLimitPreHandler = makeRateLimitPreHandler({
+      valkey: opts.valkey,
+      log: app.log as Logger,
+      rpmLimit: opts.env.ROUTER_RATE_LIMIT_RPM,
+      now: opts.rateLimitNow,
+    });
+    app.addHook('onRequest', rateLimitPreHandler);
+  }
+
   // Plan 05-02 (D-D5 / ROUTE-09) — X-Agent-Id preHandler runs AFTER bearer
   // auth (onRequest) and BEFORE the route handler. Hook ordering verified
   // against fastify.dev/docs/v5.8.x/Reference/Hooks/: onRequest → ... →
@@ -259,6 +293,18 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
     const route = url.split('?')[0] ?? '';
     const isAnthropicRoute = route.startsWith('/v1/messages');
     const status = mapToHttpStatus(err);
+
+    // Plan 08-06 (ROUTE-11) — stamp Retry-After: 60 on RateLimitExceededError
+    // BEFORE serializing the envelope. The 60s is fixed (one minute window;
+    // the next epoch_minute bucket starts after ≤60s). Co-located with the
+    // envelope mapping so the header + body stay in sync if the wire shape
+    // ever evolves. Mirrors the BackendSaturatedError pattern in
+    // chat-completions.ts (where Retry-After is stamped on the route side
+    // before throwing — the centralized path covers the rate-limit case
+    // because the hook throws BEFORE the route handler runs).
+    if (err instanceof RateLimitExceededError) {
+      void reply.header('Retry-After', '60');
+    }
 
     // D-D4 — coverage policy. Record /v1/chat/completions, /v1/messages, and
     // /v1/embeddings (Plan 07-04) outcomes (but NOT /v1/messages/count_tokens

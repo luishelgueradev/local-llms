@@ -116,10 +116,15 @@ async function main(): Promise<void> {
     // Plan 08-04 (CLOUD-03 / D-B2) — env subset for the per-backend circuit
     // breaker. Pairs with `valkey` above: buildApp constructs a real Valkey-
     // backed breaker only when both fields are present.
+    //
+    // Plan 08-06 (ROUTE-11 / D-D3) — ROUTER_RATE_LIMIT_RPM joins the subset;
+    // the rate-limit hook is registered under the same `opts.valkey && opts.env`
+    // gate as the breaker. Production wiring always provides both.
     env: {
       CIRCUIT_FAILURE_THRESHOLD: env.CIRCUIT_FAILURE_THRESHOLD,
       CIRCUIT_WINDOW_MS: env.CIRCUIT_WINDOW_MS,
       CIRCUIT_COOLDOWN_MS: env.CIRCUIT_COOLDOWN_MS,
+      ROUTER_RATE_LIMIT_RPM: env.ROUTER_RATE_LIMIT_RPM,
     },
   });
 
