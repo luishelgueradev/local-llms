@@ -825,6 +825,194 @@ docker compose exec -T traefik wget -qO- http://router:3000/metrics | head -5
 # Expected: # HELP process_cpu_user_seconds_total ...
 ```
 
+## Phase 7 — Embeddings + vLLM + GPU Telemetry
+
+Phase 7 adds three things: a `POST /v1/embeddings` route (Ollama + vLLM,
+both serving `bge-m3` at 1024 dims); `vllm/vllm-openai` as an opt-in
+heavyweight backend behind Compose profile `vllm` (Qwen2.5-7B-AWQ chat +
+bge-m3 embed); and a Prometheus + Grafana + nvidia_gpu_exporter
+observability stack that scrapes the router's `/metrics`, the vLLM
+internal `/metrics`, and the GPU.
+
+### vLLM profile commands
+
+vLLM is **not** on the default profile — `docker compose up -d` brings
+up Phase 1-6 services without it.
+
+```bash
+# Start vLLM (chat + embed pair) without disturbing Ollama:
+docker compose --profile vllm up -d vllm vllm-embed
+
+# Switch from Ollama-hot to vLLM-hot (single-backend-hot-at-a-time policy):
+docker compose stop ollama
+docker compose --profile vllm up -d vllm vllm-embed
+
+# Tear vLLM down again:
+docker compose --profile vllm down
+```
+
+> **Cold-start expectation (Pitfall V-2).** vLLM's first boot takes
+> **up to 10 minutes** on this hardware. vLLM runs `torch.compile` plus
+> CUDA-graph capture before the healthcheck starts passing, even with a
+> warm HuggingFace cache. The Compose healthcheck's `start_period: 600s`
+> covers this — DO NOT `docker compose down` while waiting. Watch progress:
+>
+> ```bash
+> docker compose logs -f vllm | grep -E 'Capturing CUDA graphs|Loading model'
+> ```
+>
+> The `Capturing CUDA graphs` marker is the literal log line that signals
+> the slow JIT step is in progress.
+
+### Embeddings curl recipes
+
+`models.yaml` declares two embedding-capable models:
+
+- `bge-m3-ollama` — Ollama backend; available under any default-profile
+  boot once you've pulled `bge-m3` into Ollama.
+- `bge-m3-vllm` — vLLM backend; requires `--profile vllm` to be up.
+
+Both expose the same dense 1024-dimensional vector head (Pitfall E-2 —
+documented dimension parity across backends).
+
+**One-time:** pull `bge-m3` into Ollama (~2.3 GB):
+
+```bash
+docker compose exec -T ollama ollama pull bge-m3
+```
+
+**Embed via Ollama:**
+
+```bash
+curl -fsS -X POST http://127.0.0.1:3000/v1/embeddings \
+  -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"bge-m3-ollama","input":"Hola mundo"}' \
+  | jq '.data[0].embedding | length'
+# Expected: 1024
+```
+
+**Embed via vLLM** (only after `docker compose --profile vllm up -d` is up
+and `vllm-embed` is healthy):
+
+```bash
+curl -fsS -X POST http://127.0.0.1:3000/v1/embeddings \
+  -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"bge-m3-vllm","input":"Hola mundo"}' \
+  | jq '.data[0].embedding | length'
+# Expected: 1024 (same dims as Ollama — Pitfall E-2 cross-validation)
+```
+
+Batch input is supported (array of strings); empty string / empty array
+is rejected at the route boundary with `400 invalid_request_error`
+(Pitfall E-1).
+
+### Grafana access
+
+Grafana is provisioned with one dashboard (`uid: local-llms`) and the
+Prometheus datasource pinned at `uid: prometheus-default` (Pitfall P-1).
+Two ways to reach it:
+
+- **Tailscale subdomain** (preferred — once the operator registers the
+  third Tailscale Service `svc:grafana` in the admin console, same
+  pattern as Phase 6's `svc:router` + `svc:chat`):
+  ```
+  https://grafana.${TAILNET_HOSTNAME}.ts.net
+  ```
+
+- **LAN bypass** (until the admin-console service registration lands —
+  reuses Phase 6's basic-auth middleware on the loopback path):
+  ```bash
+  curl -fsS -H "Host: grafana.${TAILNET_HOSTNAME}.ts.net" \
+       -u "${TRAEFIK_BASIC_AUTH_USER}:${TRAEFIK_BASIC_AUTH_PASS_PLAIN}" \
+       http://127.0.0.1:80/login
+  ```
+
+Grafana admin login: `admin` / `${GRAFANA_ADMIN_PASSWORD}` (set in
+`.env` — see "Env var generation" below). After login, the dashboard
+URL is `/d/local-llms/local-llms-router-gpu-backends`.
+
+### Env var generation
+
+Phase 7 introduces one new mandatory env var (`GRAFANA_ADMIN_PASSWORD`)
+plus one optional one (`HUGGINGFACE_HUB_TOKEN`).
+
+```bash
+# Mandatory — Grafana admin password (Plan 07-01 added the .env.example entry):
+echo "GRAFANA_ADMIN_PASSWORD=$(openssl rand -hex 24)" >> .env
+
+# Optional — HuggingFace token for vLLM model pulls.
+# Both Phase 7 HF models (Qwen/Qwen2.5-7B-Instruct-AWQ and BAAI/bge-m3) are
+# public, so this is only needed if you later pin a gated model.
+# echo "HUGGINGFACE_HUB_TOKEN=hf_xxxxxxxxxxxxxxxx" >> .env
+```
+
+### Known operator steps (one-time, post-deploy)
+
+Three operator-side steps are NOT done by `docker compose up`. Each is
+the same shape as a Phase 5 / Phase 6 one-time setup.
+
+- **Pitfall P-2 — Prometheus bind-mount ownership.** The
+  `prom/prometheus` image runs as UID 65534 (`nobody`). The host
+  directory at `${HOST_DATA_ROOT}/prometheus` is initially root-owned
+  (Docker auto-creates bind-mount sources as root). Without the chown,
+  prometheus exits at startup with `opening storage failed: permission
+  denied`. Fix once:
+  ```bash
+  sudo chown -R 65534:65534 ${HOST_DATA_ROOT:-/srv/local-llms}/prometheus
+  ```
+  `bin/bootstrap-host.sh` runs this chown automatically when invoked
+  with a TTY-attached sudo (same pattern as Phase 5's postgres UID 70
+  chown). Re-running it is idempotent.
+
+- **Pitfall G-3 — WSL2 `libnvidia-ml.so` path fallback.** The
+  `nvidia_gpu_exporter` service bind-mounts the host's `nvidia-smi`
+  binary and `libnvidia-ml.so.1` into the container. On native Linux,
+  the host paths are `/usr/bin/nvidia-smi` and
+  `/usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1`. On **WSL2 with Docker
+  Desktop**, the Windows-projected driver lives under
+  `/usr/lib/wsl/lib/` instead — the standard Linux paths do not exist
+  on the host. Plan 07-02's compose.yml uses the WSL2 source paths by
+  default (this is the right pick for the current host). If you deploy
+  on bare Linux, swap the commented `# native-Linux:` lines next to the
+  bind-mounts in the `nvidia_gpu_exporter` service block. Verify with:
+  ```bash
+  docker compose logs nvidia_gpu_exporter | grep -iE 'libnvidia-ml|cannot open'
+  # Empty output = healthy. Errors = bind-mount source path needs to be flipped.
+  ```
+
+- **Tailscale Service `svc:grafana`.** Same admin-console-defines-then-CLI-advertises
+  flow as Phase 6's `svc:router` + `svc:chat`:
+  1. <https://login.tailscale.com/admin> → Services → Advertise → Define
+     a Service named `grafana` with endpoint `tcp:443`.
+  2. On the host:
+     ```bash
+     sudo tailscale serve --service=svc:grafana --https=443 127.0.0.1:80
+     ```
+  Until both steps are done, Grafana is reachable only via the LAN
+  bypass `curl` above.
+
+### Phase 7 smoke tests
+
+Three Phase 7 scripts under `bin/` validate the new surface end-to-end:
+
+- `bin/smoke-test-vllm-coldstart.sh` — Wave 0 sm_120 kernel preflight
+  (Pitfall V-1), runs BEFORE bringing the vllm profile up so we don't
+  burn a 10-minute boot on a broken kernel.
+- `bin/smoke-test-observability.sh` — Prometheus targets all `up`, the
+  Grafana datasource is provisioned (`/api/datasources/uid/prometheus-default`
+  returns 200), the dashboard is provisioned
+  (`/api/dashboards/uid/local-llms` returns 200), and the GPU exporter
+  is returning numeric `nvidia_smi_memory_used_bytes`.
+- `bin/smoke-test-router.sh` — extended in Plan 07-06 with `/v1/embeddings`
+  curls against BOTH `bge-m3-ollama` and `bge-m3-vllm`, asserting
+  `.data[0].embedding | length == 1024` on each.
+
+Plan 07-06 brings these scripts in. Until then, the dashboard + provisioning
+files in this plan are inert — they get exercised on the next `docker compose
+up -d` run with `${GRAFANA_ADMIN_PASSWORD}` set in `.env`.
+
 ## Anti-patterns rejected by this stack
 
 - `:latest` image tags anywhere — every image pinned to a specific tag.
