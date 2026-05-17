@@ -304,9 +304,18 @@ fi
 # Consolidated trap (WR-03) already covers UNREF_FILE lazily.
 UNREF_FILE="$(mktemp)"
 
-# Each line of CLASSIFIED_FILE: <0|1><TAB><reason><TAB><relPath>
-# Filter referenced=0 only.
-while IFS=$'\t' read -r REF REASON RELPATH; do
+# WR-04: each RECORD of CLASSIFIED_FILE has the wire format:
+#   <0|1> RS <reason> RS <relPath> NUL
+# where RS = ASCII Record Separator (0x1e) is the field separator and
+# NUL (0x00) is the record terminator. We switched from a TAB-separated
+# format because paths may legally contain TAB characters (rare but
+# possible under `find`-emitted output) — only NUL is guaranteed-absent
+# from any POSIX path. Bash's `read` cannot use NUL as a field separator
+# (it silently strips NULs from the input stream), so we use NUL as the
+# OUTER (record) separator: `read -d ''` reads until the next NUL, then
+# `IFS=$'\x1e'` splits the three fields. The two-byte wire-format
+# constants are mirrored in router/scripts/gc-classify.ts — keep in sync.
+while IFS=$'\x1e' read -r -d '' REF REASON RELPATH; do
   if [[ "${REF}" == "0" ]] && [[ -n "${RELPATH}" ]]; then
     echo "${RELPATH}" >> "${UNREF_FILE}"
   fi
