@@ -161,6 +161,19 @@ interface TerminalPayload {
 
 interface StreamEventPayload {
   event: unknown;
+  /**
+   * 08-REVIEW CR-02 fix: monotonic per-key sequence number assigned by the
+   * leader on PUBLISH. Followers use this to deduplicate against the LRANGE
+   * replay window — see `awaitStreamResult` for the drop rule.
+   *
+   * The CACHED chunks list (RPUSH) does NOT need the seq embedded — the
+   * LRANGE position implicitly identifies each chunk's seq (the index of
+   * `chunks[i]` IS `i`). The seq is only required on the PUBLISH path so
+   * the follower can correlate a live channel message back to its LRANGE
+   * index. Optional in the channel payload so older publishers (pre-fix)
+   * and the terminal-only path stay parseable.
+   */
+  seq?: number;
 }
 
 type ChannelMessage = TerminalPayload | StreamEventPayload;
@@ -294,18 +307,46 @@ export function makeIdempotencyMultiplexer(
   }
 
   async function publishStreamEvent(key: string, event: unknown): Promise<void> {
-    const payload: StreamEventPayload = { event };
-    const serialized = JSON.stringify(payload);
-    // RPUSH for follower LRANGE replay; PUBLISH for live followers.
-    // Both fail-soft (log + continue) so a Valkey blip doesn't break the
-    // upstream stream from the leader's POV.
+    // 08-REVIEW CR-02 fix: publish-with-seq to avoid the duplicate-event race.
+    //
+    // Race scenario this guards against (pre-fix):
+    //   1. Leader publishes event E (RPUSH chunks, then PUBLISH channel).
+    //   2. Follower subscribed BEFORE the leader published E but had NOT yet
+    //      run its LRANGE replay.
+    //   3. The follower's pub/sub handler receives E (queued live).
+    //   4. The follower runs LRANGE and pulls E from the cached list.
+    //   → Result: E is emitted TWICE on the wire (duplicate content delta).
+    //
+    // Fix: include a monotonic seq number on the PUBLISH payload. The seq is
+    // the chunks-list index assigned by RPUSH (rpush returns the new list
+    // length, so the appended item's index is `newLen - 1`). The cached
+    // payload (in the list) is serialized WITHOUT seq — the list index itself
+    // identifies seq during LRANGE replay. The publish payload carries seq so
+    // the follower can dedupe against the maxReplayedSeq watermark observed
+    // during replay (see awaitStreamResult below).
+    //
+    // The RPUSH-then-build-publish ordering keeps the seq authoritative: a
+    // crash between RPUSH and PUBLISH means the chunks list has the event but
+    // the channel didn't see it — followers find it during LRANGE replay or
+    // the subsequent reconnect. A crash AFTER both means the leader is gone
+    // and the follower will time out on the terminal marker (same behavior
+    // as today).
+    //
+    // Both calls remain fail-soft (log + continue) so a Valkey blip doesn't
+    // break the upstream stream from the leader's POV.
+    const cachedPayload: StreamEventPayload = { event };
+    const cachedSerialized = JSON.stringify(cachedPayload);
+    let seq: number | undefined;
     try {
-      await valkey.rpush(keys.chunks(key), serialized);
+      const newLen = await valkey.rpush(keys.chunks(key), cachedSerialized);
+      seq = newLen - 1;
     } catch (err) {
       log.warn({ err, key }, 'idempotency: rpush chunks failed');
     }
     try {
-      await valkey.publish(keys.channel(key), serialized);
+      const publishPayload: StreamEventPayload =
+        seq !== undefined ? { event, seq } : { event };
+      await valkey.publish(keys.channel(key), JSON.stringify(publishPayload));
     } catch (err) {
       log.warn({ err, key }, 'idempotency: publish event failed');
     }
@@ -405,6 +446,28 @@ export function makeIdempotencyMultiplexer(
         let cachedReplayed = false;
         const replayQueue: { event?: unknown; terminal?: TerminalStatus }[] = [];
         let done = false;
+        // 08-REVIEW CR-02 fix: watermark for dedup against the subscribe queue.
+        //
+        // After LRANGE replay completes, `maxReplayedSeq` is set to
+        // `cached.length - 1` (or -1 if no cached chunks). The leader assigns
+        // each PUBLISH's seq as the chunks-list index at the time of RPUSH.
+        // Any channel message we receive whose seq <= maxReplayedSeq was
+        // ALREADY emitted from the LRANGE replay → drop it.
+        //
+        // Terminal markers carry no seq (they live in the result key, not
+        // the chunks list) — they always pass through. Non-terminal messages
+        // without a seq (defensive: pre-fix publishers or future codepaths
+        // that don't populate it) also pass through, preserving the legacy
+        // shape at the cost of a possible duplicate in the legacy case.
+        let maxReplayedSeq = -1;
+
+        function isDuplicateLiveEvent(m: ChannelMessage): boolean {
+          if (isTerminalPayload(m)) return false;
+          const seq = (m as StreamEventPayload).seq;
+          // No seq → can't decide; let it through (legacy / defensive).
+          if (typeof seq !== 'number') return false;
+          return seq <= maxReplayedSeq;
+        }
 
         async function ensureSetup(): Promise<void> {
           if (sub !== null) return;
@@ -426,6 +489,11 @@ export function makeIdempotencyMultiplexer(
               log.warn({ err, raw, key }, 'idempotency: unparseable cached chunk');
             }
           }
+          // 08-REVIEW CR-02: chunks-list indexes are 0..cached.length-1.
+          // The leader's PUBLISH for cached[i] used seq=i (the rpush new-len
+          // minus 1). Setting the watermark to cached.length-1 dedupes ALL
+          // pub/sub messages that correspond to chunks we already replayed.
+          maxReplayedSeq = cached.length - 1;
           // Check for already-finalized terminal in the result key.
           const result = await valkey.get(keys.result(key));
           if (result) {
@@ -460,13 +528,14 @@ export function makeIdempotencyMultiplexer(
               return { value: undefined, done: true };
             }
 
-            // Drain any messages that landed during replayCached().
+            // Drain any messages that landed during replayCached(). Apply
+            // the CR-02 dedup filter to skip events already in the replay.
             const drained = sub!.drainQueued();
             for (const m of drained) {
               if (isTerminalPayload(m)) {
                 replayQueue.push({ terminal: m.$terminal });
                 done = true;
-              } else {
+              } else if (!isDuplicateLiveEvent(m)) {
                 replayQueue.push({ event: (m as StreamEventPayload).event });
               }
             }
@@ -475,16 +544,23 @@ export function makeIdempotencyMultiplexer(
               return { value: item, done: false };
             }
 
-            // Block on the next channel message.
-            const msg = await sub!.next(timeoutMs);
-            if (isTerminalPayload(msg)) {
-              done = true;
-              return { value: { terminal: msg.$terminal }, done: false };
+            // Block on the next channel message. Loop until we get a
+            // non-duplicate event or a terminal marker — the dedup filter
+            // can drop one or more raced events from the channel.
+            while (true) {
+              const msg = await sub!.next(timeoutMs);
+              if (isTerminalPayload(msg)) {
+                done = true;
+                return { value: { terminal: msg.$terminal }, done: false };
+              }
+              if (isDuplicateLiveEvent(msg)) {
+                continue;
+              }
+              return {
+                value: { event: (msg as StreamEventPayload).event },
+                done: false,
+              };
             }
-            return {
-              value: { event: (msg as StreamEventPayload).event },
-              done: false,
-            };
           },
           async return(): Promise<IteratorResult<{
             event?: unknown;
