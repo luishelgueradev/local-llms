@@ -53,6 +53,15 @@ models:
 interface FakeAdapterCall {
   input: string | string[];
   model: string;
+  // 07-REVIEW WR-05: capture the opts arg (CR-01 widened the adapter signature
+  // with optional encoding_format/dimensions/user) so the passthrough test can
+  // lock in that the route actually forwards these fields rather than just
+  // returning 200.
+  opts?: {
+    encoding_format?: 'float' | 'base64';
+    dimensions?: number;
+    user?: string;
+  };
 }
 
 function makeFakeAdapter(): {
@@ -70,8 +79,8 @@ function makeFakeAdapter(): {
     async probeLiveness() {
       return { ok: true, latencyMs: 0 };
     },
-    async embeddings(input, model) {
-      calls.push({ input, model });
+    async embeddings(input, model, _signal, opts) {
+      calls.push({ input, model, opts });
       return {
         object: 'list',
         data: [{ object: 'embedding', index: 0, embedding: new Array(1024).fill(0.42) }],
@@ -301,8 +310,8 @@ describe('POST /v1/embeddings — bearer auth (D-D4 / ROUTE-04)', () => {
   });
 });
 
-describe('POST /v1/embeddings — schema passthrough', () => {
-  it('accepts optional encoding_format/dimensions/user without changing behavior', async () => {
+describe('POST /v1/embeddings — schema passthrough (07-REVIEW CR-01 + WR-05)', () => {
+  it('forwards encoding_format/dimensions/user to the adapter call', async () => {
     const res = await app.inject({
       method: 'POST',
       url: '/v1/embeddings',
@@ -317,9 +326,35 @@ describe('POST /v1/embeddings — schema passthrough', () => {
     });
 
     expect(res.statusCode).toBe(200);
-    // The adapter wrapper does not currently forward encoding_format/dimensions
-    // (the SDK call uses {model, input} only). This is a passthrough at the
-    // schema layer, not the call layer — verified by the route still returning
-    // 200 instead of a 400 from the zod schema rejecting unknown keys.
+    // 07-REVIEW WR-05: assert the opts actually reach the adapter. The old
+    // test only checked HTTP 200 and the inline comment admitted the optional
+    // fields were not forwarded — a test that documented a contract violation
+    // is worse than no test. With CR-01 in place this now locks in the
+    // OpenAI-compat passthrough contract.
+    expect(fakeCalls.length).toBe(1);
+    expect(fakeCalls[0].opts?.encoding_format).toBe('float');
+    expect(fakeCalls[0].opts?.dimensions).toBe(1024);
+    expect(fakeCalls[0].opts?.user).toBe('agent-1');
+  });
+
+  it('omits unset optional params from the adapter opts', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/embeddings',
+      headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
+      payload: { model: EMBED_MODEL, input: 'hola' },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(fakeCalls.length).toBe(1);
+    // Route always passes an opts object (CR-01); the individual fields are
+    // undefined when the client did not send them. The adapter's conditional-
+    // spread then drops them from the upstream SDK call. Asserting the field
+    // shape catches regressions where the route accidentally forwards
+    // `null` or `""` as a value.
+    expect(fakeCalls[0].opts).toBeDefined();
+    expect(fakeCalls[0].opts?.encoding_format).toBeUndefined();
+    expect(fakeCalls[0].opts?.dimensions).toBeUndefined();
+    expect(fakeCalls[0].opts?.user).toBeUndefined();
   });
 });
