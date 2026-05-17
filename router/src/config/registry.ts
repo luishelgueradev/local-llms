@@ -71,6 +71,39 @@ export const RegistrySchema = z.object({
       });
     }
   }
+
+  // Phase 8 Plan 00 (closes 07-REVIEW-FIX §CR-02) — reject any models.yaml
+  // that declares two DISTINCT `backend` values sharing the SAME `backend_url`.
+  // Without this gate, the URL → backend lookup in app.ts probeAdapterFor()
+  // is ambiguous: whichever entry comes first in the array wins. With multiple
+  // entries under the SAME backend at one URL (today's pattern — three
+  // `backend: ollama` rows at http://ollama:11434/v1) the check stays silent;
+  // only DISTINCT backend values at the same URL trigger an issue.
+  //
+  // This is the structural prerequisite Phase 8 needs before
+  // OllamaCloudAdapter (`backend: ollama-cloud`, base URL https://ollama.com/v1)
+  // ships in Plan 08-02 — a typo putting `ollama` and `ollama-cloud` at the
+  // same URL would otherwise silently mis-route the liveness probe.
+  const urlToBackends = new Map<string, Set<string>>();
+  for (const m of reg.models) {
+    let backends = urlToBackends.get(m.backend_url);
+    if (!backends) {
+      backends = new Set();
+      urlToBackends.set(m.backend_url, backends);
+    }
+    backends.add(m.backend);
+  }
+  for (const [url, backends] of urlToBackends) {
+    if (backends.size > 1) {
+      // Sort alphabetically so the error message is deterministic for tests.
+      const sorted = [...backends].sort();
+      ctx.addIssue({
+        code: 'custom',
+        path: ['models'],
+        message: `Config error: backend_url "${url}" is shared by backends [${sorted.join(', ')}]. Each backend value must have a unique URL — two backends serving the same URL makes URL→backend lookup ambiguous in the liveness probe path. Resolution: give one backend a distinct upstream URL (e.g. proxy alias) or merge the two entries under a single backend value.`,
+      });
+    }
+  }
 });
 
 export type ModelEntry = z.infer<typeof ModelEntrySchema>;

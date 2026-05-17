@@ -239,17 +239,34 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
   // Liveness scheduler (Plan 03-03, ROUTE-06)
   // -------------------------------------------------------------------------
 
-  // Adapter cache for probes — one adapter instance per distinct URL.
+  // Adapter cache for probes — one adapter instance per (backend, url) pair.
   // Cleared on app.close() so connections are released on graceful shutdown.
+  //
+  // Phase 8 Plan 00 (closes 07-REVIEW-FIX §CR-02) — the cache key shape is
+  // `${backend}|${url}` (NOT bare url). This is the runtime belt-and-suspenders
+  // guarantee that pairs with RegistrySchema.superRefine's "shared backend_url
+  // across distinct backends" gate: the schema prevents the ambiguity at boot,
+  // and this composite key prevents it at runtime even if a hot-reload were
+  // to somehow leak a violating snapshot. Phase 8's OllamaCloudAdapter
+  // (`backend: ollama-cloud`, https://ollama.com/v1) can ship without URL
+  // collisions even if a future entry shares its URL.
+  //
+  // Plan 08-00 also widens to respect opts.makeAdapter — previously the probe
+  // path hardcoded defaultMakeAdapter, making the probe cache impossible to
+  // mock from tests. The BuildAppOpts.makeAdapter contract (see app.ts:62)
+  // is "tests inject a fake here to mock the upstream"; probeAdapterFor now
+  // honors that contract.
   const probeAdapters = new Map<string, ReturnType<typeof defaultMakeAdapter>>();
-  const probeAdapterFor = (url: string) => {
-    let a = probeAdapters.get(url);
+  const probeMakeAdapter = opts.makeAdapter ?? defaultMakeAdapter;
+  const probeAdapterFor = (backend: string, url: string) => {
+    const key = `${backend}|${url}`;
+    let a = probeAdapters.get(key);
     if (!a) {
       const reg = opts.registry.get();
-      const entry = reg.models.find((m) => m.backend_url === url);
-      if (!entry) throw new Error(`No registry entry for URL "${url}"`);
-      a = defaultMakeAdapter(entry);
-      probeAdapters.set(url, a);
+      const entry = reg.models.find((m) => m.backend === backend && m.backend_url === url);
+      if (!entry) throw new Error(`No registry entry for (backend "${backend}", URL "${url}")`);
+      a = probeMakeAdapter(entry);
+      probeAdapters.set(key, a);
     }
     return a;
   };
@@ -296,7 +313,21 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
       // option b — single scheduler, probe function branches on the synthetic
       // postgres URL). Backend URLs continue to use the adapter probe path.
       if (pgProbe && url === POSTGRES_PROBE_URL) return pgProbe(url, signal);
-      const adapter = probeAdapterFor(url);
+      // Phase 8 Plan 00 — resolve backend from registry BEFORE calling
+      // probeAdapterFor (which now requires both args). The url-first
+      // .find() is deterministic because RegistrySchema.superRefine
+      // guarantees no two distinct backends share a URL.
+      // Unknown URLs (e.g. a stale URL still in the scheduler's URL set
+      // after a hot-reload removed the entry) return a synthetic down
+      // probe result rather than throwing — the scheduler does not
+      // unwrap thrown errors from this callback, and a throw would
+      // surface as an uncaught rejection in the timer tick.
+      const reg = opts.registry.get();
+      const entry = reg.models.find((m) => m.backend_url === url);
+      if (!entry) {
+        return { ok: false, latencyMs: 0, error: `no registry entry for url "${url}"` };
+      }
+      const adapter = probeAdapterFor(entry.backend, url);
       return adapter.probeLiveness(signal);
     },
   };
