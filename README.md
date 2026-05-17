@@ -1508,7 +1508,202 @@ sudo chmod 600 /var/log/local-llms-disk.log
 - **Hysteresis / cooldown** — the 15-min cron cadence is the de-facto cooldown (at most 4 alerts/hour). No state file needed.
 - **Inode-usage / per-subdirectory trends / rate-of-fill** — separate concerns; out of scope for the threshold check.
 
-<!-- OPS-04 — Plan 09-04 will add `### Rotating the bearer token (OPS-04)` here. -->
+<!-- OPS-04 — Plan 09-04 — Bearer-token rotation subsection follows. -->
+
+### Rotating the bearer token (OPS-04)
+
+`ROUTER_BEARER_TOKEN` is the single auth credential gating every router endpoint. Rotate it on a recommended quarterly cadence, after any suspected exposure (token committed to git by accident, agent-client config leaked, shared screen captured a `curl -H 'Authorization: Bearer ...'`), or as a post-incident hygiene step. The procedure below replaces the live token across every consumer — including Open WebUI's persisted connection — **without** recreating the Open WebUI admin user or losing chat history, in a 5–10 minute maintenance window with a verification grep that proves zero log lines mention the old token.
+
+**Pre-flight inventory** — before you start, make sure you know every place the current token lives. The stack itself uses it in five places:
+
+1. **The router process** (`router/src/auth/bearer.ts`) — reads `ROUTER_BEARER_TOKEN` from `.env`; constant-time-compares against the `Authorization: Bearer ...` header on every request.
+2. **Open WebUI** (`compose.yml` — `OPENAI_API_KEYS=${ROUTER_BEARER_TOKEN}`) — **seeded** at OWUI first boot, then **persisted** to the `openwebui` Postgres database via OWUI's `PersistentConfig` mechanism (Phase 6 CONTEXT D-C1, OWUI 0.9 behavior). After first boot the DB-stored value wins on every subsequent OWUI restart, so a Compose env-var swap is **not** enough — step 5 below handles this.
+3. **Smoke tests** (`bin/smoke-test-router.sh`, `bin/smoke-test-cloud.sh`, `bin/smoke-test-traefik.sh`) — all extract `ROUTER_BEARER_TOKEN` from `.env` at invocation time (per `bin/smoke-test-router.sh:86-97`). No edit needed; the smoke picks up the new value automatically.
+4. **Your agent clients** — Claude Code MCP configs, cline settings, custom scripts' `.env` files, `llm` CLI keyrings, browser extensions, anywhere you pasted the token. The README cannot enumerate these for you — you own this inventory.
+5. **Your shell history** — any `curl -H "Authorization: Bearer $TOKEN" ...` you ran while debugging. Step 10 cleans these up with `history -d`.
+
+Make a written list of everything in items 3 + 4 + 5 **before** you generate the new token. Pause here if you have a multi-laptop / multi-host setup; rotation is faster than re-running the inventory mid-flight.
+
+**The procedure** — same shape as the Phase 5 §Restore drill above; each step ends with an expected outcome.
+
+1. **Generate the new token.**
+
+   ```bash
+   # Same recipe as .env.example line 20 (Phase 2 — Router):
+   echo "local-llms_$(openssl rand -hex 32)"
+   ```
+
+   The `local-llms_` prefix is a search aid — if it ever leaks into a log or a paste buffer, you can grep for the prefix instead of the full 64-hex value. Save the output to your password manager **now** (you will need it during steps 3, 5, 7, and possibly the rollback).
+
+2. **Capture the OLD token's prefix (first 8 hex chars only) into a shell variable.** This is the only piece of the old token that should ever sit in a shell variable during the rotation. Step 9 uses this prefix for the verification grep.
+
+   ```bash
+   # Read your CURRENT .env and pull just the first 8 hex chars after `local-llms_`:
+   OLD_PREFIX=$(grep '^ROUTER_BEARER_TOKEN=' .env | sed 's/^ROUTER_BEARER_TOKEN=//' | sed 's/^local-llms_//' | head -c 8)
+   echo "OLD_PREFIX=$OLD_PREFIX  (8 chars)"
+   ```
+
+   **Do NOT capture the full old token into a shell variable.** Leaving the full token in your shell history defeats the point of rotation — step 10's `history -d` is a belt-and-suspenders cleanup, not a substitute for not-recording-the-token-in-the-first-place.
+
+3. **Update `.env` with the new token.** Open `.env` in an editor and replace the `ROUTER_BEARER_TOKEN=<old>` line with `ROUTER_BEARER_TOKEN=<new>`. Do **NOT** use `echo "ROUTER_BEARER_TOKEN=..." > .env` — that clobbers every other line in the file.
+
+   ```bash
+   # Recommended:
+   "${EDITOR:-vim}" .env
+   # Verify the line is updated and the rest of .env is intact:
+   grep '^ROUTER_BEARER_TOKEN=' .env
+   wc -l .env  # should match pre-edit line count
+   ```
+
+4. **Restart the router.** The router reads `.env` at process start; no hot-reload of `ROUTER_BEARER_TOKEN`.
+
+   ```bash
+   docker compose restart router
+   sleep 5
+   docker compose logs router --tail 20  # confirm clean boot
+   ```
+
+   Expected: `router` logs show the standard boot lines; no `bearer` mention (pino redaction — Phase 2 ROUTE-05).
+
+5. **Update Open WebUI's stored connection** — this is the load-bearing step. **Pick ONE of the two paths**; both leave the OWUI admin user and chat history intact.
+
+   **Path A — admin UI (recommended for human operators):**
+
+   1. Open `https://chat.${TAILNET_HOSTNAME}.ts.net/` in your browser and pass the Traefik basic-auth prompt (`TRAEFIK_BASIC_AUTH` from `.env`).
+   2. Sign in as the OWUI admin user (the existing account from first boot — do NOT create a new one; that would orphan chat history).
+   3. Navigate: **Admin Panel → Settings → Connections → OpenAI API**.
+   4. Find the entry pointing at `http://router:3000` (this is the connection seeded in Phase 6 D-C1). Click edit.
+   5. Paste the new token into the **API Key** field. **Save.**
+
+   Expected: OWUI's "Verify Connection" check returns 200 and the model list populates. Path A propagates without an OWUI restart — Open WebUI updates its in-memory + persisted config in one write.
+
+   **Path B — direct SQL (for non-interactive / scripted rotation):**
+
+   Open WebUI 0.9 stores its runtime configuration as a JSONB blob in the shared `openwebui` Postgres database (created empty in Phase 5 D-B6; consumed by OWUI starting in Phase 6). `OPENAI_API_KEYS` is `PersistentConfig`-marked (Phase 6 CONTEXT line 16), so the DB value wins over the env var on every restart after first boot.
+
+   ```bash
+   # Connect to the openwebui DB via the data network (psql is inside the postgres container).
+   # Connection string already provided by compose.yml — OPENWEBUI_DATABASE_URL (lines 564 + 661):
+   docker compose exec -T postgres psql -U app -d openwebui -c '\dt'
+
+   # Inspect the JSONB config column (table name + column shape evolve between OWUI releases —
+   # verify against your OWUI version's schema before running an UPDATE). Sample inspection:
+   docker compose exec -T postgres psql -U app -d openwebui \
+     -c "SELECT data FROM config ORDER BY id DESC LIMIT 1;" | head
+   ```
+
+   **SCHEMA VERIFICATION IS THE OPERATOR'S RESPONSIBILITY.** OWUI's persisted-config shape evolves between releases — check the OWUI 0.9 changelog and run a `SELECT` against your live DB before crafting the `UPDATE`. The exact JSONB path for the OpenAI API key (e.g. `data->'openai'->>'api_keys'` vs `data->'connections'->...`) is OWUI-version-specific. If you are unsure of the SQL shape, **use Path A** — Path A is the safe default. Path B is opt-in for operators who have a multi-environment rotation playbook and have already validated the schema against their pinned OWUI version.
+
+   Expected after Path B: a follow-up `SELECT` shows the new token (or its truncated tail, depending on how OWUI stores it) where the old value used to live.
+
+6. **Restart Open WebUI (Path B only).** Path A propagates without a restart; Path B requires OWUI to re-read the persisted config:
+
+   ```bash
+   docker compose restart openwebui
+   sleep 5
+   docker compose logs openwebui --tail 20  # confirm clean boot
+   ```
+
+   Expected: OWUI logs show standard boot; the admin user still exists; existing chats are still listed.
+
+7. **Update your agent clients** — work through the inventory you made in the pre-flight. Paste the new token into each consumer's config:
+
+   - **Claude Code:** MCP / OpenAI provider config — replace the `apiKey` field.
+   - **cline / continue.dev:** Settings → Models → OpenAI-compatible → API key.
+   - **Custom scripts:** their `.env` files or keyring entries (`pass`, `op`, etc.).
+   - **`llm` CLI:** `llm keys set openai-compatible-router` (or whatever alias you used).
+
+   No expected log line — this is operator-side bookkeeping. The smoke test in step 8 is the proof.
+
+8. **Smoke-test end-to-end.** This is the gate: if the new token works for every Phase 2–8 surface, the rotation is structurally complete (steps 9 + 10 are verification + cleanup, not gates).
+
+   ```bash
+   bash bin/smoke-test-router.sh --profile prod   # OR --profile dev for the dev-mode stack
+   ```
+
+   The smoke reads `ROUTER_BEARER_TOKEN` from `.env` at each invocation (`bin/smoke-test-router.sh:86-97`), so no script edit is needed; it automatically uses the new value. Expected: all assertions PASS, no 401 / 403 anywhere.
+
+   Cloud-fallback surface (only meaningful if `OLLAMA_API_KEY` is set):
+
+   ```bash
+   bash bin/smoke-test-cloud.sh   # Phase 8 surface; SKIP-clean when OLLAMA_API_KEY is empty
+   ```
+
+9. **Verify zero log lines mention the OLD token.** This is the regression check that pino redaction (Phase 2 ROUTE-05 — `authorization`, `cookie`, `*.apiKey` paths) is still in place across the router, OWUI, and Traefik. We grep for `OLD_PREFIX` (captured in step 2) — **not** the full old token, which would leave a copy in your shell history.
+
+   ```bash
+   for svc in router openwebui traefik; do
+     echo "=== $svc ==="
+     docker compose logs "$svc" --since 24h 2>&1 | grep -c "$OLD_PREFIX" || echo 0
+   done
+   # Expected: 0 0 0 — all three services emit zero matches for the old token's prefix.
+   ```
+
+   **Non-zero matches:**
+
+   - If `router` is non-zero: pino redaction has a hole. Inspect the matching line, identify the log statement that emitted the bearer, file a follow-up plan to add the missing redact path. This is a regression that the rotation just surfaced — not a rotation failure.
+   - If `openwebui` is non-zero: likely an OWUI first-boot line older than the rotation timestamp (OWUI logs `OPENAI_API_KEYS` at boot in some 0.9 builds — acceptable as long as the timestamp on the matching line is **before** step 4). If matches are post-rotation, treat as a regression.
+   - If `traefik` is non-zero: Traefik should never see the bearer in its access logs (it forwards the `Authorization` header without logging the body). A non-zero hit here suggests a debug log level — drop Traefik back to `INFO`.
+
+10. **Discard the OLD token.** Now (and only now) is the rotation irreversible.
+
+    - Delete the OLD token entry from your password manager (1Password / Bitwarden / `pass`). Empty your password manager's trash if it has one.
+    - Clean shell history of any line that captured the full old token:
+
+      ```bash
+      # List candidate lines:
+      history | grep -i 'bearer\|ROUTER_BEARER_TOKEN' | grep -v '^[0-9]*  history\|^[0-9]*  grep'
+      # Delete by line number:
+      history -d <linenum>     # repeat for each match
+      history -w               # persist the edited history to ~/.bash_history
+      ```
+
+    - Unset the `OLD_PREFIX` variable: `unset OLD_PREFIX`.
+
+**Rollback note** — if step 8's smoke fails (or any other end-to-end check during steps 1–9 reveals the new token is not propagating), the rotation is fully reversible **until you finish step 10**. To roll back:
+
+```bash
+# 1. Restore the OLD token in .env (still in your password manager — you have not discarded it yet).
+"${EDITOR:-vim}" .env
+
+# 2. Restart router so it re-reads the old value.
+docker compose restart router
+sleep 5
+
+# 3. Re-update OWUI's stored connection to the OLD token (Path A or Path B, whichever you used in step 5).
+
+# 4. Re-run smoke to confirm rollback.
+bash bin/smoke-test-router.sh --profile prod
+
+# 5. Investigate the original failure; only re-attempt rotation once root cause is understood.
+```
+
+The rotation is **fully reversible until step 10**. After step 10 (old token discarded), recovery requires generating yet another new token and repeating the procedure.
+
+**Rotating other secrets (cross-reference).** OPS-04 covers `ROUTER_BEARER_TOKEN` only. The other secrets in `.env` have different rotation procedures and longer maintenance windows, scoped to a v2 phase:
+
+- **`VALKEY_PASSWORD`** — requires Valkey + router restart together (router holds open connections with the password baked in); ~30 s downtime.
+- **`POSTGRES_PASSWORD`** — requires updating the `app` role inside Postgres (`ALTER USER app WITH PASSWORD ...`) AND the `ROUTER_DATABASE_URL` + `OPENWEBUI_DATABASE_URL` connection strings AND restarting router + OWUI + pg-backup; ~1–2 min downtime.
+- **`GRAFANA_ADMIN_PASSWORD`** — Grafana persists this in its database; the env var only seeds on first boot. Rotate via Grafana's Admin → Users panel after first boot.
+- **`BACKUP_RESTIC_PASSWORD`** — **CANNOT be rotated in place** without re-initializing the restic repo and re-publishing every snapshot. Restic's encryption key is derived from the password; changing the password invalidates every snapshot.
+- **`OWUI_SECRET_KEY`** — **IRREVERSIBLE** (Phase 6 CONTEXT). Open WebUI uses this to encrypt at-rest fields (API keys for downstream providers, OAuth secrets). Rotating it breaks decryption of every existing encrypted row. **OPS-04 explicitly does NOT cover this.** If you must rotate, plan for re-entering every per-user connection key in the OWUI admin panel after rotation.
+- **`TRAEFIK_BASIC_AUTH`** — straightforward: regenerate the htpasswd hash, update `.env`, `docker compose restart traefik`. No DB pivot.
+
+These all need a longer maintenance window than the 5–10 minute `ROUTER_BEARER_TOKEN` rotation, and several have data-loss tradeoffs (`BACKUP_RESTIC_PASSWORD`, `OWUI_SECRET_KEY`). Document any rotation in your password manager's audit log.
+
+**Pinned assumptions this procedure relies on:**
+
+- **pino redaction (Phase 2 ROUTE-05 + Plan 02-CONTEXT D-redaction)** — the router never logs the `Authorization` header or any field whose path matches `authorization`, `cookie`, or `*.apiKey`. Step 9's grep is the regression check that this is still in place; it should always emit `0 0 0` after a rotation.
+- **Constant-time compare (Phase 2 ROUTE-03)** — the bearer check in `router/src/auth/bearer.ts` uses `crypto.timingSafeEqual`. Timing-attack surface stays constant across rotations; no per-token tuning needed.
+- **OWUI `OPENAI_API_KEYS` is `PersistentConfig`-marked (Phase 6 CONTEXT line 16)** — this is **why** step 5 cannot just be `docker compose up -d openwebui` after the env-var swap; OWUI reads the DB value on every restart after first boot.
+- **`.env` mode 600 (`bin/bootstrap-host.sh:138`)** — the only operator on the host can read `.env`. Keep it that way: never `chmod 644 .env`, never commit `.env` to git, never paste the file into a shared paste buffer.
+
+**Anti-patterns** — what NOT to do during rotation:
+
+- **NEVER paste the bearer (old OR new) into git history.** `.env` is gitignored; verify with `git check-ignore .env` if uncertain. The `.env.example` file is the version-controlled contract; the actual `.env` must stay local.
+- **NEVER expose the router publicly without Tailscale** (REQUIREMENTS.md §"Out of Scope"). A bearer-only auth posture on the open internet is insufficient; the rotation procedure assumes Tailscale-only reach.
+- **NEVER skip step 9's verification grep.** Pino redaction is a guardrail, not a guarantee — a new log statement added between rotations could regress the redaction and leak the bearer. The grep catches this.
+- **NEVER use `grep "$OLD_TOKEN"` instead of `grep "$OLD_PREFIX"`.** The full token written into the grep argv lands in your shell history; the 8-char prefix doesn't.
 
 ## Anti-patterns rejected by this stack
 
