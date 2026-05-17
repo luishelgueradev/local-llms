@@ -35,8 +35,8 @@
         {
           "refId": "A",
           "datasource": { "type": "prometheus", "uid": "prometheus-default" },
-          "expr": "nvidia_smi_memory_used_bytes / nvidia_smi_memory_total_bytes",
-          "legendFormat": "GPU {{index}}",
+          "expr": "nvidia_smi_memory_used_bytes / on(gpu) group_left nvidia_smi_memory_total_bytes",
+          "legendFormat": "GPU {{gpu}}",
           "instant": false,
           "range": true
         }
