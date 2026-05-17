@@ -360,6 +360,26 @@ export function makeIdempotencyMultiplexer(
     try {
       const newLen = await valkey.rpush(keys.chunks(key), cachedSerialized);
       seq = newLen - 1;
+      // 08-REVIEW WR-04 fix: set the ceiling TTL on the FIRST publish so
+      // the chunks key is bounded even if the leader crashes mid-stream
+      // (no finalize ever runs). Without this guard, finalizeStream is
+      // the only TTL-setter — if finalize fails (or the leader crashes),
+      // the chunks list persists indefinitely and grows the keyspace
+      // unbounded. finalizeStream still shortens TTL from 30 min to
+      // 15 min on the happy path. The 30-min ceiling matches
+      // IDEMPOTENCY_LOCK_TTL_SEC so the chunks key cannot outlive the
+      // lock that owns its identity.
+      if (newLen === 1) {
+        await valkey
+          .expire(keys.chunks(key), IDEMPOTENCY_LOCK_TTL_SEC)
+          .catch((expireErr: unknown) => {
+            log.warn(
+              { err: expireErr, key },
+              'idempotency: first-chunk EXPIRE failed (will retry on finalize)',
+            );
+            return 0;
+          });
+      }
     } catch (err) {
       log.warn({ err, key }, 'idempotency: rpush chunks failed');
     }
