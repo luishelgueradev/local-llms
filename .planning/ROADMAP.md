@@ -209,14 +209,35 @@ Plans:
 **Goal:** Land the killer feature ("local when it fits, cloud when it doesn't") in the same phase as the resilience features that protect against retry storms and runaway cloud spend — they share the router surface and shouldn't ship independently.
 **Mode:** mvp
 **Depends on:** Phase 7
-**Requirements:** CLOUD-01, CLOUD-02, CLOUD-03, CLOUD-04, CLOUD-05, DATA-06, ROUTE-10, ROUTE-11, ROUTE-12
+**Requirements:** CLOUD-01, CLOUD-02, CLOUD-03, CLOUD-04, CLOUD-05, DATA-06, ROUTE-10, ROUTE-11, ROUTE-12, EMBED-02
 **Success Criteria** (what must be TRUE):
   1. A model declared with `backend: ollama-cloud` in `models.yaml` (with its own `OLLAMA_API_KEY` from `.env` and base URL `https://ollama.com`) routes remotely with no client-visible difference from local models — same `POST /v1/chat/completions` and `POST /v1/messages` endpoints, same auth, same SSE shape — and every response carries an `X-Model-Backend` response header so the agent knows where the answer came from.
   2. Per-backend circuit breaker (N failures in M seconds → cooldown) prevents cascading failures during a simulated cloud outage; while a backend is in cooldown the router fails fast with a clear error rather than queueing.
   3. `max_tokens` is hard-capped at 16,384 for cloud-served models (requests above the cap are rejected with a structured error); a `cloud_spend_daily` metric (sum of generation_duration_ms scoped to cloud-backed requests) is recorded in Postgres and queryable.
   4. `valkey/valkey:8-alpine` runs as a Compose service backing a server-side per-token-per-minute rate limit (`ratelimit:{token}:{minute}`); excess requests receive `429 Retry-After`. A small `models.yaml` cache is also served from Valkey.
   5. An `Idempotency-Key` request header attaches retries to the in-flight stream rather than starting a new generation — a chaos test that fires N concurrent requests with the same key consumes only one GPU-stream worth of tokens and all N clients receive the same response.
-**Plans:** TBD
+**Plans:** 11 plans
+Plans:
+**Wave 0**
+- [ ] 08-00-PLAN.md — CR-02 precondition fix: registry validator + probeAdapterFor cache key widening (CLOUD-01 prerequisite)
+
+**Wave 1** *(parallel pair — disjoint files: 08-01 owns compose.yml + Valkey client + boot; 08-02 owns adapter + registry + models.yaml + cloud env)*
+- [ ] 08-01-PLAN.md — Valkey service in compose.yml + ioredis client wired in router boot + onClose ordering (DATA-06 infrastructure)
+- [ ] 08-02-PLAN.md — OllamaCloudAdapter + LocalBackendEnum widening + factory dispatch + 2 cloud model entries + assertCloudEnvIfConfigured (CLOUD-01, CLOUD-02, EMBED-02)
+
+**Wave 2** *(four parallel-safe plans — all depend on either 08-01 Valkey or 08-02 cloud entries; disjoint file ownership within wave)*
+- [ ] 08-03-PLAN.md — X-Model-Backend onSend hook + 3 route stamps (ROUTE-10)
+- [ ] 08-04-PLAN.md — Per-backend circuit breaker with Valkey-backed state machine + half-open probe lock (CLOUD-03)
+- [ ] 08-05-PLAN.md — max_tokens 16384 cap for cloud + structured envelope (CLOUD-04)
+- [ ] 08-06-PLAN.md — Per-bearer-token-per-minute rate limit pre-handler + Valkey INCR + Retry-After (ROUTE-11)
+
+**Wave 3** *(three parallel plans — depend on Waves 1 + 2)*
+- [ ] 08-07-PLAN.md — Idempotency-Key multiplexer (Valkey SETNX + pub/sub + cached chunks list + stream/non-stream replay) (ROUTE-12)
+- [ ] 08-08-PLAN.md — cloud_spend_daily Postgres view migration (CLOUD-05)
+- [ ] 08-09-PLAN.md — Valkey-backed 30s registry cache + watchRegistry onReload propagation (DATA-06 cache)
+
+**Wave 4** *(blocks on Waves 0-3; live verification + human-verify)*
+- [ ] 08-10-PLAN.md — bin/smoke-test-cloud.sh + bin/smoke-test-router.sh §Phase 8 + .env.example + README §Phase 8 + human-verify checkpoint
 **Research flag:** yes — needs `/gsd-research-phase` for current 2026 Ollama Cloud quotas (intentionally vague in docs), cloud-model naming conventions (`gpt-oss:120b` vs `gpt-oss:120b-cloud`), and idempotency-key patterns over SSE; per SUMMARY.md, PITFALLS Pitfall 9 is the load-bearing risk.
 
 ### Phase 9: Operations Hardening
@@ -242,7 +263,7 @@ Plans:
 | 5. Postgres + Observability Seam | 6/6 | Complete    | 2026-05-15 |
 | 6. Traefik + TLS + Open WebUI | 0/4 | Planned | - |
 | 7. Embeddings + vLLM + GPU Telemetry | 7/7 | Complete   | 2026-05-17 |
-| 8. Ollama Cloud Fallback + Resilience Hardening | 0/0 | Not started | - |
+| 8. Ollama Cloud Fallback + Resilience Hardening | 0/11 | Planned | - |
 | 9. Operations Hardening | 0/0 | Not started | - |
 
 ## Coverage Summary
@@ -270,3 +291,4 @@ Plans:
 *Phase 5 plans added: 2026-05-14*
 *Phase 6 plans added: 2026-05-16*
 *Phase 7 plans added: 2026-05-16*
+*Phase 8 plans added: 2026-05-17*
