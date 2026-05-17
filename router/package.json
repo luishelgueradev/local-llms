@@ -23,6 +23,7 @@
     "fastify": "^5.8.5",
     "fastify-sse-v2": "^4.2.2",
     "gpt-tokenizer": "^3.0.0",
+    "ioredis": "^5.4.1",
     "js-yaml": "^4.1.1",
     "openai": "^6.37.0",
     "pg": "^8.13.0",
