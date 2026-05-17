@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v0.9.0
 milestone_name: milestone
 status: executing
-stopped_at: "Phase 8 Plan 03 (ROUTE-10 — X-Model-Backend response header) COMPLETE — single Fastify onSend hook in app.ts reads req.resolvedBackend (new FastifyRequest module-augmentation field on middleware/agentId.ts) and stamps `X-Model-Backend: <backend>` on every successful chat/messages/embeddings response. Three route handlers (chat-completions, messages, embeddings) stamp req.resolvedBackend = entry.backend immediately after registry.resolve(body.model). count-tokens deliberately does NOT stamp (D-F1 — no backend dispatch). 7-test integration suite at router/tests/app/x-model-backend.test.ts covers 3 happy paths + 4 negative/edge cases (404 unknown model, 401 missing bearer, count_tokens no-header, ollama-cloud entry → header: ollama-cloud). Commits: 95df963 (test RED) + c0318e4 (feat GREEN). 563/565 tests pass (2 skipped, +7 new). Build clean. Zero deviations. ROUTE-10 closes; CLOUD-02 transparency vertical slice (08-02 + 08-03) structurally complete."
-last_updated: "2026-05-17T16:05:14Z"
+stopped_at: "Phase 8 Plan 04 (CLOUD-03 — per-backend circuit breaker) COMPLETE — router/src/resilience/circuitBreaker.ts implements makeCircuitBreaker + isBreakerTrip with Valkey-backed state (closed/open/half-open) per backend (D-B4). 5 failures in 30s → opens for 60s; half-open probe success closes / failure re-opens (D-B3). BreakerOpenError → 503 + structured envelope (OpenAI: api_error/backend_circuit_open; Anthropic: overloaded_error) + Retry-After header. 3 routes (chat-completions, messages, embeddings) call breaker.check after capability gate, before semaphore acquire; recordSuccess/Failure fire-and-forget around adapter calls. Per-backend isolation verified end-to-end: cloud breaker open leaves local Ollama serving. 6 commits: d2154d6+4365116+bf3185e+6bd6f08+48d4747+0f142b2 across 3 atomic TDD task pairs. 598/600 tests pass (+25 new). Build clean. 1 auto-fixed deviation (Rule 1 — state/probe_at TTL was cooldown*1 in spec, must be cooldown*2 to survive probe transition; fix landed during Task 2 GREEN with module-header documentation). CLOUD-03 closes."
+last_updated: "2026-05-17T16:24:00Z"
 progress:
   total_phases: 9
   completed_phases: 7
   total_plans: 50
-  completed_plans: 44
-  percent: 88
+  completed_plans: 45
+  percent: 90
 ---
 
 # Project State: local-llms
@@ -27,12 +27,12 @@ progress:
 ## Current Position
 
 Phase: 08 (Ollama Cloud Fallback + Resilience Hardening) — EXECUTING
-Plan: 5 of 11
+Plan: 6 of 11
 
 - **Milestone:** v1
 - **Phase:** 8
-- **Plan:** 08-03 (Wave 2, ROUTE-10 — X-Model-Backend response header) — COMPLETE. Single Fastify onSend hook in app.ts reads `req.resolvedBackend` (new optional FastifyRequest field via module augmentation in middleware/agentId.ts) and stamps `X-Model-Backend: <backend>` on every successful chat/messages/embeddings response. Three route handlers stamp `req.resolvedBackend = entry.backend` immediately after registry.resolve. count-tokens deliberately does NOT stamp (D-F1). 7-test integration suite covers all happy + negative paths including the ollama-cloud success case. Commits: 95df963 (test RED) + c0318e4 (feat GREEN). 563/565 tests pass; build clean. Zero deviations. ROUTE-10 closes — CLOUD-02 transparency vertical slice (08-02 backend + 08-03 wire signal) is structurally complete.
-- **Next plan:** 08-04 (Wave 2 — circuit breaker around adapter calls). The X-Model-Backend header continues to surface on the error responses the breaker may produce (the stamp runs BEFORE the adapter call, so post-resolve errors still carry the header).
+- **Plan:** 08-04 (Wave 2, CLOUD-03 — per-backend circuit breaker) — COMPLETE. router/src/resilience/circuitBreaker.ts implements makeCircuitBreaker + isBreakerTrip classifier with Valkey-backed state (closed/open/half-open) per backend (D-B4). 5 failures in 30s opens breaker for 60s (D-B2); half-open probe success closes / failure re-opens (D-B3). BreakerOpenError → 503 + structured envelope + Retry-After header. 3 routes (chat-completions, messages, embeddings) call breaker.check after capability gate, before semaphore acquire; recordSuccess/Failure fire-and-forget around adapter calls. Per-backend isolation verified: cloud breaker open leaves local Ollama serving. Commits: d2154d6+4365116+bf3185e+6bd6f08+48d4747+0f142b2 (6 commits, 3 atomic TDD task pairs). 598/600 tests pass (+25 new). Build clean. 1 auto-fixed deviation (Rule 1 — TTL doubling for state/probe_at keys; documented in module header). CLOUD-03 closes.
+- **Next plan:** 08-05 (Wave 2 or later — max_tokens guardrails, independent feature). Per-backend rate limit (08-06) and idempotency mux (08-07) will reuse Plan 08-04's patterns (no-op fallback, fire-and-forget signal, Valkey decorator).
 - **Phase 7 carry-over:** Plan 07-06 task 3 still PENDING-HUMAN (operator approval on RTX 5060 Ti host). Recipe in 07-06-SUMMARY.md §User Setup Required.
 
 ### Progress
@@ -45,7 +45,7 @@ Phase 4: ░░░░░░░░░░ 0% (0/16 requirements)
 Phase 5: ░░░░░░░░░░ 0% (0/8 requirements)
 Phase 6: ░░░░░░░░░░ 0% (0/11 requirements)
 Phase 7: █████████░ 86% (6/7 requirements coded; smoke scripts in tree; OBS-05 already complete from Phase 5; awaiting operator human-verify on 07-06 task 3)
-Phase 8: █████░░░░░ 56% (6/9 requirements — CLOUD-01 precondition closed via Plan 08-00; DATA-06 foundation closed via Plan 08-01; CLOUD-01 + CLOUD-02 + EMBED-02 vertical slice closed via Plan 08-02; ROUTE-10 closed via Plan 08-03)
+Phase 8: ███████░░░ 67% (7/9 requirements — CLOUD-01 precondition closed via Plan 08-00; DATA-06 foundation closed via Plan 08-01; CLOUD-01 + CLOUD-02 + EMBED-02 vertical slice closed via Plan 08-02; ROUTE-10 closed via Plan 08-03; CLOUD-03 closed via Plan 08-04)
 Phase 9: ░░░░░░░░░░ 0% (0/4 requirements)
 
 Overall: ███░░░░░░░ 30% (23/76 v1 requirements)
@@ -103,8 +103,8 @@ Overall: ███░░░░░░░ 30% (23/76 v1 requirements)
 
 ## Session Continuity
 
-Last session: 2026-05-17T16:05:14Z
-Stopped at: Phase 8 Plan 03 (ROUTE-10 — X-Model-Backend response header) COMPLETE — single Fastify onSend hook in app.ts reads req.resolvedBackend (new FastifyRequest module-augmentation field on middleware/agentId.ts) and stamps `X-Model-Backend: <backend>` on every successful chat/messages/embeddings response. Three route handlers stamp req.resolvedBackend = entry.backend immediately after registry.resolve. count-tokens deliberately does NOT stamp (D-F1). 7-test integration suite at router/tests/app/x-model-backend.test.ts. Commits: 95df963 (test RED) + c0318e4 (feat GREEN). 563/565 tests pass (+7 new). Build clean. Zero deviations. ROUTE-10 closes; CLOUD-02 transparency vertical slice (08-02 backend + 08-03 wire signal) structurally complete.
+Last session: 2026-05-17T16:24:00Z
+Stopped at: Phase 8 Plan 04 (CLOUD-03 — per-backend circuit breaker) COMPLETE — Valkey-backed state machine + isBreakerTrip classifier (5xx + APIConnectionError/Timeout + Node DNS/conn errors trip; 4xx + Zod + abort + generic don't). 3 routes wired with breaker.check pre-adapter + recordSuccess/Failure fire-and-forget around adapter calls. Per-backend isolation (D-B4) verified end-to-end. Commits: d2154d6+4365116+bf3185e+6bd6f08+48d4747+0f142b2 (6 commits, 3 atomic TDD task pairs). 598/600 tests pass (+25 new). Build clean. 1 auto-fixed deviation (Rule 1 — TTL doubling for state/probe_at keys). CLOUD-03 closes; resilience layer ready for Plans 08-06 (rate limit) + 08-07 (idempotency mux).
 
 **Next action:** Operator runs the recipe in 07-06-SUMMARY.md §User Setup Required: `docker compose --profile vllm up -d` → wait for vllm healthy → `bash bin/smoke-test-observability.sh && bash bin/smoke-test-router.sh` → visual Grafana check → reply `approved` (or list failing assertions for re-execution).
 

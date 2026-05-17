@@ -227,7 +227,7 @@ Plans:
 
 **Wave 2** *(four parallel-safe plans — all depend on either 08-01 Valkey or 08-02 cloud entries; disjoint file ownership within wave)*
 - [x] 08-03-PLAN.md — X-Model-Backend onSend hook + 3 route stamps (ROUTE-10)
-- [ ] 08-04-PLAN.md — Per-backend circuit breaker with Valkey-backed state machine + half-open probe lock (CLOUD-03)
+- [x] 08-04-PLAN.md — Per-backend circuit breaker with Valkey-backed state machine + half-open probe lock (CLOUD-03)
 - [ ] 08-05-PLAN.md — max_tokens 16384 cap for cloud + structured envelope (CLOUD-04)
 - [ ] 08-06-PLAN.md — Per-bearer-token-per-minute rate limit pre-handler + Valkey INCR + Retry-After (ROUTE-11)
 
