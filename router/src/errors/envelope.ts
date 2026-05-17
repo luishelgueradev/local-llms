@@ -137,6 +137,41 @@ export class CloudMaxTokensExceededError extends Error {
 }
 
 /**
+ * Plan 08-06 (ROUTE-11 / D-D2 / D-D3): thrown by the rate-limit onRequest hook
+ * when a bearer token's per-minute counter exceeds ROUTER_RATE_LIMIT_RPM (600
+ * by default).
+ *
+ * Maps to:
+ *   - HTTP 429 (Too Many Requests)
+ *   - OpenAI envelope: type: 'rate_limit_error', code: 'rate_limit_exceeded'
+ *   - Anthropic envelope: type: 'rate_limit_error'
+ *   - Retry-After: 60 (seconds until the per-minute bucket rolls over —
+ *     stamped by the centralized error handler in app.ts)
+ *
+ * Distinct from BackendSaturatedError (which is a per-backend concurrency
+ * cap, also 429 but code='backend_saturated'). The request_log row's
+ * error_code distinguishes the two via mapErrorToCode in recordOutcome.ts —
+ * 'rate_limit_exceeded' for this error vs 'backend_saturated' for the
+ * concurrency cap. Both share the wire-level type='rate_limit_error' (D-D2
+ * taxonomy choice — both surfaces are "client must back off"), but the
+ * D-D2 taxonomy bucket on the request_log side keeps them queryable apart.
+ */
+export class RateLimitExceededError extends Error {
+  readonly code: 'rate_limit_exceeded' = 'rate_limit_exceeded';
+  constructor(
+    public readonly bearerHash: string,
+    public readonly currentCount: number,
+    public readonly limit: number,
+  ) {
+    super(
+      `Rate limit exceeded: ${currentCount}/${limit} requests per minute for this bearer token. ` +
+        `Retry after the next minute boundary (Retry-After header).`,
+    );
+    this.name = 'RateLimitExceededError';
+  }
+}
+
+/**
  * Plan 05-02 D-D5 / ROUTE-09: thrown by the agentIdPreHandler when an inbound
  * X-Agent-Id header violates the regex `/^[A-Za-z0-9._:-]{1,128}$/`. Maps to
  * 400 + invalid_request_error on both wire surfaces (OpenAI envelope:
@@ -207,6 +242,11 @@ export function mapToHttpStatus(err: unknown): number {
   if (err instanceof ImageFetchError) return 400;
   // BackendSaturatedError (Plan 03-04, ROUTE-07) — backend concurrency cap exceeded.
   if (err instanceof BackendSaturatedError) return 429;
+  // Plan 08-06 (ROUTE-11 / D-D2) — per-bearer-token RPM exceeded → 429 with
+  // Retry-After (set by the centralized error handler). Same status as
+  // BackendSaturatedError because the wire taxonomy collapses both to
+  // rate_limit_error; the distinct error code keeps them queryable apart.
+  if (err instanceof RateLimitExceededError) return 429;
   // Plan 08-04 (CLOUD-03) — per-backend circuit breaker is open → 503 Service Unavailable.
   if (err instanceof BreakerOpenError) return 503;
   // APIConnectionTimeoutError extends APIConnectionError — check FIRST for 504, before the 502 below
@@ -328,6 +368,21 @@ export function toOpenAIErrorEnvelope(err: unknown): EnvelopeOrSkip {
         message: err.message,
         type: 'rate_limit_error',
         code: 'backend_saturated',
+        param: null,
+      },
+    };
+  }
+  // Plan 08-06 (ROUTE-11 / D-D2) — per-bearer-token RPM exceeded; 429 +
+  // rate_limit_error with the specific `rate_limit_exceeded` code that
+  // distinguishes "too many req/min" from BackendSaturatedError's
+  // "backend at concurrency cap". Both share the wire-level type per the
+  // D-D2 taxonomy.
+  if (err instanceof RateLimitExceededError) {
+    return {
+      error: {
+        message: err.message,
+        type: 'rate_limit_error',
+        code: 'rate_limit_exceeded',
         param: null,
       },
     };
@@ -459,6 +514,13 @@ export function toAnthropicErrorEnvelope(err: unknown): AnthropicEnvelopeOrSkip 
     return { type: 'error', error: { type: 'invalid_request_error', message: err.message } };
   }
   if (err instanceof BackendSaturatedError) {
+    return { type: 'error', error: { type: 'rate_limit_error', message: err.message } };
+  }
+  // Plan 08-06 (ROUTE-11 / D-D2) — per-bearer-token RPM exceeded → Anthropic
+  // taxonomy rate_limit_error (same enum value as BackendSaturatedError on the
+  // Anthropic surface; the distinct error code in the OpenAI envelope is the
+  // surfacing point of the split).
+  if (err instanceof RateLimitExceededError) {
     return { type: 'error', error: { type: 'rate_limit_error', message: err.message } };
   }
   // Plan 08-04 (CLOUD-03) — breaker open → Anthropic-taxonomy `overloaded_error`.

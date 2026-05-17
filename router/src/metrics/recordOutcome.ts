@@ -28,6 +28,7 @@ import {
   InvalidAgentIdError,
   InvalidImageUrlError,
   InvalidToolArgumentsError,
+  RateLimitExceededError,
   RegistryUnknownModelError,
 } from '../errors/envelope.js';
 import type { BufferedWriter } from '../db/bufferedWriter.js';
@@ -131,6 +132,11 @@ export function deriveStatusClass(httpStatus: number, clientAborted: boolean): S
 export function mapErrorToCode(err: unknown): string {
   if (err instanceof RegistryUnknownModelError) return 'unknown_model';
   if (err instanceof BackendSaturatedError) return 'backend_saturated';
+  // Plan 08-06 (ROUTE-11 / D-D2) — per-bearer-token RPM exceeded; bucket label
+  // 'rate_limit_exceeded' keeps it separable from 'backend_saturated' in the
+  // request_log error_code column even though both share the wire-level
+  // type='rate_limit_error' envelope.
+  if (err instanceof RateLimitExceededError) return 'rate_limit_exceeded';
   if (err instanceof CapabilityNotSupportedError) return 'model_capability_mismatch';
   if (
     err instanceof InvalidAgentIdError ||

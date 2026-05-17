@@ -53,6 +53,14 @@ const EnvSchema = z.object({
   CIRCUIT_FAILURE_THRESHOLD: z.coerce.number().int().min(1).default(5),
   CIRCUIT_WINDOW_MS: z.coerce.number().int().min(1_000).default(30_000),
   CIRCUIT_COOLDOWN_MS: z.coerce.number().int().min(1_000).default(60_000),
+  // Phase 8 Plan 06 (ROUTE-11 / D-D3) — per-bearer-token-per-minute RPM
+  // (global default; not per-token in models.yaml — D-D3 explicitly rejected
+  // that direction for single-user v1). 600 req/min comfortably accommodates
+  // an aggressive agent workload while still tripping a buggy retry loop in
+  // <1 second of misbehavior. Out-of-range (< 1) fails schema validation —
+  // a zero or negative limit would either disable the limit entirely (zero)
+  // or be meaningless (negative); both are operator-error cases.
+  ROUTER_RATE_LIMIT_RPM: z.coerce.number().int().min(1).default(600),
 });
 
 export type Env = z.infer<typeof EnvSchema>;
