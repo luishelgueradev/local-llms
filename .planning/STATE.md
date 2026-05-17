@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v0.9.0
 milestone_name: milestone
 status: executing
-stopped_at: "Phase 8 Plan 05 (CLOUD-04 — cloud max_tokens hard-cap) COMPLETE — CLOUD_MAX_TOKENS_CAP=16384 constant + CloudMaxTokensExceededError class (D-C1 never silently clip; D-C2 single source of truth). Pre-adapter guard on /v1/chat/completions + /v1/messages fires AFTER req.resolvedBackend stamp (X-Model-Backend still ships on 400) and BEFORE breaker.check (no half-open probe consumption). OpenAI envelope: code='cloud_max_tokens_exceeded' / param='max_tokens'; Anthropic envelope: invalid_request_error. Embeddings route NOT gated (no max_tokens param). 4 commits: 645bffe+5921672+0b87d2b+eb9291f across 2 atomic TDD task pairs. 610/612 tests pass (+12 new). Build clean. Zero deviations. CLOUD-04 closes. Cloud-cost-protection layer 2/4 complete (breaker + cap); plans 08-06 (rate limit) + 08-07 (idempotency mux) remain."
-last_updated: "2026-05-17T16:37:39Z"
+stopped_at: "Phase 8 Plan 06 (ROUTE-11 — per-bearer rate limit) COMPLETE — RateLimitExceededError class + ROUTER_RATE_LIMIT_RPM env (default 600, min 1) + bearerHash (SHA-256 truncated 8 hex, D-D2 mitigation) + makeRateLimitPreHandler factory with Valkey INCR+EXPIRE 65s on `ratelimit:{hash}:{minute}` + 429 wire envelope (rate_limit_error / rate_limit_exceeded / Retry-After: 60) + fail-open on Valkey errors + public-path bypass + onRequest hook AFTER bearer + BEFORE agentId. rateLimitNow injection seam added to BuildAppOpts (parallel to breakerNow) — Rule 3 fix because vi.useFakeTimers hangs Fastify's app.inject. 6 commits: 91faa8b+f1a2b84+1c1c5d3+ea55b46+f19c21e+775ae55 across 3 atomic TDD task pairs (5 envelope + 12 unit + 7 integration tests). 638/640 tests pass (+24 new). Build clean. 1 auto-fix (rateLimitNow injection seam). ROUTE-11 closes. Cloud-cost-protection layer 3/4 complete (breaker + cap + rate-limit); 08-07 (idempotency mux) remains."
+last_updated: "2026-05-17T16:55:26Z"
 progress:
   total_phases: 9
   completed_phases: 7
   total_plans: 50
-  completed_plans: 46
-  percent: 92
+  completed_plans: 47
+  percent: 94
 ---
 
 # Project State: local-llms
@@ -27,12 +27,12 @@ progress:
 ## Current Position
 
 Phase: 08 (Ollama Cloud Fallback + Resilience Hardening) — EXECUTING
-Plan: 7 of 11
+Plan: 8 of 11
 
 - **Milestone:** v1
 - **Phase:** 8
-- **Plan:** 08-05 (Wave 2, CLOUD-04 — cloud max_tokens hard-cap) — COMPLETE. router/src/config/constants.ts exports `CLOUD_MAX_TOKENS_CAP = 16_384` (D-C2). router/src/errors/envelope.ts adds CloudMaxTokensExceededError class with 3 envelope mappings (status 400; OpenAI envelope code='cloud_max_tokens_exceeded' / param='max_tokens'; Anthropic envelope invalid_request_error). recordOutcome.ts mapErrorToCode → 'invalid_request' D-D2 bucket. Pre-adapter guard on chat-completions.ts + messages.ts fires AFTER req.resolvedBackend stamp (Plan 08-03 X-Model-Backend still ships on 400) and BEFORE breaker.check (Plan 08-04 — oversized requests never consume half-open probe slots). Embeddings route NOT gated (no max_tokens param). 4 commits: 645bffe+5921672+0b87d2b+eb9291f across 2 atomic TDD task pairs (RED unit/GREEN core + RED integration/GREEN routes). 610/612 tests pass (+12 new). Build clean. Zero deviations. CLOUD-04 closes.
-- **Next plan:** 08-06 (Wave 2, per-backend rate limit — reuses Plan 08-04 patterns: no-op fallback, fire-and-forget signal, Valkey decorator). Then 08-07 (idempotency mux), 08-08, 08-09, 08-10.
+- **Plan:** 08-06 (Wave 2, ROUTE-11 — per-bearer-token rate limit) — COMPLETE. router/src/middleware/rateLimit.ts exports `bearerHash(raw)` (SHA-256 truncated to 8 hex chars — D-D2 mitigation of token leakage via Valkey MONITOR) + `makeRateLimitPreHandler({ valkey, log, rpmLimit, now? })` factory returning a Fastify onRequest hook. Key shape `ratelimit:{hash}:{epoch_minute}`; INCR on every request; EXPIRE 65s on count===1 only; throws RateLimitExceededError when count > rpmLimit; fail-open on Valkey errors (log warn + proceed — semaphore + breaker are hard caps; rate-limit is soft cap). RateLimitExceededError class added to envelope.ts with HTTP 429 + OpenAI envelope (rate_limit_error / rate_limit_exceeded / param: null) + Anthropic envelope (rate_limit_error) + recordOutcome.ts mapErrorToCode → 'rate_limit_exceeded' bucket (distinct from 'backend_saturated'). app.ts registers the hook AFTER bearer onRequest + BEFORE agentId preHandler, gated on `opts.valkey && opts.env`; stamps Retry-After: 60 in setErrorHandler BEFORE envelope serialization. BuildAppOpts.env widened to include ROUTER_RATE_LIMIT_RPM; new `rateLimitNow?` injection seam parallels breakerNow (replaces vi.useFakeTimers which hangs Fastify's app.inject). index.ts passes env.ROUTER_RATE_LIMIT_RPM through. Public-path bypass (/healthz, /readyz, /metrics) reuses PUBLIC_PATHS from auth/bearer.ts. 6 commits: 91faa8b+f1a2b84+1c1c5d3+ea55b46+f19c21e+775ae55 across 3 atomic TDD task pairs (4 env + 5 envelope + 12 unit + 7 integration tests). 638/640 tests pass (+24 new; 2 skipped pre-existing). Build clean. 1 auto-fix deviation (Rule 3 — rateLimitNow injection seam was missing from plan interfaces; required to make Test 6 verifiable without freezing Fastify timers). ROUTE-11 closes. Cloud-cost-protection layer 3/4 complete (BREAKER + CAP + RATE-LIMIT); 08-07 (DEDUPE idempotency mux) is the last guard in the layer.
+- **Next plan:** 08-07 (Wave 2, idempotency mux — reuses Valkey INCR + bearer-hash pattern from 08-06; SETNX + pub/sub for in-flight de-dupe). Then 08-08, 08-09, 08-10.
 - **Phase 7 carry-over:** Plan 07-06 task 3 still PENDING-HUMAN (operator approval on RTX 5060 Ti host). Recipe in 07-06-SUMMARY.md §User Setup Required.
 
 ### Progress
@@ -45,10 +45,10 @@ Phase 4: ░░░░░░░░░░ 0% (0/16 requirements)
 Phase 5: ░░░░░░░░░░ 0% (0/8 requirements)
 Phase 6: ░░░░░░░░░░ 0% (0/11 requirements)
 Phase 7: █████████░ 86% (6/7 requirements coded; smoke scripts in tree; OBS-05 already complete from Phase 5; awaiting operator human-verify on 07-06 task 3)
-Phase 8: ████████░░ 78% (8/9 requirements — CLOUD-01 precondition closed via Plan 08-00; DATA-06 foundation closed via Plan 08-01; CLOUD-01 + CLOUD-02 + EMBED-02 vertical slice closed via Plan 08-02; ROUTE-10 closed via Plan 08-03; CLOUD-03 closed via Plan 08-04; CLOUD-04 closed via Plan 08-05)
+Phase 8: █████████░ 89% (9/9 requirements coded — CLOUD-01 precondition closed via Plan 08-00; DATA-06 foundation closed via Plan 08-01; CLOUD-01 + CLOUD-02 + EMBED-02 vertical slice closed via Plan 08-02; ROUTE-10 closed via Plan 08-03; CLOUD-03 closed via Plan 08-04; CLOUD-04 closed via Plan 08-05; ROUTE-11 closed via Plan 08-06)
 Phase 9: ░░░░░░░░░░ 0% (0/4 requirements)
 
-Overall: ███░░░░░░░ 32% (24/76 v1 requirements)
+Overall: ███░░░░░░░ 33% (25/76 v1 requirements)
 ```
 
 ## Performance Metrics
@@ -103,8 +103,8 @@ Overall: ███░░░░░░░ 32% (24/76 v1 requirements)
 
 ## Session Continuity
 
-Last session: 2026-05-17T16:37:39Z
-Stopped at: Phase 8 Plan 05 (CLOUD-04 — cloud max_tokens hard-cap) COMPLETE — CLOUD_MAX_TOKENS_CAP=16384 constant (D-C2 single source of truth, not env-configurable in v1) + CloudMaxTokensExceededError class with 3 envelope mappings (400 + cloud_max_tokens_exceeded on OpenAI / invalid_request_error on Anthropic). Pre-adapter guard on chat-completions + messages routes fires AFTER req.resolvedBackend stamp (X-Model-Backend still ships on 400 — Plan 08-03 onSend) and BEFORE breaker.check (Plan 08-04 — oversized requests don't consume probe slots). Embeddings route NOT gated. 4 commits: 645bffe+5921672+0b87d2b+eb9291f across 2 atomic TDD task pairs. 610/612 tests pass (+12 new). Build clean. Zero deviations. CLOUD-04 closes. Cloud-cost-protection layer 2/4 complete (breaker + cap); 08-06 (rate limit) + 08-07 (idempotency mux) remain.
+Last session: 2026-05-17T16:55:26Z
+Stopped at: Phase 8 Plan 06 (ROUTE-11 — per-bearer-token rate limit) COMPLETE — middleware/rateLimit.ts with bearerHash (SHA-256[:8]) + makeRateLimitPreHandler (Valkey INCR+EXPIRE 65s on `ratelimit:{hash}:{minute}`, fail-open on Valkey errors, public-path bypass) + RateLimitExceededError class (429 + Retry-After: 60 + OpenAI rate_limit_error/rate_limit_exceeded + Anthropic rate_limit_error) + ROUTER_RATE_LIMIT_RPM env (default 600, min 1) + Retry-After in setErrorHandler + rateLimitNow injection seam (parallels breakerNow). 6 commits: 91faa8b+f1a2b84+1c1c5d3+ea55b46+f19c21e+775ae55 across 3 TDD pairs. 638/640 tests pass (+24 new). Build clean. 1 auto-fix (Rule 3 — rateLimitNow seam was missing from plan interfaces; required because vi.useFakeTimers hangs Fastify app.inject). ROUTE-11 closes. Cloud-cost-protection layer 3/4 complete (BREAKER+CAP+RATE-LIMIT); 08-07 (DEDUPE) is the last guard.
 
 **Next action:** Operator runs the recipe in 07-06-SUMMARY.md §User Setup Required: `docker compose --profile vllm up -d` → wait for vllm healthy → `bash bin/smoke-test-observability.sh && bash bin/smoke-test-router.sh` → visual Grafana check → reply `approved` (or list failing assertions for re-execution).
 

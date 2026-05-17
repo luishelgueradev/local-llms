@@ -18,3 +18,14 @@ These errors:
 Suggested fix (out of scope for 08-01): widen the test fixture's backend type
 with `as unknown as LocalBackend` or pick a real backend name for the
 fictional registry entries.
+
+## Plan 08-06 flake (out-of-scope)
+
+**Discovered 2026-05-17 during 08-06 Task 3 full-suite run.**
+
+`tests/integration/hotreload.vram.test.ts > recovery: after failed VRAM
+reload, valid reload succeeds and advances createdAtSec` — intermittently
+times out at ~2s on full-suite parallel run; passes deterministically in
+isolation and on suite rerun. Root cause: pre-existing fs.watch debounce
+race in the hot-reload watcher under concurrent test-file pressure (Pitfall 7
+in PITFALLS.md). NOT introduced by 08-06; tracked here for future hardening.

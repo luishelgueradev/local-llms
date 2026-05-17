@@ -229,7 +229,7 @@ Plans:
 - [x] 08-03-PLAN.md — X-Model-Backend onSend hook + 3 route stamps (ROUTE-10)
 - [x] 08-04-PLAN.md — Per-backend circuit breaker with Valkey-backed state machine + half-open probe lock (CLOUD-03)
 - [x] 08-05-PLAN.md — max_tokens 16384 cap for cloud + structured envelope (CLOUD-04)
-- [ ] 08-06-PLAN.md — Per-bearer-token-per-minute rate limit pre-handler + Valkey INCR + Retry-After (ROUTE-11)
+- [x] 08-06-PLAN.md — Per-bearer-token-per-minute rate limit pre-handler + Valkey INCR + Retry-After (ROUTE-11)
 
 **Wave 3** *(three parallel plans — depend on Waves 1 + 2)*
 - [ ] 08-07-PLAN.md — Idempotency-Key multiplexer (Valkey SETNX + pub/sub + cached chunks list + stream/non-stream replay) (ROUTE-12)
