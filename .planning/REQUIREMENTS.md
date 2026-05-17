@@ -118,7 +118,7 @@
 
 ### Operations
 
-- [ ] **OPS-01**: `bin/gc-models.sh` removes model files on disk that are no longer referenced in `models.yaml`
+- [x] **OPS-01**: `bin/gc-models.sh` removes model files on disk that are no longer referenced in `models.yaml`
 - [ ] **OPS-02**: An off-host backup destination is configured (restic or rclone) for the Postgres dump
 - [ ] **OPS-03**: A disk-usage alert fires when `/srv/models` exceeds a configurable threshold
 - [ ] **OPS-04**: Bearer-token rotation procedure is documented in the project README
@@ -255,7 +255,7 @@ Each requirement maps to exactly one phase. Mapping derived from research-recomm
 | ROUTE-10 | Phase 8 — Ollama Cloud Fallback + Resilience Hardening | Complete |
 | ROUTE-11 | Phase 8 — Ollama Cloud Fallback + Resilience Hardening | Complete |
 | ROUTE-12 | Phase 8 — Ollama Cloud Fallback + Resilience Hardening | Complete |
-| OPS-01 | Phase 9 — Operations Hardening | Pending |
+| OPS-01 | Phase 9 — Operations Hardening | Complete |
 | OPS-02 | Phase 9 — Operations Hardening | Pending |
 | OPS-03 | Phase 9 — Operations Hardening | Pending |
 | OPS-04 | Phase 9 — Operations Hardening | Pending |
