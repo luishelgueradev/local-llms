@@ -19,7 +19,7 @@ Un endpoint HTTPS único que hable simultáneamente OpenAI y Anthropic, despache
 - [ ] **Phase 6: Traefik + TLS + Open WebUI** — Real HTTPS endpoint with four-network topology, SSE-friendly Traefik config, 120s+ E2E streaming verified through the proxy, and Open WebUI on a separate subdomain configured to talk only to the router.
 - [x] **Phase 7: Embeddings + vLLM + GPU Telemetry** — `/v1/embeddings` (OpenAI surface), vLLM AWQ backend with explicit VRAM partitioning, vLLM/llama.cpp `/metrics` scraped, GPU exporter, and a Grafana dashboard for VRAM/ttft/error rate. (completed 2026-05-17)
 - [ ] **Phase 8: Ollama Cloud Fallback + Resilience Hardening** — `backend: ollama-cloud` with bearer auth, circuit breaker, cloud-spend metric, hard `max_tokens` cap, Valkey-backed rate limit, `Idempotency-Key`, and `X-Model-Backend` response header.
-- [ ] **Phase 9: Operations Hardening** — `bin/gc-models.sh` keyed off `models.yaml`, off-host backup destination, disk-usage alert, and documented bearer-token rotation procedure.
+- [x] **Phase 9: Operations Hardening** ✅ Complete 2026-05-17 — `bin/gc-models.sh` keyed off `models.yaml`, off-host backup destination via restic, disk-usage alert via host cron + structured log + optional ntfy hook, and documented bearer-token rotation procedure with OWUI PersistentConfig pivot.
 
 ## Phase Details
 
@@ -256,7 +256,7 @@ Plans:
 - [x] 09-01-PLAN.md — OPS-01: bin/gc-models.sh dry-run + --apply with GC confirmation phrase + allowlist + move-to-trash (T-09-D / T-09-E mitigations); router/src/ops/gcModels.ts parser + vitest test; README §Operations §Garbage-collecting unused model files
 - [x] 09-02-PLAN.md — OPS-02: bin/backup-postgres.sh restic publish wrapper around the existing pg-backup sidecar's daily dumps; BACKUP_RESTIC_REPO + BACKUP_RESTIC_PASSWORD + optional BACKUP_KEEP_POLICY env contract; README §Operations §Off-host backups + off-host restore-drill extension
 - [x] 09-03-PLAN.md — OPS-03: bin/disk-alert.sh df -P + threshold check + structured log line + optional ntfy hook; DISK_ALERT_THRESHOLD_PCT + optional NTFY_URL env contract; README §Operations §Disk-usage alert
-- [ ] 09-04-PLAN.md — OPS-04: README §Operations §Rotating the bearer token — 10-step procedure incl. OWUI PersistentConfig pivot (admin-UI + direct-SQL paths) + OLD_PREFIX verification grep + rollback note + cross-references to VALKEY/POSTGRES/GRAFANA/RESTIC password rotation (v2)
+- [x] 09-04-PLAN.md — OPS-04: README §Operations §Rotating the bearer token — 10-step procedure incl. OWUI PersistentConfig pivot (admin-UI + direct-SQL paths) + OLD_PREFIX verification grep + rollback note + cross-references to VALKEY/POSTGRES/GRAFANA/RESTIC password rotation (v2)
 
 ## Progress
 
@@ -270,7 +270,7 @@ Plans:
 | 6. Traefik + TLS + Open WebUI | 0/4 | Planned | - |
 | 7. Embeddings + vLLM + GPU Telemetry | 7/7 | Complete   | 2026-05-17 |
 | 8. Ollama Cloud Fallback + Resilience Hardening | 9/11 | In Progress|  |
-| 9. Operations Hardening | 2/4 | In Progress | - |
+| 9. Operations Hardening | 4/4 | Complete | 2026-05-17 |
 
 ## Coverage Summary
 

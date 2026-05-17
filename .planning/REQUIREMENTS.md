@@ -121,7 +121,7 @@
 - [x] **OPS-01**: `bin/gc-models.sh` removes model files on disk that are no longer referenced in `models.yaml`
 - [x] **OPS-02**: An off-host backup destination is configured (restic or rclone) for the Postgres dump
 - [x] **OPS-03**: A disk-usage alert fires when `/srv/models` exceeds a configurable threshold
-- [ ] **OPS-04**: Bearer-token rotation procedure is documented in the project README
+- [x] **OPS-04**: Bearer-token rotation procedure is documented in the project README
 
 ## v2 Requirements
 
@@ -258,7 +258,7 @@ Each requirement maps to exactly one phase. Mapping derived from research-recomm
 | OPS-01 | Phase 9 — Operations Hardening | Complete |
 | OPS-02 | Phase 9 — Operations Hardening | Complete |
 | OPS-03 | Phase 9 — Operations Hardening | Complete |
-| OPS-04 | Phase 9 — Operations Hardening | Pending |
+| OPS-04 | Phase 9 — Operations Hardening | Complete |
 
 **Coverage:**
 - v1 requirements: 76 total
