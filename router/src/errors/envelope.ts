@@ -192,10 +192,21 @@ export class RateLimitExceededError extends Error {
 export class InvalidIdempotencyKeyError extends Error {
   readonly code: 'invalid_idempotency_key' = 'invalid_idempotency_key';
   constructor(public readonly suppliedValue: string) {
+    // 08-REVIEW WR-01 fix: sanitize before display.
+    //
+    // The supplied value is attacker-controlled (any HTTP header value). The
+    // pre-fix code length-capped to 32 chars but did NOT scrub control
+    // characters or shell-quoting chars; the full value also reached pino logs
+    // via the centralized error handler's `req.log.warn({ err, ... })`. Both
+    // surfaces are now scrubbed: any character outside the allowed regex set
+    // `[A-Za-z0-9._:-]` (the same set the validator accepts) is replaced with
+    // `?`, then truncated to 32 chars. This keeps the error message readable
+    // for the operator while neutralizing newline / ANSI escape / null-byte
+    // log-injection vectors.
+    const raw = String(suppliedValue ?? '');
+    const sanitized = raw.replace(/[^A-Za-z0-9._:,\-]/g, '?');
     const display =
-      typeof suppliedValue === 'string' && suppliedValue.length > 32
-        ? `${suppliedValue.slice(0, 32)}...`
-        : String(suppliedValue ?? '');
+      sanitized.length > 32 ? `${sanitized.slice(0, 32)}...` : sanitized;
     super(
       `Idempotency-Key "${display}" violates regex /^[A-Za-z0-9._:-]{1,256}$/`,
     );
