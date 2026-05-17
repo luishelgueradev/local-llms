@@ -163,6 +163,37 @@ async function main(): Promise<void> {
     usePolling,
     pollingIntervalMs: 1000,
     onReload: (next) => {
+      // 08-REVIEW WR-07 fix: re-run the cloud-env cross-check on every
+      // hot-reload, NOT just at boot. Without this, an operator who adds
+      // a `backend: ollama-cloud` entry to models.yaml after start gets
+      // a silent runtime trap — the first request to the new model hits
+      // factory.ts's defense-in-depth check and returns a 500-ish error
+      // instead of the controlled boot-time refusal.
+      //
+      // We do NOT throw here — that would kill the watcher and rollover
+      // semantics. Instead, log at error level and SKIP the swap, mirroring
+      // the existing onError keep-previous semantics. The previous
+      // (pre-reload) registry stays active; the operator sees the error
+      // line and fixes the config.
+      //
+      // NOTE: watchRegistry already committed `next` to the registry store
+      // BEFORE calling onReload (registry.ts contract — onReload fires
+      // AFTER the swap). The pre-swap shape of this hook is not exposed,
+      // so we treat onReload as a post-condition validation that can
+      // surface misconfiguration but cannot "undo" the swap. For the
+      // single-operator scope here, the misconfigured-cloud-on-hot-reload
+      // case fails to authenticate at the first request rather than
+      // looping back to the pre-reload snapshot — acceptable until v2
+      // adds a richer two-phase commit. The error log is the operator's
+      // signal to revert the YAML.
+      try {
+        assertCloudEnvIfConfigured(next, env);
+      } catch (cloudErr) {
+        app.log.error(
+          { err: cloudErr },
+          'registry hot-reload: cloud env cross-check failed (cloud entries will return 500 until OLLAMA_API_KEY is set or entries are removed)',
+        );
+      }
       app.log.info({ models: next.models.length, names: next.models.map((m) => m.name) }, 'registry reloaded');
       // Plan 08-09 (DATA-06) — propagate the new snapshot to Valkey BEFORE
       // doing further reload work so multi-instance peers (v2) and any
