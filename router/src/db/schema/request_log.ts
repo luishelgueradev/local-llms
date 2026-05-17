@@ -13,6 +13,7 @@
 // - Indexes: ts DESC (recency queries), (agent_id, ts DESC) covering index
 //   for the "debug a runaway agent" use case (the literal use case in
 //   PROJECT.md), and status_class for error filtering.
+import { sql } from 'drizzle-orm';
 import { index, integer, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
 
 export const requestLog = pgTable(
@@ -35,6 +36,14 @@ export const requestLog = pgTable(
     agent_id: text('agent_id'), // nullable — from X-Agent-Id header, validated regex (D-D5)
     request_id: text('request_id').notNull(), // pino req.id — joins with logs
     upstream_message_id: text('upstream_message_id'), // Anthropic msg_<ulid> for /v1/messages
+    // Phase 8 Plan 07 (ROUTE-12 / D-D5) + 08-REVIEW CR-01 fix:
+    // Idempotency-Key header value, when present + valid per
+    // `/^[A-Za-z0-9._:-]{1,256}$/`. Nullable: the header is OPTIONAL and the
+    // vast majority of requests do not carry one. Populated for BOTH leader
+    // and follower request_log rows by the multiplexer wiring in chat-completions /
+    // messages / embeddings — operators filter on this column when verifying
+    // dedup (smoke-test-cloud.sh / smoke-test-router.sh / README "verify dedup").
+    idempotency_key: text('idempotency_key'),
   },
   (t) => ({
     // Baseline btree indexes per D-D1. Tune if/when volume warrants
@@ -42,6 +51,12 @@ export const requestLog = pgTable(
     idxTsDesc: index('idx_request_log_ts_desc').on(t.ts.desc()),
     idxAgentTs: index('idx_request_log_agent_ts').on(t.agent_id, t.ts.desc()),
     idxStatusClass: index('idx_request_log_status_class').on(t.status_class),
+    // 08-REVIEW CR-01: partial index on idempotency_key for the verify-dedup
+    // query path. Partial (WHERE idempotency_key IS NOT NULL) keeps the index
+    // small — only the small minority of requests with the header populate it.
+    idxIdempotencyKey: index('idx_request_log_idempotency_key')
+      .on(t.idempotency_key)
+      .where(sql`${t.idempotency_key} IS NOT NULL`),
   }),
 );
 

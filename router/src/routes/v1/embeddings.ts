@@ -290,6 +290,8 @@ export function registerEmbeddingsRoute(
           // Plan 08-07 (D-D5) — follower request_log row carries the leader's
           // upstream_message_id for cost-attribution grouping (Plan 08-08).
           upstreamMessageId: followerUpstreamMessageId,
+          // 08-REVIEW CR-01: persist Idempotency-Key for dedup verification.
+          idempotencyKey,
           timestamp: new Date(),
         });
       }

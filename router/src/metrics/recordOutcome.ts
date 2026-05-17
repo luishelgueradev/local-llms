@@ -72,6 +72,14 @@ export interface OutcomeContext {
   agentId?: string;
   requestId: string;
   upstreamMessageId?: string;
+  /**
+   * Phase 8 Plan 07 (ROUTE-12 / D-D5) + 08-REVIEW CR-01 fix: the validated
+   * Idempotency-Key header value, when present. Populated for BOTH leader
+   * and follower request_log rows so operators can filter on this column
+   * when verifying dedup (smoke-test-cloud.sh / README "verify dedup" recipe).
+   * Undefined when the request did not carry the header (vast majority).
+   */
+  idempotencyKey?: string;
   timestamp: Date;
 }
 
@@ -232,6 +240,10 @@ export function makeRecordRequestOutcome(deps: RecordRequestOutcomeDeps) {
       agent_id: ctx.agentId ?? null,
       request_id: ctx.requestId,
       upstream_message_id: ctx.upstreamMessageId ?? null,
+      // 08-REVIEW CR-01: Idempotency-Key column (Plan 08-07 / D-D5). Populated
+      // for both leader and follower rows; null for the (vast) majority of
+      // requests that don't carry the header.
+      idempotency_key: ctx.idempotencyKey ?? null,
     };
     bufferedWriter.push(row);
   };

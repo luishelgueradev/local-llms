@@ -360,6 +360,9 @@ export function registerChatCompletionsRoute(
                 agentId: req.agentId,
                 requestId: req.id,
                 upstreamMessageId: followerUpstreamMessageId,
+                // 08-REVIEW CR-01: persist Idempotency-Key so dedup verification
+                // queries (smoke-test-cloud.sh + README) find the follower rows.
+                idempotencyKey,
                 timestamp: new Date(),
               });
             };
@@ -436,6 +439,8 @@ export function registerChatCompletionsRoute(
                 errorCode: 'client_disconnect',
                 agentId: req.agentId,
                 requestId: req.id,
+                // 08-REVIEW CR-01: persist Idempotency-Key on pre-stream errors.
+                idempotencyKey,
                 timestamp: new Date(),
               });
               return; // client gone — defensive
@@ -453,6 +458,8 @@ export function registerChatCompletionsRoute(
               errorMessage: errInst.message,
               agentId: req.agentId,
               requestId: req.id,
+              // 08-REVIEW CR-01: persist Idempotency-Key on pre-stream errors.
+              idempotencyKey,
               timestamp: new Date(),
             });
             return reply.code(status).send(env);
@@ -581,6 +588,9 @@ export function registerChatCompletionsRoute(
               // Plan 08-07 — share upstream_message_id with followers'
               // request_log rows for Plan 08-08 cost-attribution grouping.
               upstreamMessageId: capturedUpstreamMessageId,
+              // 08-REVIEW CR-01: persist Idempotency-Key so dedup verification
+              // queries can group leader + follower rows on this column.
+              idempotencyKey,
               timestamp: new Date(),
             });
           };
@@ -731,6 +741,9 @@ export function registerChatCompletionsRoute(
             // can collapse the 1 leader + N followers into a single charged
             // generation via GROUP BY upstream_message_id.
             upstreamMessageId: followerUpstreamMessageId,
+            // 08-REVIEW CR-01: persist Idempotency-Key for the outer-finally
+            // path (non-stream success + thrown errors).
+            idempotencyKey,
             timestamp: new Date(),
           });
         }

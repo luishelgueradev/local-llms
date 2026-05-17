@@ -354,6 +354,8 @@ export function registerMessagesRoute(
                 agentId: req.agentId,
                 requestId: req.id,
                 upstreamMessageId: followerUpstreamMessageId ?? final?.upstreamMessageId,
+                // 08-REVIEW CR-01: persist Idempotency-Key for the follower path.
+                idempotencyKey,
                 timestamp: new Date(),
               });
             };
@@ -438,6 +440,8 @@ export function registerMessagesRoute(
                 errorCode: 'client_disconnect',
                 agentId: req.agentId,
                 requestId: req.id,
+                // 08-REVIEW CR-01: persist Idempotency-Key on pre-stream errors.
+                idempotencyKey,
                 timestamp: new Date(),
               });
               return; // client gone — defensive
@@ -455,6 +459,8 @@ export function registerMessagesRoute(
               errorMessage: errInst.message,
               agentId: req.agentId,
               requestId: req.id,
+              // 08-REVIEW CR-01: persist Idempotency-Key on pre-stream errors.
+              idempotencyKey,
               timestamp: new Date(),
             });
             return reply.code(status).send(env);
@@ -573,6 +579,8 @@ export function registerMessagesRoute(
               agentId: req.agentId,
               requestId: req.id,
               upstreamMessageId: final?.upstreamMessageId,
+              // 08-REVIEW CR-01: persist Idempotency-Key for the stream-end path.
+              idempotencyKey,
               timestamp: new Date(),
             });
           };
@@ -705,6 +713,9 @@ export function registerMessagesRoute(
             // same column so Plan 08-08's GROUP BY upstream_message_id sees
             // 1 leader + N followers as a single charged generation.
             upstreamMessageId: followerUpstreamMessageId ?? canonicalResult?.id,
+            // 08-REVIEW CR-01: persist Idempotency-Key for the outer-finally
+            // path (non-stream success + thrown errors).
+            idempotencyKey,
             timestamp: new Date(),
           });
         }
