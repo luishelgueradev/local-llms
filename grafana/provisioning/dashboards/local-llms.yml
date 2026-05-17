@@ -1,0 +1,32 @@
+# grafana/provisioning/dashboards/local-llms.yml
+#
+# Dashboard provider config (Plan 07-05; CLOSED R-5 verbatim shape).
+#
+# Grafana reads this YAML at boot and looks at `options.path` (inside the
+# container) for JSON dashboard files. Plan 07-02's grafana service block
+# (compose.yml) bind-mounts:
+#
+#   ./grafana/provisioning/dashboards/  →  /etc/grafana/provisioning/dashboards/  (this file)
+#   ./grafana/provisioning/dashboards/local-llms.json  →  /etc/grafana/dashboards/local-llms.json
+#
+# So this provider config is auto-loaded, and the JSON file it points at
+# (/etc/grafana/dashboards/local-llms.json) is bind-mounted next to it.
+#
+# `allowUiUpdates: true` lets operators tweak panels in the UI for previewing;
+# Grafana clones provisioned dashboards into its internal DB and the source
+# file remains the git source of truth. Reset via `docker compose down -v`.
+#
+# Single-dashboard policy (CONTEXT D-D4) — DO NOT add a second provider entry.
+apiVersion: 1
+
+providers:
+  - name: 'local-llms'
+    orgId: 1
+    folder: ''                       # root folder in the Grafana UI
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30        # re-read JSON files this often
+    allowUiUpdates: true             # operator can tweak; clones to DB; reset via `down -v`
+    options:
+      path: /etc/grafana/dashboards
+      foldersFromFilesStructure: false
