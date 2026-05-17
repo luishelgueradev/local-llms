@@ -47,6 +47,7 @@ import {
   openAIChatCompletionToCanonical,
   openAIChunksToCanonicalEvents,
 } from '../translation/openai-out.js';
+import { CLOUD_ADAPTER_TIMEOUT_MS } from '../config/constants.js';
 
 export class OllamaCloudAdapter implements BackendAdapter {
   private readonly client: OpenAI;
@@ -67,7 +68,9 @@ export class OllamaCloudAdapter implements BackendAdapter {
           'should have caught this at boot. Verify OLLAMA_API_KEY is set in .env.',
       );
     }
-    this.client = new OpenAI({ baseURL, apiKey, timeout: 120_000 });
+    // CLOUD_ADAPTER_TIMEOUT_MS is the single source of truth shared with the
+    // circuit breaker's probe_lock TTL (08-REVIEW CR-03 invariant).
+    this.client = new OpenAI({ baseURL, apiKey, timeout: CLOUD_ADAPTER_TIMEOUT_MS });
   }
 
   async chatCompletionsCanonical(

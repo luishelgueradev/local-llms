@@ -21,9 +21,22 @@
 //   breaker:${backend}:probe_at     epoch_ms when the next probe is allowed;
 //                                   set on opening; TTL aligned with state.
 //   breaker:${backend}:probe_lock   SETNX during half-open probe; ensures only
-//                                   ONE probe runs concurrently; TTL = cooldown
-//                                   so a wedged probe doesn't permanently
-//                                   block re-arming.
+//                                   ONE probe runs concurrently. TTL =
+//                                   max(CIRCUIT_COOLDOWN_MS, CLOUD_ADAPTER_TIMEOUT_MS)
+//                                   so the lock CANNOT expire while a single
+//                                   probe is still in flight. The invariant
+//                                   is `probe_lock_ttl_ms >= max(adapter_timeout_ms)`
+//                                   — without it, a slow probe (e.g. cloud-served
+//                                   120B model thinking for 60-120s) can have its
+//                                   lock expire mid-call and a second probe can
+//                                   acquire half-open state concurrently, breaking
+//                                   the "only ONE probe runs concurrently" guarantee
+//                                   (08-REVIEW CR-03 fix). A wedged probe still
+//                                   doesn't permanently block re-arming because the
+//                                   `state` key's TTL (CIRCUIT_COOLDOWN_MS * 2) is
+//                                   the higher-level safety net — when state TTL
+//                                   expires, the breaker returns to 'closed' and the
+//                                   next failure re-fills the counter.
 //
 // All keys are namespaced by backend so a cloud failure storm does not affect
 // the local Ollama keys (D-B4 — per-backend scope is the asymmetry the
@@ -61,6 +74,7 @@ import {
   APIUserAbortError,
 } from 'openai';
 import { z } from 'zod/v4';
+import { CLOUD_ADAPTER_TIMEOUT_MS } from '../config/constants.js';
 
 export type BreakerState = 'closed' | 'open' | 'half-open';
 
@@ -181,11 +195,24 @@ export function makeCircuitBreaker(opts: MakeCircuitBreakerOpts): CircuitBreaker
         if (t >= probeAt) {
           // Cooldown elapsed — attempt to acquire the probe lock. SET NX
           // returns 'OK' if acquired, null if already held by another caller.
+          //
+          // 08-REVIEW CR-03 fix: probe_lock TTL = max(CIRCUIT_COOLDOWN_MS,
+          // CLOUD_ADAPTER_TIMEOUT_MS). The invariant is
+          // `probe_lock_ttl_ms >= max(adapter_timeout_ms)` — the lock must
+          // not expire while the probe is still in flight, otherwise a
+          // second probe can acquire half-open state concurrently and
+          // break the "only ONE probe runs concurrently" guarantee
+          // (see module header). The cloud adapter's 120s SDK timeout
+          // bounds the worst-case probe duration on a cold 120B model.
+          const probeLockTtlMs = Math.max(
+            env.CIRCUIT_COOLDOWN_MS,
+            CLOUD_ADAPTER_TIMEOUT_MS,
+          );
           const acquired = await valkey.set(
             keys.probeLock(backend),
             String(t),
             'PX',
-            env.CIRCUIT_COOLDOWN_MS,
+            probeLockTtlMs,
             'NX',
           );
           if (acquired === 'OK') {

@@ -31,3 +31,19 @@ export const LIVENESS_INTERVAL_MS = 10_000;
  * constant in a follow-up plan and shipping; no env / YAML toggles.
  */
 export const CLOUD_MAX_TOKENS_CAP = 16_384;
+
+/**
+ * Plan 08-02 (CLOUD-01) — OllamaCloudAdapter's per-request SDK timeout.
+ *
+ * Ollama Cloud round-trips are slower than local Ollama; 120s gives the
+ * upstream room to think on 120B models without tripping the SDK timeout.
+ * Lifted out of ollama-cloud.ts so the circuit breaker can reuse it as the
+ * lower bound for its probe_lock TTL (see CIRCUIT_BREAKER_PROBE_LOCK_TTL_MS
+ * and the invariant `probe_lock_ttl_ms >= max(adapter_timeout_ms)`).
+ *
+ * 08-REVIEW CR-03 fix — the breaker MUST hold the probe_lock for at least
+ * as long as a single probe can take; otherwise a wedged probe's lock can
+ * expire mid-call and a SECOND probe can acquire it concurrently, breaking
+ * the "only ONE probe runs concurrently" invariant.
+ */
+export const CLOUD_ADAPTER_TIMEOUT_MS = 120_000;
