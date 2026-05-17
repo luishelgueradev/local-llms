@@ -10,6 +10,7 @@ import { makeAdapter } from '../../src/backends/factory.js';
 import { OllamaOpenAIAdapter } from '../../src/backends/ollama-openai.js';
 import { LlamacppOpenAIAdapter } from '../../src/backends/llamacpp-openai.js';
 import { VLLMOpenAIAdapter } from '../../src/backends/vllm-openai.js';
+import { OllamaCloudAdapter } from '../../src/backends/ollama-cloud.js';
 import type { ModelEntry } from '../../src/config/registry.js';
 
 /**
@@ -59,6 +60,18 @@ function vllmEmbedEntry(overrides: Partial<ModelEntry> = {}): ModelEntry {
     backend_model: 'BAAI/bge-m3',
     capabilities: ['embeddings'],
     vram_budget_gb: 2.5,
+    ...overrides,
+  };
+}
+
+function cloudEntry(overrides: Partial<ModelEntry> = {}): ModelEntry {
+  return {
+    name: 'gpt-oss:120b-cloud',
+    backend: 'ollama-cloud',
+    backend_url: 'https://ollama.com/v1',
+    backend_model: 'gpt-oss:120b-cloud',
+    capabilities: ['chat', 'tools'],
+    vram_budget_gb: 0,
     ...overrides,
   };
 }
@@ -137,5 +150,44 @@ describe('makeAdapter — factory dispatch by entry.backend', () => {
       expect(typeof adapter.chatCompletionsCanonicalStream).toBe('function');
       expect(typeof adapter.probeLiveness).toBe('function');
     }
+  });
+});
+
+describe('Plan 08-02 — makeAdapter cloud dispatch with apiKey threading', () => {
+  it('Test 7: backend: ollama-cloud with cloudApiKey returns an OllamaCloudAdapter instance', () => {
+    const adapter = makeAdapter(cloudEntry(), { cloudApiKey: 'oss_test_key_abc' });
+    expect(adapter).toBeInstanceOf(OllamaCloudAdapter);
+    expect(typeof adapter.chatCompletionsCanonical).toBe('function');
+    expect(typeof adapter.chatCompletionsCanonicalStream).toBe('function');
+    expect(typeof adapter.probeLiveness).toBe('function');
+    expect(typeof adapter.embeddings).toBe('function');
+  });
+
+  it('Test 8: backend: ollama-cloud WITHOUT cloudApiKey throws with "requires cloudApiKey"', () => {
+    expect(() => makeAdapter(cloudEntry(), {})).toThrow(/requires cloudApiKey/);
+  });
+
+  it('Test 8b: backend: ollama-cloud with empty-string cloudApiKey also throws', () => {
+    // Empty string is falsy — same gate as `deps.cloudApiKey` not being set.
+    expect(() => makeAdapter(cloudEntry(), { cloudApiKey: '' })).toThrow(/requires cloudApiKey/);
+  });
+
+  it('Test 9: local backends still dispatch correctly when cloudApiKey is passed (ignored for local)', () => {
+    // The cloudApiKey arg should NOT leak into local adapter construction — local
+    // adapters use placeholder apiKeys baked into their constructors. Passing one
+    // doesn't break dispatch; the closure pattern in app.ts always passes the key
+    // even when the entry is local.
+    expect(makeAdapter(ollamaEntry(), { cloudApiKey: 'oss_test_key_abc' })).toBeInstanceOf(OllamaOpenAIAdapter);
+    expect(makeAdapter(llamacppEntry(), { cloudApiKey: 'oss_test_key_abc' })).toBeInstanceOf(LlamacppOpenAIAdapter);
+    expect(makeAdapter(vllmEntry(), { cloudApiKey: 'oss_test_key_abc' })).toBeInstanceOf(VLLMOpenAIAdapter);
+    expect(makeAdapter(vllmEmbedEntry(), { cloudApiKey: 'oss_test_key_abc' })).toBeInstanceOf(VLLMOpenAIAdapter);
+  });
+
+  it('Test 9b: local backends called with NO deps arg (backward-compat) still dispatch', () => {
+    // The widened signature takes deps as an OPTIONAL second arg. Existing call
+    // sites (e.g. liveness scheduler before Task 3 wires the closure) MUST still
+    // work without passing deps.
+    expect(makeAdapter(ollamaEntry())).toBeInstanceOf(OllamaOpenAIAdapter);
+    expect(makeAdapter(llamacppEntry())).toBeInstanceOf(LlamacppOpenAIAdapter);
   });
 });
