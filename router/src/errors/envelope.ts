@@ -69,6 +69,33 @@ export class CapabilityNotSupportedError extends Error {
 }
 
 /**
+ * Plan 08-04 (CLOUD-03 / D-B1..D-B4): thrown when a request is rejected
+ * because the per-backend circuit breaker is open (or another probe is
+ * in flight while the breaker is half-open).
+ *
+ * Maps to:
+ *   - HTTP 503 (Service Unavailable — backend temporarily unhealthy;
+ *     more accurate than 429 which is per-client rate-limit semantics)
+ *   - OpenAI envelope: type: 'api_error', code: 'backend_circuit_open'
+ *   - Anthropic envelope: type: 'overloaded_error'
+ *
+ * The route handler that throws this error MUST also set the Retry-After
+ * response header to retryAfterSec (mirrors the BackendSaturatedError
+ * pattern in chat-completions.ts:170s) so well-behaved SDKs back off
+ * appropriately rather than retry-storming.
+ */
+export class BreakerOpenError extends Error {
+  readonly code = 'backend_circuit_open';
+  constructor(
+    public readonly backend: string,
+    public readonly retryAfterSec: number,
+  ) {
+    super(`Backend "${backend}" circuit breaker is open; retry after ${retryAfterSec}s`);
+    this.name = 'BreakerOpenError';
+  }
+}
+
+/**
  * Plan 05-02 D-D5 / ROUTE-09: thrown by the agentIdPreHandler when an inbound
  * X-Agent-Id header violates the regex `/^[A-Za-z0-9._:-]{1,128}$/`. Maps to
  * 400 + invalid_request_error on both wire surfaces (OpenAI envelope:
@@ -137,6 +164,8 @@ export function mapToHttpStatus(err: unknown): number {
   if (err instanceof ImageFetchError) return 400;
   // BackendSaturatedError (Plan 03-04, ROUTE-07) — backend concurrency cap exceeded.
   if (err instanceof BackendSaturatedError) return 429;
+  // Plan 08-04 (CLOUD-03) — per-backend circuit breaker is open → 503 Service Unavailable.
+  if (err instanceof BreakerOpenError) return 503;
   // APIConnectionTimeoutError extends APIConnectionError — check FIRST for 504, before the 502 below
   if (err instanceof APIConnectionTimeoutError) return 504;
   if (err instanceof APIConnectionError) return 502;
@@ -242,6 +271,19 @@ export function toOpenAIErrorEnvelope(err: unknown): EnvelopeOrSkip {
         message: err.message,
         type: 'rate_limit_error',
         code: 'backend_saturated',
+        param: null,
+      },
+    };
+  }
+  // Plan 08-04 (CLOUD-03) — per-backend circuit breaker open → api_error with
+  // code='backend_circuit_open'. The route also stamps Retry-After: <cooldown>
+  // (mirror of BackendSaturatedError's Retry-After path).
+  if (err instanceof BreakerOpenError) {
+    return {
+      error: {
+        message: err.message,
+        type: 'api_error',
+        code: 'backend_circuit_open',
         param: null,
       },
     };
@@ -355,6 +397,12 @@ export function toAnthropicErrorEnvelope(err: unknown): AnthropicEnvelopeOrSkip 
   }
   if (err instanceof BackendSaturatedError) {
     return { type: 'error', error: { type: 'rate_limit_error', message: err.message } };
+  }
+  // Plan 08-04 (CLOUD-03) — breaker open → Anthropic-taxonomy `overloaded_error`.
+  // Anthropic's wire taxonomy reserves overloaded_error for "backend is degraded
+  // and clients should back off", which matches the breaker semantics 1:1.
+  if (err instanceof BreakerOpenError) {
+    return { type: 'error', error: { type: 'overloaded_error', message: err.message } };
   }
   // APIConnectionTimeoutError extends APIConnectionError — order matters only on
   // mapToHttpStatus (different HTTP codes); the Anthropic taxonomy collapses both

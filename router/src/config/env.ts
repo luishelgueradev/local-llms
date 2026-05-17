@@ -40,6 +40,19 @@ const EnvSchema = z.object({
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
   NODE_ENV: z.enum(['development', 'production', 'test']).default('production'),
   MODELS_YAML_PATH: z.string().default('/app/models.yaml'),
+  // Phase 8 Plan 04 (CLOUD-03, D-B2) — circuit breaker tunables. Defaults
+  // are baked for the cloud-fallback case (5 failures / 30s window / 60s
+  // cooldown — D-B2). Overridable via env so an operator with a flaky local
+  // backend can tune independently — but in v1 the values are GLOBAL not
+  // per-backend (per-backend tuning is a Phase 9 future-work item).
+  //
+  // Out-of-range values fail to parse — the schema is the single trust
+  // boundary between operator-supplied strings and the breaker's numeric
+  // config. Negative / zero / sub-second window or cooldown values would
+  // produce meaningless breaker behavior and are rejected at boot.
+  CIRCUIT_FAILURE_THRESHOLD: z.coerce.number().int().min(1).default(5),
+  CIRCUIT_WINDOW_MS: z.coerce.number().int().min(1_000).default(30_000),
+  CIRCUIT_COOLDOWN_MS: z.coerce.number().int().min(1_000).default(60_000),
 });
 
 export type Env = z.infer<typeof EnvSchema>;
