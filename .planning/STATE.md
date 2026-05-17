@@ -3,36 +3,37 @@ gsd_state_version: 1.0
 milestone: v0.9.0
 milestone_name: milestone
 status: executing
-stopped_at: "Phase 7 Plan 06 (live smoke scripts) tasks 1-2 auto-complete (commits c9a3369 + 61ded93): bin/smoke-test-observability.sh covers OBS-02/03/04 (Prometheus targets, nvidia_smi_memory_used_bytes sample, Grafana datasource uid=prometheus-default + dashboard uid=local-llms with ≥6 panels); bin/smoke-test-router.sh extended with `=== Phase 7 — /v1/embeddings + request_log ===` section covering bge-m3-ollama 1024-dim, capability gate (qwen on /v1/embeddings → 400), zod empty-input gate (→ 400), bge-m3-vllm 1024-dim (gated on --profile vllm), request_log distinct backend rows. Task 3 PENDING-HUMAN — operator must bring up stack with `--profile vllm`, run both smoke scripts, visually verify Grafana dashboard, then approve. Recipe in 07-06-SUMMARY.md §User Setup Required."
-last_updated: "2026-05-17T04:07:56.283Z"
+stopped_at: "Phase 8 Plan 00 (precondition) complete — RegistrySchema.superRefine rejects shared backend_url across distinct backends; probeAdapterFor cache keyed by ${backend}|${url}; scheduler probe callback resolves backend by URL before delegating. Closes 07-REVIEW-FIX §CR-02. Commits: eb79103 (RED: failing regression tests in tests/config/registry.test.ts + tests/app/probe-adapter.test.ts) + e790918 (GREEN: registry + app widening; honors opts.makeAdapter per BuildAppOpts contract). 528/530 tests pass (2 skipped); build clean. 1 deviation auto-fixed (Rule 2: probeAdapterFor previously hardcoded defaultMakeAdapter, bypassing the documented opts.makeAdapter injection point — fixed to make Test 3 hermetic). Phase 7 Plan 06 task 3 still PENDING-HUMAN."
+last_updated: "2026-05-17T15:22:28.660Z"
 progress:
   total_phases: 9
   completed_phases: 7
-  total_plans: 39
-  completed_plans: 39
-  percent: 100
+  total_plans: 50
+  completed_plans: 40
+  percent: 80
 ---
 
 # Project State: local-llms
 
 **Last Updated:** 2026-05-17
-**Status:** Phase 7 plans all coded; Plan 07-06 task 3 awaits operator human-verify
+**Status:** Executing Phase 08
 
 ## Project Reference
 
 **Core Value:** Un endpoint único, estable y multi-protocolo para que los agentes del usuario consuman cualquier modelo disponible — local cuando cabe, Ollama Cloud cuando no — sin que el cliente se entere de quién está respondiendo detrás.
 
-**Current Focus:** Phase 07 — Embeddings + vLLM + GPU Telemetry
+**Current Focus:** Phase 08 — Ollama Cloud Fallback + Resilience Hardening
 
 ## Current Position
 
-Phase: 07 (Embeddings + vLLM + GPU Telemetry) — EXECUTING (final plan in human-verify)
-Plan: 7 of 7 — 07-00..07-05 complete; 07-06 tasks 1-2 auto-complete, task 3 PENDING-HUMAN
+Phase: 08 (Ollama Cloud Fallback + Resilience Hardening) — EXECUTING
+Plan: 2 of 11
 
 - **Milestone:** v1
-- **Phase:** 7
-- **Plan:** 07-06 (final smoke + human-verify) — awaiting operator approval
-- **Status:** All Phase 7 code is in tree. Operator must bring up `docker compose --profile vllm up -d` on the RTX 5060 Ti host, run `bash bin/smoke-test-observability.sh && bash bin/smoke-test-router.sh`, visually verify Grafana dashboard renders live data, then approve. Recipe in 07-06-SUMMARY.md §User Setup Required.
+- **Phase:** 8
+- **Plan:** 08-00 (precondition) — COMPLETE. RegistrySchema.superRefine rejects shared backend_url across distinct backends; probeAdapterFor keyed by `${backend}|${url}`. 07-REVIEW-FIX §CR-02 closed. Commits: eb79103 (RED) + e790918 (GREEN).
+- **Next plan:** 08-01 (Wave 1) — see ROADMAP for sequencing.
+- **Phase 7 carry-over:** Plan 07-06 task 3 still PENDING-HUMAN (operator approval on RTX 5060 Ti host). Recipe in 07-06-SUMMARY.md §User Setup Required.
 
 ### Progress
 
@@ -44,7 +45,7 @@ Phase 4: ░░░░░░░░░░ 0% (0/16 requirements)
 Phase 5: ░░░░░░░░░░ 0% (0/8 requirements)
 Phase 6: ░░░░░░░░░░ 0% (0/11 requirements)
 Phase 7: █████████░ 86% (6/7 requirements coded; smoke scripts in tree; OBS-05 already complete from Phase 5; awaiting operator human-verify on 07-06 task 3)
-Phase 8: ░░░░░░░░░░ 0% (0/9 requirements)
+Phase 8: █░░░░░░░░░ 11% (1/9 requirements — CLOUD-01 precondition closed via Plan 08-00)
 Phase 9: ░░░░░░░░░░ 0% (0/4 requirements)
 
 Overall: ███░░░░░░░ 28% (21/76 v1 requirements)
@@ -102,7 +103,7 @@ Overall: ███░░░░░░░ 28% (21/76 v1 requirements)
 
 ## Session Continuity
 
-Last session: 2026-05-17T04:06:22Z
+Last session: 2026-05-17T15:22:28.641Z
 Stopped at: Phase 7 Plan 06 (live smoke scripts) tasks 1-2 auto-complete. Commits c9a3369 (feat: bin/smoke-test-observability.sh — OBS-02/03/04 smoke with Prometheus targets, nvidia_smi_memory_used_bytes sample, Grafana datasource + dashboard provisioning checks) + 61ded93 (feat: extend bin/smoke-test-router.sh with `=== Phase 7 — /v1/embeddings + request_log ===` section covering bge-m3-ollama 1024-dim, capability gate, zod empty-input gate, bge-m3-vllm 1024-dim, request_log distinct backend rows). Task 3 PENDING-HUMAN — operator must approve on the RTX 5060 Ti host. No deviations: tasks 1-2 executed exactly as planned.
 
 **Next action:** Operator runs the recipe in 07-06-SUMMARY.md §User Setup Required: `docker compose --profile vllm up -d` → wait for vllm healthy → `bash bin/smoke-test-observability.sh && bash bin/smoke-test-router.sh` → visual Grafana check → reply `approved` (or list failing assertions for re-execution).

@@ -219,7 +219,7 @@ Plans:
 **Plans:** 11 plans
 Plans:
 **Wave 0**
-- [ ] 08-00-PLAN.md — CR-02 precondition fix: registry validator + probeAdapterFor cache key widening (CLOUD-01 prerequisite)
+- [x] 08-00-PLAN.md — CR-02 precondition fix: registry validator + probeAdapterFor cache key widening (CLOUD-01 prerequisite)
 
 **Wave 1** *(parallel pair — disjoint files: 08-01 owns compose.yml + Valkey client + boot; 08-02 owns adapter + registry + models.yaml + cloud env)*
 - [ ] 08-01-PLAN.md — Valkey service in compose.yml + ioredis client wired in router boot + onClose ordering (DATA-06 infrastructure)
