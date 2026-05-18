@@ -210,8 +210,7 @@ echo ""
 # ── Section 5: Grafana datasource provisioned (OBS-04 part 1) ────────────────
 echo "[smoke-test-observability] === Section 5: Grafana datasource ==="
 DS_JSON=$(docker compose exec -T grafana wget -qO- \
-  --user "admin:${GRAFANA_ADMIN_PASSWORD}" \
-  'http://localhost:3000/api/datasources/uid/prometheus-default' 2>/dev/null || echo "")
+  "http://admin:${GRAFANA_ADMIN_PASSWORD}@localhost:3000/api/datasources/uid/prometheus-default" 2>/dev/null || echo "")
 if [[ -z "${DS_JSON}" ]]; then
   fail "Could not fetch /api/datasources/uid/prometheus-default — is grafana up + GRAFANA_ADMIN_PASSWORD correct?"
 else
@@ -226,8 +225,7 @@ echo ""
 # ── Section 6: Grafana dashboard provisioned (OBS-04 part 2) ─────────────────
 echo "[smoke-test-observability] === Section 6: Grafana dashboard 'local-llms' ==="
 DASH_JSON=$(docker compose exec -T grafana wget -qO- \
-  --user "admin:${GRAFANA_ADMIN_PASSWORD}" \
-  'http://localhost:3000/api/dashboards/uid/local-llms' 2>/dev/null || echo "")
+  "http://admin:${GRAFANA_ADMIN_PASSWORD}@localhost:3000/api/dashboards/uid/local-llms" 2>/dev/null || echo "")
 if [[ -z "${DASH_JSON}" ]]; then
   fail "Could not fetch /api/dashboards/uid/local-llms — is the dashboard provisioned (Plan 07-05)?"
 else

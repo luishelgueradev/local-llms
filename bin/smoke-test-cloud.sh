@@ -259,7 +259,7 @@ else
     -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
     -H "Content-Type: application/json" \
     --max-time 60 \
-    -d "{\"model\":\"${CLOUD_CHAT_MODEL}\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with exactly the word OK and nothing else.\"}],\"max_tokens\":16,\"stream\":false}" \
+    -d "{\"model\":\"${CLOUD_CHAT_MODEL}\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with exactly the word OK and nothing else.\"}],\"max_tokens\":256,\"stream\":false}" \
     2>/dev/null || echo "")
   if [[ -z "${CLOUD_RESP}" ]]; then
     fail "cloud chat request returned empty — check OLLAMA_API_KEY validity + router logs"

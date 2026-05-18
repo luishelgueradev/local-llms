@@ -62,14 +62,14 @@ export class VLLMOpenAIAdapter implements BackendAdapter {
     signal: AbortSignal,
   ): Promise<CanonicalResponse> {
     const openaiReq = canonicalToOpenAIChatCompletionParams(canonical);
+    // vLLM 0.20+ rejects `stream_options` on non-streaming calls with a 400
+    // (`stream_options can only be defined when stream=True`). Ollama and
+    // llama.cpp tolerate the field, which masked this during earlier UAT.
+    // Surfaced live during the v0.9.0 UAT pass against vllm/vllm-openai:v0.20.2.
     const result = await this.client.chat.completions.create(
       {
         ...openaiReq,
         stream: false,
-        // Keeping stream_options unconditional avoids drift between stream/non-stream
-        // code paths (D-B3 of Phase 3 — same rationale used in the llamacpp adapter).
-        // The SDK strips it for non-stream calls.
-        stream_options: { include_usage: true },
       },
       { signal },
     );

@@ -244,7 +244,7 @@ services:
       - "vllm.entrypoints.openai.api_server"
       - "--model=Qwen/Qwen2.5-7B-Instruct-AWQ"
       - "--quantization=awq_marlin"            # Wave 0 OUTCOME: locked — Marlin path proven on sm_120 (07-00-SUMMARY.md)
-      - "--max-model-len=8192"
+      - "--max-model-len=4096"
       - "--gpu-memory-utilization=0.45"
       - "--enable-auto-tool-choice"
       - "--tool-call-parser=hermes"            # CLOSED R-2: hermes is canonical for Qwen2.5-Instruct per docs.vllm.ai
@@ -375,27 +375,26 @@ services:
     image: utkuozdemir/nvidia_gpu_exporter:1.4.1   # [VERIFIED 2026-05-16 — Pitfall G-2 SIGTERM fix; pin update over CONTEXT.md D-C1's 1.3.0]
     container_name: ${COMPOSE_PROJECT_NAME:-local-llms}-gpu-exporter
     restart: unless-stopped
-    devices:
-      # R-6 INSTALL.md canonical device paths — present on both WSL2 + native Linux.
-      - /dev/nvidiactl:/dev/nvidiactl
-      - /dev/nvidia0:/dev/nvidia0
-    volumes:
-      # WSL2 host paths (this host) → container standard Linux paths.
-      # `nvidia-smi` is invoked by the exporter via PATH; the container's
-      # /usr/bin/nvidia-smi is the documented dlopen-able location.
-      - /usr/lib/wsl/lib/nvidia-smi:/usr/bin/nvidia-smi:ro
-      - /usr/lib/wsl/lib/libnvidia-ml.so.1:/usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1:ro
-      # Native-Linux alternatives (uncomment and remove the WSL2 entries above
-      # when redeploying on a non-WSL2 host) — Pitfall G-3:
-      # - /usr/bin/nvidia-smi:/usr/bin/nvidia-smi:ro
-      # - /usr/lib/x86_64-linux-gnu/libnvidia-ml.so:/usr/lib/x86_64-linux-gnu/libnvidia-ml.so:ro
-      # - /usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1:/usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1:ro
+    # Pitfall G-3 (post-UAT 2026-05-17): WSL2 + Docker Desktop does NOT expose
+    # /dev/nvidiactl or /dev/nvidia0 — those device files only exist on bare
+    # Linux. NVIDIA GPU access in WSL2 goes through /dev/dxg and the NVIDIA
+    # Container Runtime, which is exactly what the x-gpu anchor selects. The
+    # runtime auto-projects libnvidia-ml.so and provides nvidia-smi inside the
+    # container, so the bind-mounts that previously surfaced WSL2's
+    # /usr/lib/wsl/lib paths are no longer needed.
+    <<: *gpu
+    # (Native-Linux fallback: if you redeploy on bare Linux and the runtime
+    # cannot project libnvidia-ml.so or nvidia-smi — rare — add a volumes block
+    # bind-mounting /usr/bin/nvidia-smi and /usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1.)
     networks:
       - backend       # Prometheus scrapes nvidia_gpu_exporter:9835 from `backend`
     healthcheck:
-      # The exporter listens on 9835 by default. Image ships busybox-ish
-      # tooling; wget is present.
-      test: ["CMD-SHELL", "wget -qO- http://localhost:9835/metrics >/dev/null 2>&1 || exit 1"]
+      # The exporter listens on 9835. Image (utkuozdemir/nvidia_gpu_exporter:1.4.1)
+      # is FROM scratch — NO wget, NO curl, NO sh. The only reliable healthcheck
+      # is to query the binary itself or rely on Prometheus's external scrape.
+      # Fallback: use the binary's own --version output as a liveness signal
+      # (the process responding to exec at all means it's not crashed).
+      test: ["CMD", "/usr/bin/nvidia_gpu_exporter", "--version"]
       interval: 30s
       timeout: 5s
       start_period: 30s
@@ -568,6 +567,15 @@ services:
       # internal data-plane hostname; the password is the single tunable.
       - ROUTER_VALKEY_URL=redis://valkey:6379
       - ROUTER_VALKEY_PASSWORD=${VALKEY_PASSWORD}
+      # Phase 8 (CLOUD-01): Ollama Cloud bearer. Router refuses to start if any
+      # `backend: ollama-cloud` entry exists in models.yaml and this is empty.
+      - OLLAMA_API_KEY=${OLLAMA_API_KEY}
+      # Phase 8 resilience envs (Plans 08-04 / 08-06). Defaults baked in source
+      # but operator overrides flow here.
+      - ROUTER_RATE_LIMIT_RPM=${ROUTER_RATE_LIMIT_RPM:-600}
+      - CIRCUIT_FAILURE_THRESHOLD=${CIRCUIT_FAILURE_THRESHOLD:-5}
+      - CIRCUIT_WINDOW_MS=${CIRCUIT_WINDOW_MS:-30000}
+      - CIRCUIT_COOLDOWN_MS=${CIRCUIT_COOLDOWN_MS:-60000}
       # OLLAMA_URL removed: parsed from env.ts but never consumed — backend URLs
       # are authoritative from models.yaml backend_url fields (03-REVIEW WR-04).
     # ── No host ports (EDGE-03 / Phase 6 D-A4) ───────────────────────────────
@@ -662,6 +670,12 @@ services:
       # Phase 8 (DATA-06) — Valkey connection mirrored from router: (same env contract).
       - ROUTER_VALKEY_URL=redis://valkey:6379
       - ROUTER_VALKEY_PASSWORD=${VALKEY_PASSWORD}
+      # Phase 8 (CLOUD-01 + resilience envs) — mirrored from router:.
+      - OLLAMA_API_KEY=${OLLAMA_API_KEY}
+      - ROUTER_RATE_LIMIT_RPM=${ROUTER_RATE_LIMIT_RPM:-600}
+      - CIRCUIT_FAILURE_THRESHOLD=${CIRCUIT_FAILURE_THRESHOLD:-5}
+      - CIRCUIT_WINDOW_MS=${CIRCUIT_WINDOW_MS:-30000}
+      - CIRCUIT_COOLDOWN_MS=${CIRCUIT_COOLDOWN_MS:-60000}
     volumes:
       - ./router/src:/app/src:ro
       - ./router/tsconfig.json:/app/tsconfig.json:ro
@@ -942,9 +956,12 @@ services:
   # longer takes effect. Edge auth lives entirely at Traefik (basic-auth
   # middleware `webui-basic-auth@docker`).
   #
-  # CRITICAL — OPENAI_API_BASE_URLS is PLURAL (the v0.9 env-var name) and has
-  # NO /v1 suffix — OWUI appends /v1/... itself; doubling would yield /v1/v1/models
-  # → 404 → empty model list (Pitfall 5).
+  # CRITICAL — OPENAI_API_BASE_URLS is PLURAL (the v0.9 env-var name).
+  # /v1 SUFFIX REQUIRED — OWUI v0.9.0 surfaced live during UAT v0.9.0 calls
+  # `{baseURL}/models` (no /v1 prefix) for both verify and get_all_models, so
+  # the baseURL must already include /v1. Earlier OWUI versions auto-appended
+  # /v1; v0.9.0 does not. Without /v1 the model dropdown is empty and the
+  # admin Connections "verify" button returns 500 "Not Found".
   #
   # CRITICAL — networks are [app, data] ONLY. NOT `backend` (anti-pattern: OWUI
   # bypass to GPU runtimes). NOT `edge` (Traefik reaches OWUI via the `app`
@@ -962,9 +979,9 @@ services:
       - WEBUI_AUTH=False                            # D-C3 — IRREVERSIBLE; requires empty openwebui DB at first boot (Phase 5 D-B6 verified)
       - ENABLE_SIGNUP=False                         # belt-and-suspenders; moot under WEBUI_AUTH=False (06-RESEARCH §Pattern 5)
       # ── Connector to the router (sole provider) ───────────────────────────
-      # PLURAL env-var names — OWUI 0.9 canonical form (Pitfall 5/6).
-      # NO /v1 suffix — OWUI appends /v1/... itself; doubling → /v1/v1/models 404.
-      - OPENAI_API_BASE_URLS=http://router:3000     # D-C2 — single-provider; if multi were needed the separator is `;` (Pitfall 6)
+      # PLURAL env-var names — OWUI 0.9 canonical form (Pitfall 6 multi-sep is `;`).
+      # /v1 SUFFIX REQUIRED for OWUI v0.9.0 (UAT-surfaced). See header comment above.
+      - OPENAI_API_BASE_URLS=http://router:3000/v1  # D-C2 — single-provider
       - OPENAI_API_KEYS=${ROUTER_BEARER_TOKEN}      # D-C1 — bearer flows to router via OWUI's OpenAI connector
       - ENABLE_OPENAI_API=True                      # default; explicit for clarity (Pattern 5)
       - ENABLE_OLLAMA_API=False                     # D-C6 / Pitfall 8 — prevents OWUI from auto-detecting the Ollama peer on the app network (defense-in-depth)

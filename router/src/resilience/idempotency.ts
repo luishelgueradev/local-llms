@@ -231,7 +231,40 @@ async function subscribeToChannel(
   // must be released. Without this guard the caller's try/finally never
   // runs because subscribeToChannel rejected before returning the handle,
   // and each transient failure leaks one TCP connection to Valkey.
+  //
+  // UAT 2026-05-17 follow-up: `subscriberFactory()` returns a fresh ioredis
+  // client whose TCP+AUTH handshake races against the immediate `subscribe()`
+  // call below. With `enableOfflineQueue: false` (Plan 08-01 fail-fast policy),
+  // SUBSCRIBE rejects with "Stream isn't writeable" when fired before 'ready'.
+  // Wait for 'ready' (or for the client to already BE ready) up to 2s before
+  // issuing SUBSCRIBE. Mock clients without a 'ready' event proceed directly.
   try {
+    const subAny = sub as unknown as {
+      status?: string;
+      once?: (event: string, cb: (...a: unknown[]) => void) => unknown;
+      removeListener?: (event: string, cb: (...a: unknown[]) => void) => unknown;
+    };
+    if (typeof subAny.once === 'function' && subAny.status !== 'ready') {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          subAny.removeListener?.('ready', onReady);
+          subAny.removeListener?.('error', onError);
+          reject(new Error('idempotency: subscriber connection not ready within 2000ms'));
+        }, 2000);
+        const onReady = (): void => {
+          clearTimeout(timer);
+          subAny.removeListener?.('error', onError);
+          resolve();
+        };
+        const onError = (err: unknown): void => {
+          clearTimeout(timer);
+          subAny.removeListener?.('ready', onReady);
+          reject(err instanceof Error ? err : new Error(String(err)));
+        };
+        subAny.once?.('ready', onReady);
+        subAny.once?.('error', onError);
+      });
+    }
     await (sub as unknown as { subscribe(c: string): Promise<unknown> }).subscribe(channel);
   } catch (err) {
     // Best-effort teardown — disconnect() is synchronous + non-throwing on
