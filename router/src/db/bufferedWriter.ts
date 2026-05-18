@@ -114,11 +114,23 @@ export function makeBufferedWriter(opts: MakeBufferedWriterOpts): BufferedWriter
     } catch (err) {
       // D-A7: rows STAY in buffer; next interval tick retries.
       // droppedCounter NOT incremented for flush failures (only D-A1
-      // capacity-overflow drops touch it).
+      // capacity-overflow drops touch it) UNLESS the unshift would push
+      // the buffer past capacity — WR-01 (TD-03) fix: enforce the
+      // capacity invariant even on retry by drop-oldest on the new arrivals
+      // BEFORE the unshift, then unshift the failed batch back to head.
+      // This eliminates the transient 1.1x–1.5x capacity overshoot
+      // documented in the header trade-off.
       opts.logger.warn(
         { event: 'log_buffer_flush_error', err, count: batch.length },
         'flush failed',
       );
+      const overflow = buf.length + batch.length - capacity;
+      if (overflow > 0) {
+        // Drop the OLDEST `overflow` rows from new arrivals (tail of `buf`
+        // is newest, head is oldest) and account for them in the counter.
+        const dropped = buf.splice(0, overflow);
+        opts.droppedCounter.inc(dropped.length);
+      }
       buf.unshift(...batch);
     } finally {
       flushing = false;

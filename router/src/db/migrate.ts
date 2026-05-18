@@ -14,6 +14,23 @@
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import type { Db } from './index.js';
 
+/**
+ * Walk an unknown error's `.cause` chain and return every distinct `.code`
+ * encountered, top-level first. Bounded depth 8 to defend against cycles.
+ * WR-03 (TD-03) helper — drizzle-orm DatabaseError can bury the pg error one
+ * or two `cause` hops deep.
+ */
+function extractErrorCodes(err: unknown): string[] {
+  const out: string[] = [];
+  let cur: unknown = err;
+  for (let i = 0; i < 8 && cur !== null && typeof cur === 'object'; i++) {
+    const code = (cur as { code?: unknown }).code;
+    if (typeof code === 'string') out.push(code);
+    cur = (cur as { cause?: unknown }).cause;
+  }
+  return out;
+}
+
 /** Minimal pino-compatible logger surface — matches makeBufferedWriter's logger param. */
 interface MigratorLogger {
   info: (...args: unknown[]) => void;
@@ -32,13 +49,20 @@ export async function runMigrations(db: Db, log: MigratorLogger): Promise<void> 
     await migrate(db, { migrationsFolder: './db/migrations' });
     log.info({ event: 'migrate_ok' }, 'drizzle migrations applied');
   } catch (err) {
-    const code = (err as { code?: string }).code;
-    if (
-      code === 'ECONNREFUSED' ||
-      code === 'ETIMEDOUT' ||
-      code === 'ENOTFOUND' ||
-      (typeof code === 'string' && code.startsWith('08'))
-    ) {
+    // WR-03 (TD-03) fix: drizzle-orm wraps errors in DatabaseError chains; the
+    // pg connection-class code can live either at err.code OR deep in err.cause.*.code.
+    // Walk the cause chain (bounded depth 8 to defend against pathological cycles)
+    // and collect every numeric/string `.code` we find — if ANY is a connection
+    // class code, treat the error as connection-class.
+    const codes = extractErrorCodes(err);
+    const isConnectionClass = codes.some(
+      (c) =>
+        c === 'ECONNREFUSED' ||
+        c === 'ETIMEDOUT' ||
+        c === 'ENOTFOUND' ||
+        (typeof c === 'string' && c.startsWith('08')),
+    );
+    if (isConnectionClass) {
       log.warn(
         { err, event: 'migrate_postgres_unreachable' },
         'migrator: Postgres unreachable — booting without migrations',

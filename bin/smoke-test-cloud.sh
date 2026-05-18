@@ -481,16 +481,29 @@ curl -fsS -o /dev/null \
   -d "{\"model\":\"${LOCAL_CHAT_MODEL}\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":4,\"stream\":false}" \
   >/dev/null 2>&1 || true
 
-# Find the freshly-created ratelimit:* key for this bearer (most-recent epoch_minute).
+# Find the freshly-created ratelimit:* key for this bearer.
+# UAT 2026-05-18 fix: re-discover ALL existing keys for the bearer hash AND
+# also seed the next-minute key so the probe is over-budget regardless of
+# which minute it lands in. The previous one-key-only approach was a flake
+# at the minute boundary when the warm-up request took >60s.
 RL_KEY=$(valkey_cli --scan --pattern 'ratelimit:*' 2>/dev/null | tail -1)
 if [[ -z "${RL_KEY}" ]]; then
   fail "no ratelimit:* keys present in Valkey after a request — rate-limit middleware may not be wired"
 else
   info "found rate-limit key: ${RL_KEY}"
-  # Pre-seed counter to RPM+1 so the NEXT request is over budget.
+  # Extract bearer-hash prefix from the discovered key:
+  #   ratelimit:<hash8>:<minute>  ->  <hash8>
+  RL_HASH=$(printf '%s' "${RL_KEY}" | awk -F: '{print $2}')
+  CUR_MIN=$(printf '%s' "${RL_KEY}" | awk -F: '{print $3}')
+  NEXT_MIN=$(( CUR_MIN + 1 ))
   OVER_RPM=$(( RPM + 1 ))
-  valkey_cli SET "${RL_KEY}" "${OVER_RPM}" KEEPTTL >/dev/null 2>&1 \
-    || valkey_cli SET "${RL_KEY}" "${OVER_RPM}" EX 90 >/dev/null
+  # Pre-seed BOTH minute N and minute N+1 keys to RPM+1 so the over-budget
+  # probe trips 429 even if it lands one minute later than the warm-up.
+  for MIN in "${CUR_MIN}" "${NEXT_MIN}"; do
+    K="ratelimit:${RL_HASH}:${MIN}"
+    valkey_cli SET "${K}" "${OVER_RPM}" KEEPTTL >/dev/null 2>&1 \
+      || valkey_cli SET "${K}" "${OVER_RPM}" EX 90 >/dev/null
+  done
 
   RL_FILE=$(mktemp)
   RL_HEADERS_FILE=$(mktemp)
@@ -519,8 +532,10 @@ else
     fail "Retry-After header missing or non-numeric on 429: '${RL_RETRY}'"
   fi
 
-  # Reset: drop the bucket so subsequent sections see a fresh counter.
-  valkey_cli DEL "${RL_KEY}" >/dev/null
+  # Reset: drop both pre-seeded buckets so subsequent sections see a fresh counter.
+  for MIN in "${CUR_MIN}" "${NEXT_MIN}"; do
+    valkey_cli DEL "ratelimit:${RL_HASH}:${MIN}" >/dev/null
+  done
   rm -f "${RL_FILE}" "${RL_HEADERS_FILE}"
 fi
 echo ""

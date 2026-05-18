@@ -1,6 +1,19 @@
-import { timingSafeEqual, randomBytes } from 'node:crypto';
+import { timingSafeEqual, createHash } from 'node:crypto';
 import type { FastifyRequest, FastifyReply } from 'fastify';
 import { BearerAuthError } from '../errors/envelope.js';
+
+/**
+ * Constant-time, length-independent secret compare. Hashes both inputs to a
+ * fixed 32-byte SHA-256 digest and then runs timingSafeEqual on the digests.
+ * Because both digests are exactly 32 bytes regardless of input length, the
+ * comparison cost is independent of the supplied-token length — fixes the
+ * WR-06 (TD-03) length-leak documented at the call site below.
+ */
+function secretEqual(a: string, b: string): boolean {
+  const aHash = createHash('sha256').update(a, 'utf8').digest();
+  const bHash = createHash('sha256').update(b, 'utf8').digest();
+  return timingSafeEqual(aHash, bHash);
+}
 
 /** Routes that skip bearer auth. ROUTE-04 is the single source of truth. */
 // TODO Phase 6: Traefik MUST add a middleware returning 404 for external
@@ -15,10 +28,6 @@ export function makeBearerHook(expectedToken: string) {
   if (!expectedToken || expectedToken.length < 8) {
     throw new Error('makeBearerHook: expectedToken must be at least 8 characters (env validation should catch this earlier)');
   }
-  const expectedBuf = Buffer.from(expectedToken, 'utf8');
-  // Pad buffer of equal length we use when supplied is shorter — keeps timingSafeEqual
-  // happy and ensures the comparison still runs in constant time.
-  const padBuf = randomBytes(expectedBuf.length);
 
   return async function bearerOnRequest(req: FastifyRequest, _reply: FastifyReply) {
     // String.prototype.split always returns a non-empty array, so [0] is never
@@ -43,22 +52,13 @@ export function makeBearerHook(expectedToken: string) {
     }
 
     const supplied = auth.slice(SCHEME.length);
-    const suppliedBuf = Buffer.from(supplied, 'utf8');
-
-    let ok = false;
-    if (suppliedBuf.length === expectedBuf.length) {
-      ok = timingSafeEqual(suppliedBuf, expectedBuf);
-    } else {
-      // Pad to expected length so timingSafeEqual doesn't throw; compare against padBuf
-      // so the work still happens (constant-time false). This defeats length-based timing leaks.
-      const sized = Buffer.alloc(expectedBuf.length);
-      suppliedBuf.copy(sized, 0, 0, Math.min(suppliedBuf.length, expectedBuf.length));
-      // Run the compare for side effects on timing; result is always false because lengths differ.
-      timingSafeEqual(sized, padBuf);
-      ok = false;
-    }
-
-    if (!ok) {
+    // WR-06 (TD-03) fix: secretEqual hashes both sides to a fixed 32-byte
+    // digest before timingSafeEqual, so the comparison cost is independent
+    // of the supplied-token length. The previous two-branch implementation
+    // (length-equal => direct compare; length-mismatch => pad + compare-vs-pad)
+    // was constant-time WITHIN a branch but the branches were not perfectly
+    // equivalent — a precise timing attack could distinguish length parity.
+    if (!secretEqual(supplied, expectedToken)) {
       throw new BearerAuthError('Invalid bearer token');
     }
   };

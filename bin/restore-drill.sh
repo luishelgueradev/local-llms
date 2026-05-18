@@ -113,6 +113,19 @@ if [[ -z "${DUMP_FILE}" ]]; then
   exit 1
 fi
 
+# WR-05 (TD-03) — reject path-traversal in the dump filename. Threat model is
+# "local operator with privileged shell" so this is a footgun guard rather
+# than an exploit mitigation, but enforcing it prevents accidental cross-dir
+# reads when an operator pastes a stale CWD-relative path.
+case "${DUMP_FILE}" in
+  */*|*..*)
+    echo "[restore-drill] ERROR: dump filename must be a bare basename without slashes or '..'" >&2
+    echo "[restore-drill]        Got: '${DUMP_FILE}'" >&2
+    echo "[restore-drill]        Files live in \${HOST_DATA_ROOT}/postgres-backups/." >&2
+    exit 1
+    ;;
+esac
+
 # ─── Env resolution: POSTGRES_PASSWORD + HOST_DATA_ROOT (Pattern G) ──────────
 # Caller env wins; otherwise extract a single variable from .env without sourcing
 # the entire file (avoids leaking other secrets into the script's environment).
@@ -290,8 +303,29 @@ echo "[restore-drill] Step 5: pg_restore --dbname=router --username=app /backups
 echo "[restore-drill]         (running inside the pg-backup sidecar — has /backups mounted)"
 if ! docker compose ps --services --filter status=running 2>/dev/null | grep -q '^pg-backup$'; then
   echo "[restore-drill] pg-backup service is not running — bringing it up for restore..."
-  docker compose up -d pg-backup >/dev/null 2>&1 || true
-  sleep 2
+  # WR-04 (TD-03) fix: surface start failures instead of swallowing them and
+  # poll for readiness with a bounded retry loop instead of a blind sleep 2.
+  # The previous `|| true` made a failed `up -d` silently fall through to the
+  # docker compose exec call below where it would fail with a confusing
+  # "container not found" error instead of the underlying start error.
+  if ! docker compose up -d pg-backup; then
+    echo "[restore-drill] ERROR: failed to start pg-backup sidecar (see compose output above)" >&2
+    exit 1
+  fi
+  # Poll for the container to be in 'running' state (the pg-backup service
+  # has no healthcheck — Phase 5 D-F2 — so we use docker ps state instead).
+  # 15 retries × 1s = 15s budget; usually ready in <3s.
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    if docker compose ps --services --filter status=running 2>/dev/null | grep -q '^pg-backup$'; then
+      break
+    fi
+    sleep 1
+  done
+  if ! docker compose ps --services --filter status=running 2>/dev/null | grep -q '^pg-backup$'; then
+    echo "[restore-drill] ERROR: pg-backup did not reach 'running' state within 15s" >&2
+    docker compose logs pg-backup --tail 30 >&2 || true
+    exit 1
+  fi
 fi
 
 # pg_restore returns non-zero for benign "object already exists" warnings on a

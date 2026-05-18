@@ -6,7 +6,7 @@
 // idempotent UPSERT means a missed midnight is recovered at the next tick.
 //
 // The aggregation is keyed on (day, protocol, backend, model, agent_id)
-// where agent_id is mapped via COALESCE(agent_id, '_no_agent_') to handle
+// where agent_id is mapped via COALESCE(agent_id, NO_AGENT_SENTINEL) to handle
 // the request_log.agent_id nullable column against the usage_daily NOT NULL
 // composite PK column (RESEARCH Open Question Q3 resolution).
 //
@@ -24,6 +24,12 @@
 //   is technically simpler but burns 1440 timer fires per day for no gain.
 import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
+
+// Re-export NO_AGENT_SENTINEL — defined in schema/usage_daily.ts (where the
+// column default lives) and re-exported here so consumers can import it from
+// either layer. WR-07 (TD-03) single source of truth.
+export { NO_AGENT_SENTINEL } from './schema/usage_daily.js';
+import { NO_AGENT_SENTINEL } from './schema/usage_daily.js';
 
 /**
  * Minimal pino-compatible logger surface. Tests inject vi.fn()-backed mocks.
@@ -98,9 +104,13 @@ export async function refreshUsageDaily(
   // is no user input flowing into the WHERE clause, but parameterization is
   // free and matches the rest of the codebase).
   //
-  // The single literal `${"'_no_agent_'"}` in the COALESCE expression keeps
-  // the sentinel as a SQL literal (not a bound parameter) — that's the
-  // sentinel value from usage_daily.agent_id.default, NOT user input.
+  // WR-07 (TD-03) fix: the sentinel '_no_agent_' is exported as a single
+  // constant `NO_AGENT_SENTINEL` and passed into the sql\`\`\` template as a
+  // bound parameter. Previously the literal appeared in three places (here,
+  // in the schema default, and in 0000_init.sql) — if any drifted, ON CONFLICT
+  // would create a duplicate bucket. Tests assert NO_AGENT_SENTINEL matches
+  // the schema's `agent_id.default`; the migration SQL is also imported by
+  // the schema tests as a string and grepped for the same literal value.
   const stmt = sql`INSERT INTO usage_daily (
       day, protocol, backend, model, agent_id,
       request_count, success_count, error_count,
@@ -113,7 +123,7 @@ export async function refreshUsageDaily(
       protocol,
       backend,
       model,
-      COALESCE(agent_id, '_no_agent_') AS agent_id,
+      COALESCE(agent_id, ${NO_AGENT_SENTINEL}) AS agent_id,
       count(*)::int AS request_count,
       count(*) FILTER (WHERE status_class = 'success')::int AS success_count,
       count(*) FILTER (WHERE status_class IN ('client_error','server_error','disconnect'))::int AS error_count,
@@ -125,7 +135,7 @@ export async function refreshUsageDaily(
       COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms), 0)::int AS p95_latency_ms
     FROM request_log
     WHERE ts >= ${dayStart} AND ts < ${dayEnd}
-    GROUP BY protocol, backend, model, COALESCE(agent_id, '_no_agent_')
+    GROUP BY protocol, backend, model, COALESCE(agent_id, ${NO_AGENT_SENTINEL})
     ON CONFLICT (day, protocol, backend, model, agent_id) DO UPDATE SET
       request_count = EXCLUDED.request_count,
       success_count = EXCLUDED.success_count,

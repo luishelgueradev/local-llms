@@ -161,8 +161,15 @@ describe('hot-reload VRAM violation: preserves previous registry + createdAtSec 
   // ── Case 3: Recovery after failed reload ─────────────────────────────────────
 
   it('recovery: after failed VRAM reload, valid reload succeeds and advances createdAtSec', async () => {
+    // ONE watcher for the whole test — the previous double-watcher pattern
+    // (stop + recreate then immediately writeFileSync) raced fs.watchFile's
+    // baseline-stat capture on WSL2 + Docker Desktop and dropped the first
+    // poll's diff (~1-2/5 fail rate full-suite). Single watcher + explicit
+    // resolvers for each phase = deterministic. TD-07 fix.
     let errorCount = 0;
-    const [reloadAfterRecoveryPromise, onReloadAfterRecoveryResolve] = makeCallbackPromise();
+    let reloadCount = 0;
+    const [errorPromise, onErrorResolve] = makeCallbackPromise();
+    const [reloadPromise, onReloadResolve] = makeCallbackPromise();
 
     const createdAtSec1 = store.getCreatedAtSec();
 
@@ -170,42 +177,28 @@ describe('hot-reload VRAM violation: preserves previous registry + createdAtSec 
       debounceMs: 50,
       usePolling: true,
       pollingIntervalMs: 100,
-      onReload: () => { onReloadAfterRecoveryResolve(true); },
-      onError: () => { errorCount++; },
+      onReload: () => { reloadCount++; onReloadResolve(true); },
+      onError: () => { errorCount++; onErrorResolve(true); },
     });
 
-    // Step 1: write invalid YAML — triggers onError
-    // Use a promise-based wait that resolves when onError fires or times out
-    const [errorPromise2, onErrorResolve2] = makeCallbackPromise();
-    // Re-create watcher with error resolution (overrides the one created above)
-    watcher.stop();
-    errorCount = 0;
-    watcher = watchRegistry(filePath, store, {
-      debounceMs: 50,
-      usePolling: true,
-      pollingIntervalMs: 100,
-      onReload: () => { onReloadAfterRecoveryResolve(true); },
-      onError: () => { errorCount++; onErrorResolve2(true); },
-    });
+    // Step 1: invalid YAML -> onError fires, registry preserved.
     writeFileSync(filePath, INVALID_OVER_BUDGET);
-    await Promise.race([errorPromise2, new Promise((r) => setTimeout(r, 2000))]);
+    await errorPromise;
     expect(errorCount).toBeGreaterThanOrEqual(1);
+    expect(reloadCount).toBe(0);
     expect(store.get().models).toHaveLength(1); // previous state preserved
+    expect(store.getCreatedAtSec()).toBe(createdAtSec1); // unchanged after failed reload
 
-    // D-C3: createdAtSec still unchanged after failed reload
-    expect(store.getCreatedAtSec()).toBe(createdAtSec1);
-
-    // Wait ≥ 1 second to ensure createdAtSec can advance on recovery
+    // Wait >=1s so createdAtSec (Unix-second resolution) can advance on recovery.
     await new Promise((r) => setTimeout(r, 1100));
 
-    // Step 2: write valid YAML — triggers onReload (recovery)
+    // Step 2: valid YAML -> onReload fires (recovery).
     writeFileSync(filePath, VALID_REPLACEMENT);
-    await reloadAfterRecoveryPromise;
-
-    // Registry reflects the latest valid YAML
+    await reloadPromise;
+    expect(reloadCount).toBe(1);
     expect(store.get().models[0]?.name).toBe('qwen2.5-7b-instruct-q4km');
 
-    // D-C3 (revision 1): createdAtSec advances on the successful recovery swap
+    // D-C3 (revision 1): createdAtSec advances on the successful recovery swap.
     const createdAtSec2 = store.getCreatedAtSec();
     expect(createdAtSec2).toBeGreaterThan(createdAtSec1);
   }, 20_000);

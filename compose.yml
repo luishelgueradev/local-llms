@@ -317,7 +317,9 @@ services:
       - "-m"
       - "vllm.entrypoints.openai.api_server"
       - "--model=BAAI/bge-m3"
-      - "--runner=pooling"                  # CLOSED R-1: --runner pooling, NOT --task
+      - "--runner=pooling"                  # CLOSED R-1: --runner pooling, NOT deprecated --task
+      - "--convert=embed"                   # UAT-surfaced 2026-05-18: vLLM 0.21 needs --convert to tell the pooling runner which task; pairs with --pooler-config task=embed.
+      - "--pooler-config={\"task\":\"embed\",\"pooling_type\":\"CLS\"}"
       - "--hf-overrides={\"architectures\":[\"BgeM3EmbeddingModel\"]}"
       - "--gpu-memory-utilization=0.25"
       - "--max-model-len=8192"

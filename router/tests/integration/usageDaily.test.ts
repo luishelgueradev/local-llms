@@ -42,7 +42,7 @@ function makeMockDb(rowsAffected = 3): {
 }
 
 describe('refreshUsageDaily — SQL shape + idempotency', () => {
-  it('1. issues exactly one INSERT...SELECT...ON CONFLICT statement with COALESCE(agent_id, \'_no_agent_\')', async () => {
+  it('1. issues exactly one INSERT...SELECT...ON CONFLICT statement with COALESCE(agent_id, <sentinel-param>)', async () => {
     const { db, executeMock } = makeMockDb();
     const day = new Date(Date.UTC(2026, 4, 13)); // 2026-05-13 UTC
     const result = await refreshUsageDaily(db, silentLog, { day });
@@ -53,12 +53,17 @@ describe('refreshUsageDaily — SQL shape + idempotency', () => {
     // Inspect the SQL the function passed to db.execute.
     // Drizzle's sql\`\` template tag yields an SQL object whose `queryChunks`
     // contains the literal SQL strings and `Param` instances for parameters.
+    // WR-07 (TD-03): the sentinel is now passed as a bound parameter (not a
+    // SQL literal) so the COALESCE expression appears as `COALESCE(agent_id, )`
+    // in the queryChunks JSON with the value in a separate Param object.
     const call = executeMock.mock.calls[0][0] as { queryChunks: unknown[] };
     const concatenatedSql = JSON.stringify(call.queryChunks);
     expect(concatenatedSql).toMatch(/INSERT INTO usage_daily/i);
     expect(concatenatedSql).toMatch(/ON CONFLICT/i);
     expect(concatenatedSql).toMatch(/DO UPDATE SET/i);
-    expect(concatenatedSql).toMatch(/COALESCE\(agent_id, '_no_agent_'\)/i);
+    expect(concatenatedSql).toMatch(/COALESCE\(agent_id, /i);
+    // The sentinel value (`_no_agent_`) appears as a Param value in queryChunks.
+    expect(concatenatedSql).toMatch(/_no_agent_/);
     expect(concatenatedSql).toMatch(/percentile_cont\(0\.5\)/i);
     expect(concatenatedSql).toMatch(/percentile_cont\(0\.95\)/i);
     expect(concatenatedSql).toMatch(/status_class = 'success'/);

@@ -101,9 +101,14 @@ class FakeAdapterB implements BackendAdapter {
 }
 
 const makeFakeAdapterByBackend: AdapterFactory = (entry) => {
-  if (entry.backend === 'backend-a') return new FakeAdapterA(entry.backend_url);
-  if (entry.backend === 'backend-b') return new FakeAdapterB(entry.backend_url);
-  throw new Error(`unexpected backend "${entry.backend}" in test fixture`);
+  // Compare-as-string: the fixture deliberately uses non-enum backend strings
+  // (cast via `as unknown as Registry` in makeSharedUrlRegistry) to exercise
+  // cache disambiguation. Without the widening cast, the comparison narrows
+  // to `never` (TS2367).
+  const backend = entry.backend as string;
+  if (backend === 'backend-a') return new FakeAdapterA(entry.backend_url);
+  if (backend === 'backend-b') return new FakeAdapterB(entry.backend_url);
+  throw new Error(`unexpected backend "${backend}" in test fixture`);
 };
 
 /**

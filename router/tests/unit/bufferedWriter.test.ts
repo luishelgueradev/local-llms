@@ -397,4 +397,53 @@ describe('makeBufferedWriter', () => {
     );
     expect(shutdownDropWarn).toBeUndefined();
   });
+
+  // ------------------------------------------------------------------------
+  // Test 9: WR-01 fix — capacity invariant under flush-failure + new arrivals
+  // ------------------------------------------------------------------------
+  // Original D-A1+D-A7 trade-off allowed transient overshoot (~1.1x–1.5x
+  // capacity) when an in-flight flush failed and the buffer had filled with
+  // new arrivals in the meantime. After the WR-01 fix the invariant holds
+  // strictly: buf.length <= capacity at all times. New arrivals are dropped
+  // (oldest-first) and accounted in droppedCounter to make room for the
+  // unshifted failed batch.
+  it('9. WR-01 fix — capacity is never exceeded after flush-failure + new arrivals', async () => {
+    const { db, inserts, droppedCounter, logger } = makeDeps();
+    const w = makeBufferedWriter({
+      // biome-ignore lint/suspicious/noExplicitAny: mock db
+      db: db as any,
+      droppedCounter,
+      logger,
+      capacity: 5,
+      flushIntervalMs: 1_000,
+      flushAtRows: 1_000_000, // park row trigger
+    });
+
+    // 3 rows queued; interval starts a flush that takes the whole batch.
+    w.push(row(1));
+    w.push(row(2));
+    w.push(row(3));
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(inserts.length).toBe(1);
+    expect(w.size).toBe(0);
+
+    // Fill the buffer to capacity (5) while the flush is in-flight.
+    for (let i = 10; i < 15; i++) w.push(row(i));
+    expect(w.size).toBe(5);
+    expect(droppedCounter.inc).not.toHaveBeenCalled();
+
+    // The in-flight flush fails; unshift the 3 failed rows. With WR-01 fix,
+    // 3 oldest new arrivals are dropped first to keep buf.length === capacity.
+    inserts[0]?.reject(new Error('boom'));
+    await vi.advanceTimersByTimeAsync(0); // run finally
+
+    // Invariant: buf.length is exactly capacity, never more.
+    expect(w.size).toBe(5);
+    // Counter was incremented for the 3 dropped arrivals.
+    expect(droppedCounter.inc).toHaveBeenCalledTimes(1);
+    expect((droppedCounter.inc as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]).toBe(3);
+
+    // Cleanup
+    await Promise.all([w.drain(100), vi.advanceTimersByTimeAsync(101)]);
+  });
 });

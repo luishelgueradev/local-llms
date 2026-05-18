@@ -234,6 +234,18 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
   const makeAdapterWithCloudKey: AdapterFactory = (entry) =>
     defaultMakeAdapter(entry, { cloudApiKey });
 
+  // WR-02 (TD-03 fix) — stamp `req._t0` at the earliest possible hook so
+  // latency_ms is non-zero for pre-preHandler errors (preValidation zod
+  // rejection, bearer auth fail-through, rate-limit 429). The preHandler
+  // capture in agentIdPreHandler still overwrites this with a tighter
+  // measurement for happy-path requests where bearer + rate-limit add a
+  // few µs that aren't really "request processing". For error paths, this
+  // ensures the recorded duration reflects when the request actually
+  // arrived rather than reporting 0 ms.
+  app.addHook('onRequest', async (req) => {
+    if (req._t0 === undefined) req._t0 = performance.now();
+  });
+
   // Bearer auth — onRequest hook runs BEFORE body parsing and zod validation,
   // so invalid tokens are rejected before any route-level processing occurs.
   // Using 'onRequest' (not 'preHandler') ensures auth is the first gate (Rule 1 fix).

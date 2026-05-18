@@ -211,6 +211,11 @@ const CIRCUIT_ENV = {
   CIRCUIT_FAILURE_THRESHOLD: 5,
   CIRCUIT_WINDOW_MS: 30_000,
   CIRCUIT_COOLDOWN_MS: 60_000,
+  // Phase 8 added ROUTER_RATE_LIMIT_RPM to the BuildAppOpts.env Pick<>. The
+  // rate-limit middleware is not exercised in this circuit-breaker suite,
+  // but the typed Pick requires the key — supply a generous default so the
+  // tests don't accidentally trip the limiter under burst-load patterns.
+  ROUTER_RATE_LIMIT_RPM: 600,
 };
 
 let app: FastifyInstance;

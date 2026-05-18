@@ -18,6 +18,13 @@
 // declarative half only.
 import { bigint, date, integer, pgTable, primaryKey, text } from 'drizzle-orm/pg-core';
 
+/**
+ * Sentinel substituted for NULL agent_id when aggregating into usage_daily.
+ * Single source of truth — re-exported from usageDaily.ts and matched against
+ * the literal in router/db/migrations/0000_init.sql by tests. WR-07 (TD-03).
+ */
+export const NO_AGENT_SENTINEL = '_no_agent_';
+
 export const usageDaily = pgTable(
   'usage_daily',
   {
@@ -27,7 +34,7 @@ export const usageDaily = pgTable(
     model: text('model').notNull(),
     // Sentinel-default so the composite PK below treats "no agent" as a
     // single bucket. RESEARCH Open Question Q3.
-    agent_id: text('agent_id').notNull().default('_no_agent_'),
+    agent_id: text('agent_id').notNull().default(NO_AGENT_SENTINEL),
     request_count: integer('request_count').notNull(),
     success_count: integer('success_count').notNull(),
     error_count: integer('error_count').notNull(),

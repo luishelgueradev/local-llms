@@ -605,6 +605,19 @@ export function registerChatCompletionsRoute(
           // detached, leaving an unref'd interval scheduled until the next EPIPE.
           // `heartbeat.stop()` is idempotent — calling it twice (here AND from
           // sseCleanup) is safe.
+          //
+          // ROUTE-08 (TD-02 resolution) — backpressure: fastify-sse-v2's
+          // reply.sse(asyncIterable) consumer awaits `reply.raw.write()` before
+          // pulling the next value from the iterable. When the underlying TCP
+          // socket buffer is full, the write Promise resolves only after the
+          // socket drains. Result: the async iterable pauses naturally, the
+          // upstream SDK reader pauses, and no memory accumulates in the
+          // generator. This is the JavaScript-native async-iterable equivalent
+          // of the textual ROUTE-08 spec ("reply.raw.write() return value +
+          // 'drain' await") — the same property, expressed in the higher-level
+          // primitive. See tests/integration/chat-completions.backpressure.test.ts
+          // for the regression gate that a slow consumer (deliberately delayed
+          // socket writes) does NOT pile rows in memory.
           try {
             await reply.sse(canonicalToOpenAISse(upstreamWithMux, {
               signal: controller.signal,

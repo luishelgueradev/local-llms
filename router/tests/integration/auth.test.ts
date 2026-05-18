@@ -102,4 +102,21 @@ describe('bearer auth + skip-list (SC4 auth half, ROUTE-03, ROUTE-04)', () => {
     expect(res.statusCode).not.toBe(401);
     expect([400, 404, 405]).toContain(res.statusCode);
   });
+
+  // RFC 7235 §2.1 — the auth-scheme token is case-insensitive. Regression gate
+  // for the WR-02 / TD-01 fix in bearer.ts (only the 7-byte scheme prefix is
+  // lower-cased; credential bytes stay untouched so timingSafeEqual sees them
+  // verbatim).
+  it.each([
+    'bearer',  // all lowercase
+    'BEARER',  // all uppercase
+    'BeArEr',  // mixed case
+  ])('Any /v1/* request accepts %s scheme (RFC 7235 case-insensitive)', async (scheme) => {
+    const res = await app.inject({
+      method: 'POST', url: '/v1/chat/completions',
+      headers: { authorization: `${scheme} ${TOKEN}` },
+    });
+    expect(res.statusCode).not.toBe(401);
+    expect([400, 404, 405]).toContain(res.statusCode);
+  });
 });
