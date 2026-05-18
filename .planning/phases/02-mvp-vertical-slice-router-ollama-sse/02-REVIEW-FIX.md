@@ -1,130 +1,85 @@
 ---
 phase: 02-mvp-vertical-slice-router-ollama-sse
-fixed_at: 2026-05-12T16:28:00Z
+fixed_at: 2026-05-15T23:08:30Z
 review_path: .planning/phases/02-mvp-vertical-slice-router-ollama-sse/02-REVIEW.md
-iteration: 1
-findings_in_scope: 7
-fixed: 7
+iteration: 2
+findings_in_scope: 8
+fixed: 8
 skipped: 0
 status: all_fixed
 ---
 
-# Phase 2: Code Review Fix Report
+# Phase 2: Code Review Fix Report (Iteration 2)
 
-**Fixed at:** 2026-05-12T16:28:00Z
+**Fixed at:** 2026-05-15T23:08:30Z
 **Source review:** `.planning/phases/02-mvp-vertical-slice-router-ollama-sse/02-REVIEW.md`
-**Iteration:** 1
-**Worktree:** `/tmp/sv-02-reviewfix-1wf7Dn` on branch `gsd-reviewfix/02-72675`
-**Fix scope:** `critical_warning` (0 critical, 7 warnings; INFO findings out of scope per workflow)
+**Iteration:** 2 (refresh pass — prior iteration fixed WR-01..WR-07 on 2026-05-12)
 
 **Summary:**
-
-- Findings in scope: 7 (WR-01 through WR-07)
-- Fixed: 7
+- Findings in scope: 8 (3 Warning + 5 Info — fix_scope=all per objective)
+- Fixed: 8
 - Skipped: 0
-
-This run was a **resumption** — a prior fixer landed WR-01 (`3857a34`) and WR-02 (`6b096fa`) before hitting the Anthropic usage cap. It also had an uncommitted in-progress WR-03 edit that was reverted before this run started. This iteration applied WR-03..WR-07 fresh.
-
-All 66 vitest tests pass (2 unrelated skips); `tsc --noEmit` is clean across the router.
 
 ## Fixed Issues
 
-### WR-01: Heartbeat reports wrong byte count (off-by-2 per beat)
+### WR-01: `skip()` called before it is defined — script aborts when SKIP_LLAMACPP=1 + GGUF present
 
-**Files modified:** `router/src/sse/heartbeat.ts`
-**Commit:** `3857a34` (landed by prior run — verified in this run)
-**Applied fix:** Lifted the payload literal to a module-level constant and replaced the hard-coded `bytes += 16` with `bytes += HEARTBEAT_PAYLOAD_BYTES`, where the byte count is computed once with `Buffer.byteLength(HEARTBEAT_PAYLOAD, 'utf8')`. The "16 bytes" comment is also gone — replaced with the correct "14 bytes UTF-8" assertion. Matches the review's "more robust" variant rather than the inline `bytes += 14` minimal patch.
+**Files modified:** `bin/smoke-test-router.sh`
+**Commit:** 45caa27
+**Applied fix:** Moved `SKIPS=0` and `skip()` up alongside `fail()`/`pass()` at the top of the failure-tracking block (lines 104-109). Replaced the duplicate declarations at the former Phase-4-header location with a comment referencing the WR-01 fix. Phase 3 WR-05 is the same bug in the same file — hoisting the definition once closes both findings.
 
-### WR-02: Bearer scheme match is case-sensitive (RFC 7235 violation)
+### WR-02: `LLAMACPP_HEALTHY` flag set but never read — B1/B2/B3 assertions fire unconditionally
+
+**Files modified:** `bin/smoke-test-router.sh`
+**Commit:** 7d04bed
+**Applied fix:** Wrapped all three B-section assertions (B1: model chat, B2: /readyz inverse, B3: GPU residency) in `if [[ "${LLAMACPP_HEALTHY}" != "true" ]]; then skip ... else ... fi`. A failed `compose --profile llamacpp up -d --wait` now increments SKIPS by 1 instead of cascading up to 3 spurious FAILURES that obscure the real signal.
+
+### WR-03: SC5 diagnostic grep interpolates bearer token as ERE — breaks for tokens with regex metacharacters
+
+**Files modified:** `bin/smoke-test-router.sh`
+**Commit:** c0b3357
+**Applied fix:** Replaced the single `grep -iE "${ROUTER_BEARER_TOKEN}|bearer..."` with two sequential greps: first `grep -F "${ROUTER_BEARER_TOKEN}"` (fixed-string, zero false-positives), then `grep -iE 'bearer ...'` as a fallback for the token-shaped pattern. Prevents ERE metacharacters in the token from aborting the script or silently matching wrong log lines.
+
+### IN-01: `OLLAMA_URL` env var is declared but never referenced
+
+**Files modified:** `router/src/config/env.ts`
+**Commit:** daa0ea5
+**Applied fix:** Removed the `OLLAMA_URL` field from `EnvSchema`. It had a `.default()` so it never broke `loadEnv()`, but it added a spurious validation path and confused operators about which URL wins. Added a comment explaining the removal and pointing to the correct future extension point (registry.ts / adapter.ts). Also closes Phase 3 WR-04 which independently identified the same dead field.
+
+### IN-02: `?? '/'` fallback in `bearer.ts` is unreachable
 
 **Files modified:** `router/src/auth/bearer.ts`
-**Commit:** `6b096fa` (landed by prior run — verified in this run)
-**Applied fix:** Compared `auth.slice(0, 7).toLowerCase() === 'bearer '` instead of `startsWith('Bearer ')`. The 7-byte prefix is the only thing lowered; the credential bytes after the scheme are still passed to `timingSafeEqual` verbatim, preserving the constant-time property. `bearer foo`, `BEARER foo`, etc. are now accepted as RFC 7235 §2.1 requires.
+**Commit:** c4391ae
+**Applied fix:** Dropped the null-coalescing fallback: `const path = req.url.split('?')[0];`. Added a brief comment explaining why the fallback is absent (`String.prototype.split` always returns a non-empty array so `[0]` is never `undefined`).
 
-### WR-03: `main()` rejection at startup is unhandled (noisy fatal path)
+### IN-03: SC3 test describe block name overstates coverage
 
-**Files modified:** `router/src/index.ts`
-**Commit:** `0156c57`
-**Applied fix:** Replaced `void main();` with `main().catch((err) => { ... })`. The catch handler writes a single pino-shaped JSON line on stderr (`level: 60`, `msg: 'failed to start'`, with `err.{name, message, stack}`) before `process.exit(1)`. Pre-listen throws from `loadEnv`, `loadRegistryFromFile`, `buildApp`, and `makeLoggerOptions` now surface as structured logs instead of unhandled-promise stack traces. Matches the review's recommended snippet.
+**Files modified:** `router/tests/integration/chat-completions.stream.test.ts`
+**Commit:** 78dd907
+**Applied fix:** Renamed describe block from `'abort + error paths (SC3 mocked, D-C2, RESEARCH Pitfall 2 + 8)'` to `'abort signal wiring (SC3 real-abort proven by bash smoke, not vitest)'` as recommended, making the limitation visible in CI output summaries.
 
-### WR-04: Heartbeat is started before reply.sse() — leaks interval if reply.sse rejects synchronously
+### IN-04: `id.unref?.()` optional chain is unreachable on Node 22
 
-**Files modified:** `router/src/routes/v1/chat-completions.ts`
-**Commit:** `ef26725`
-**Applied fix:** Wrapped `await reply.sse(...)` in `try { ... } finally { heartbeat.stop(); }`. `heartbeat.stop()` is idempotent (early-return on the internal `stopped` flag), so the existing `sseCleanup` and `onClose` paths can still call it without double-firing. If `reply.sse(...)` rejects synchronously (headers already sent, plugin in a degraded state), the heartbeat is now stopped via the `finally` block instead of leaking an unref'd interval until the next EPIPE.
+**Files modified:** `router/src/sse/heartbeat.ts`
+**Commit:** e086c0f
+**Applied fix:** Changed `id.unref?.()` to `id.unref()`. Added a comment noting that Node 22 `Timeout` always has `unref()`, so the optional chain signalled false uncertainty.
 
-### WR-05: `req.raw.socket` may be undefined — abort listener silently no-ops
-
-**Files modified:** `router/src/routes/v1/chat-completions.ts`
-**Commit:** `d9136e6`
-**Applied fix:** Promoted the silent optional-chain (`req.raw.socket?.once('close', onClose)`) to an explicit branch: if `req.raw.socket` is truthy, attach the listener (production behaviour unchanged); otherwise emit `req.log.warn({ url }, '... abort propagation may not fire (HTTP/2 or inject?)')`. The three downstream `.off('close', onClose)` cleanup sites keep optional chaining because they're inherently no-op-safe when the listener was never attached. Matches the review's option (a) — log-and-observe rather than `req.socket`/`reply.raw` rewires, on the grounds that visibility of the degraded path is the higher-value fix today.
-
-### WR-06: `BearerAuthError` is dead code — defined and re-exported but never thrown
-
-**Files modified:** `router/src/auth/bearer.ts`, `router/tests/unit/bearer.test.ts`
-**Commit:** `5692373`
-**Applied fix:** Picked the **"throw" variant** the review recommends after verifying that `app.setErrorHandler` (`app.ts:51-60`) is wired and routes `BearerAuthError` through `toOpenAIErrorEnvelope` → 401 / `authentication_error` / `unauthorized` — bit-identical to the prior inline envelope.
-
-Concretely:
-- Both bearer-hook short-circuit paths (`reply.code(401).send({...})`) replaced with `throw new BearerAuthError('Missing or malformed Authorization header')` and `throw new BearerAuthError('Invalid bearer token')` respectively.
-- Inner function renamed from `bearerPreHandler` to `bearerOnRequest` (IN-04-adjacent — the production wiring at `app.ts:46` is `onRequest`, so the function name now matches the registered phase).
-- Unit test (`tests/unit/bearer.test.ts`) updated to register the same `setErrorHandler` shape and to use `onRequest` instead of `preHandler`. The SC5 leak-test case also wires `setErrorHandler` so the throw flows through the central `req.log.warn` path.
-
-Result: the `instanceof BearerAuthError` branches in `errors/envelope.ts` (lines 34 and 52) are now reachable in production. The duplicate envelope literal in `bearer.ts` is gone. All 6 integration auth tests and 8 unit bearer tests still pass.
-
-**Note:** The previous `bin/smoke-test-router.sh` SC4 path checks `error.code === "unauthorized"` and `error.type === "authentication_error"` — both preserved by the central envelope, so the SC4 smoke test does not need to change.
-
-### WR-07: `chunkToSseEvents` swallows non-aborted APIUserAbortError without terminator
+### IN-05: `chunkToSseEvents` in `stream.ts` is exported but not used in any production source
 
 **Files modified:** `router/src/sse/stream.ts`
-**Commit:** `d364c59`
-**Applied fix:** Split the catch block into three cases:
-- `opts.signal?.aborted === true` (our abort): silently return — the client is gone, no terminator needed.
-- `toOpenAIErrorEnvelope(err) === NO_ENVELOPE` AND we did NOT abort (upstream's own abort path): yield `{ event: '', data: '[DONE]' }` before returning so strict clients close cleanly.
-- Otherwise: emit the existing D-C2 mid-stream error frame.
-
-The router's "every stream ends with data: `[DONE]`" contract (documented in the same file's leading comment) is now preserved for non-router-initiated aborts. Matches the review's recommended snippet verbatim.
-
-## Skipped Issues
-
-None — all 7 in-scope warnings were fixed cleanly.
-
-## Out of Scope
-
-INFO findings IN-01 through IN-06 were not touched per the resumption-context directive:
-
-- IN-01: dead `OLLAMA_URL` env field
-- IN-02: dead `?? '/'` fallback in `bearer.ts` split
-- IN-03: leftover smoke-test canary comments in `models.yaml`
-- IN-04: unit test uses `preHandler`, production uses `onRequest` — **partially addressed as a side effect of WR-06** (unit test now uses `onRequest`; function renamed to `bearerOnRequest`). The standalone IN-04 fix is therefore mostly subsumed by this iteration's WR-06 commit.
-- IN-05: SC3 integration test name overstatement
-- IN-06: optional-call `id.unref?.()` in heartbeat
-
-Recommend a follow-up `--fix=info` pass to clean these up.
-
-## Verification Performed
-
-- `npx tsc --noEmit` clean after every commit (5 invocations).
-- Targeted vitest sweep after each fix: bearer+envelope unit tests, SSE stream unit tests, full integration auth suite.
-- Final full-suite run: **10 test files passed, 66 tests passed, 2 skipped (unrelated)** with no new skips introduced.
-- Manual inspection of `git diff HEAD~5..HEAD --stat` confirms changes are scoped:
-  ```
-  router/src/auth/bearer.ts                 |  16 ++++------------
-  router/src/index.ts                       |  17 ++++++++++++++++-
-  router/src/routes/v1/chat-completions.ts  |  31 ++++++++++++++++++++++++++-----
-  router/src/sse/stream.ts                  |  16 ++++++++++++++--
-  router/tests/unit/bearer.test.ts          |  20 ++++++++++++++++++--
-  ```
-
-## Branch / Worktree State
-
-- Worktree: `/tmp/sv-02-reviewfix-1wf7Dn`
-- Branch: `gsd-reviewfix/02-72675` (5 new commits ahead of `master`, plus 2 from prior run = 7 fix commits total)
-- Main repo `master` is unchanged at `1c192c5` (no fast-forward attempted — orchestrator handles merge).
-- Working tree is clean; no uncommitted changes.
+**Commit:** ab2f156
+**Applied fix:** Added a module-level JSDoc deprecation block at the top of `stream.ts` explaining that `chunkToSseEvents` is not imported by any production source (Phase 4 replaced it with `canonicalToOpenAISse`), that the file is retained as a unit-test target, and that it should be considered for removal when unit tests are migrated.
 
 ---
 
-_Fixed: 2026-05-12T16:28:00Z_
+## Validation
+
+- `bash -n bin/smoke-test-router.sh`: exit 0
+- `npx tsc --noEmit` (from `router/`): exit 0
+- `npx vitest run tests/integration/auth.test.ts tests/integration/chat-completions.nonstream.test.ts tests/integration/chat-completions.stream.test.ts`: 21 passed, 2 skipped (0 failures)
+
+---
+
+_Fixed: 2026-05-15T23:08:30Z_
 _Fixer: Claude (gsd-code-fixer)_
-_Iteration: 1_
+_Iteration: 2_

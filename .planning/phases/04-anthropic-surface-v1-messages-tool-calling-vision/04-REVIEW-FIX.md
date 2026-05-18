@@ -1,24 +1,94 @@
 ---
-phase: 04
-fixed_at: 2026-05-14T12:13:00Z
+phase: 04-anthropic-surface-v1-messages-tool-calling-vision
+fixed_at: 2026-05-15T23:22:00Z
 review_path: .planning/phases/04-anthropic-surface-v1-messages-tool-calling-vision/04-REVIEW.md
-iteration: 1
-findings_in_scope: 10
-fixed: 10
+iteration: 2
+findings_in_scope: 5
+fixed: 5
 skipped: 0
 status: all_fixed
 ---
 
-# Phase 4: Code Review Fix Report
+# Phase 4: Code Review Fix Report (Iteration 2 — Refresh Pass)
 
-**Fixed at:** 2026-05-14T12:13:00Z
+**Fixed at:** 2026-05-15T23:22:00Z
 **Source review:** `.planning/phases/04-anthropic-surface-v1-messages-tool-calling-vision/04-REVIEW.md`
-**Iteration:** 1
+**Iteration:** 2 (refresh pass; iteration 1 closed all 10 prior findings)
 
 **Summary:**
-- Findings in scope: 10 (3 critical + 7 warning)
-- Fixed: 10
+- Findings in scope: 5 (1 warning + 4 info)
+- Fixed: 5
 - Skipped: 0
+
+## Fixed Issues — Iteration 2
+
+### WR-01: Streaming path hardcodes `stop_reason: 'end_turn'` — truncation masked
+
+**Files modified:** `router/src/translation/openai-out.ts`, `router/tests/translation/openai-out.test.ts`
+**Commit:** `b205833`
+**Applied fix:** Added `upstreamFinishReason` tracking variable in `openAIChunksToCanonicalEvents`. Captures `choice.finish_reason` from every choices-bearing chunk before the usage-only chunk (choices:[]) arrives. Added `openAIFinishToCanonicalStop()` helper mapping `'length'→'max_tokens'`, `'tool_calls'/'function_call'→'tool_use'`, `'content_filter'→'end_turn'`, `default→'end_turn'`. The `message_delta` event now uses the captured finish_reason instead of hardcoded `'end_turn'`. Three regression tests added: `finish_reason:'length'→stop_reason:'max_tokens'` (core truncation case), `'stop'→'end_turn'`, and `'tool_calls'→'tool_use'`.
+
+---
+
+### IN-01: `openai-out.ts:131` joins multiple text blocks with no separator
+
+**Files modified:** `router/src/translation/openai-out.ts`
+**Commit:** `a080ee5`
+**Applied fix:** Changed `textParts.join('')` to `textParts.join('\n')` in `canonicalToOpenAIResponse`. Single text block responses are unaffected. Multi-block responses (e.g. thinking text before `tool_use` + continuation text after) now have a newline separator instead of a run-on concatenation.
+
+---
+
+### IN-02: `bin/smoke-test-router.sh:901` uses fixed `/tmp/.scp4e-body` path
+
+**Files modified:** `bin/smoke-test-router.sh`
+**Commit:** `3a46bca`
+**Applied fix:** Replaced fixed `/tmp/.scp4e-body` with `SCP4E_TMP=$(mktemp)` and updated the three subsequent references. Matches the pattern used by all other smoke-test sections. `bash -n` syntax check passes.
+
+---
+
+### IN-03: `messages.ts` echoes an empty `anthropic-version: ` header after full sanitization
+
+**Files modified:** `router/src/routes/v1/messages.ts`
+**Commit:** `a98d664`
+**Applied fix:** `sanitizeAnthropicVersion` now stores the stripped string in a local variable and returns `null` when empty, rather than returning the empty string directly. Input consisting entirely of non-printable bytes within 64 chars no longer produces an empty `anthropic-version: ` response header.
+
+---
+
+### IN-04: `isDenied` "unknown family" branch is unreachable with current Node typings
+
+**Files modified:** `router/src/translation/ollama-native-out.ts`
+**Commit:** `85f345a`
+**Applied fix:** Replaced terse `// unknown family → deny` comment with `// unknown family (Node only emits 4|6 today) — deny-on-unknown is forward-defensive`.
+
+---
+
+### IN-05: `canonical.ts` shares one `monotonicFactory` for both `newMessageId` and `newToolUseId`
+
+**Files modified:** `router/tests/translation/canonical.test.ts`
+**Commit:** `a75c9d2`
+**Applied fix:** Added unit test `'IN-05: newToolUseId ULID >= newMessageId ULID (shared monotonicFactory cross-helper)'`. Calls both helpers in tight succession (same-millisecond pair) and asserts the tool-use ULID is lexicographically greater than the message ULID. Uses direct string comparison (simpler and more direct than `decodeTime` — `parseUlidTime` does not exist in the ulid package).
+
+---
+
+## Validation
+
+All three post-fix validation steps passed:
+
+- `bash -n bin/smoke-test-router.sh` — exit 0 (syntax clean)
+- `npx tsc --noEmit` (from router/) — exit 0 (no type errors)
+- `npx vitest run` (from router/) — 40 test files passed, 493 tests passed, 2 skipped (pre-existing)
+
+---
+
+## Prior Iteration (1) Summary
+
+Iteration 1 (2026-05-14) closed 10 findings (3 critical + 7 warning) covering the D-C4 SSRF guard chain, streaming edge cases, bearer token leak, anthropic-version header injection, and the IS_ERROR_WRAP_RE DOS vector. All verified closed in this refresh pass.
+
+---
+
+_Fixed: 2026-05-15T23:22:00Z_
+_Fixer: Claude (gsd-code-fixer)_
+_Iteration: 2_
 
 All three BLOCKER findings (CR-01, CR-02, CR-03) on the D-C4 SSRF guard chain
 were the primary focus. The guard chain is now layered: schema-level scheme
