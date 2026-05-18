@@ -1,0 +1,36 @@
+# UAT overlay — temporary host port to router so bin/smoke-test-*.sh scripts
+# (which default to http://127.0.0.1:3000) work without Traefik Host-header
+# gymnastics. Remove this file when the UAT pass is done.
+#
+# Usage: docker compose -f compose.yml -f docker-compose.uat.yml up -d router
+
+services:
+  router:
+    ports:
+      - "127.0.0.1:3000:3000"
+  openwebui:
+    # OWUI in prod is on `webui-app` + `data` networks — BOTH internal: true (Phase 6 D-C6
+    # egress containment). Docker silently refuses to publish host ports for containers
+    # whose networks are ALL internal. UAT overlay adds OWUI to `app` (non-internal) ONLY
+    # for the duration of the UAT pass so port publishing works.
+    networks:
+      - app
+      - webui-app
+      - data
+    ports:
+      - "127.0.0.1:8088:8080"
+  grafana:
+    # Grafana's default root_url is built from %(protocol)s://%(domain)s:%(http_port)s/.
+    # When accessing via the UAT host port 127.0.0.1:3030 the embedded appUrl
+    # ends up as http://localhost:3000/ — bundles load (200) but bootstrap fails
+    # with "Error bootstrapping Grafana" because appUrl ≠ current origin.
+    environment:
+      - GF_SERVER_ROOT_URL=http://127.0.0.1:3030/
+      - GF_SERVER_SERVE_FROM_SUB_PATH=false
+      # Grafana 12 requires auth on /api/frontend/settings; without it the
+      # login page itself fails to bootstrap. Enable anonymous Viewer for the
+      # UAT overlay so the bundle can load and the login form renders.
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+    ports:
+      - "127.0.0.1:3030:3000"
