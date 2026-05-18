@@ -561,17 +561,24 @@ sys.exit(0 if ('llama3.2:3b-instruct-q4_K_M' in ids and 'qwen2.5-7b-instruct-q4k
     fail "/readyz returned ${READYZ_CODE} under --profile ollama (expected 503; D-D5)"
   fi
 
-  # Assertion A3: /readyz body has per-backend statuses — exactly one alive + one down
+  # Assertion A3: /readyz body has per-backend statuses — ollama alive + llamacpp down
+  # UAT 2026-05-18 fix: relaxed from "exactly 1 alive + 1 down" to "ollama is
+  # alive AND llamacpp is down" — vllm/vllm-embed/ollama-cloud entries land in
+  # alive[] under the standard --profile vllm setup which is the v0.9.0 default.
+  # The Phase 2-era exact-count assertion was written when the registry only
+  # had two backends (ollama + llamacpp).
   READYZ_BODY=$(curl -s "${ROUTER_URL}/readyz" || true)
   if echo "${READYZ_BODY}" | python3 -c "
 import sys, json
 d = json.load(sys.stdin)
-alive = [b for b in d['backends'] if b['status'] == 'alive']
-down = [b for b in d['backends'] if b['status'] in ('down', 'stale')]
-if len(alive) == 1 and len(down) == 1 and 'ollama' in alive[0]['url'] and 'llamacpp' in down[0]['url']:
+alive_urls = [b['url'] for b in d['backends'] if b['status'] == 'alive']
+down_urls = [b['url'] for b in d['backends'] if b['status'] in ('down', 'stale')]
+ollama_alive = any('ollama:' in u or 'ollama.com' in u for u in alive_urls if 'ollama:' in u)
+llamacpp_down = any('llamacpp' in u for u in down_urls)
+if ollama_alive and llamacpp_down:
     sys.exit(0)
 else:
-    print(f'alive={alive}, down={down}', file=sys.stderr)
+    print(f'alive_urls={alive_urls}, down_urls={down_urls}', file=sys.stderr)
     sys.exit(1)
 "; then
     pass "/readyz body shows ollama alive + llamacpp down (D-D4)"
@@ -693,16 +700,20 @@ sys.exit(0 if isinstance(content, str) and len(content) > 0 else 1)
   fi
 
   # Assertion B2: /readyz body now shows llamacpp alive + ollama down (inverse of A3)
+  # UAT 2026-05-18 fix: relaxed from "exactly 1 alive + 1 down" — same rationale
+  # as A3 above (vllm/cloud entries land in alive[] under the v0.9.0 default).
   READYZ_BODY_2=$(curl -s "${ROUTER_URL}/readyz" || true)
   if echo "${READYZ_BODY_2}" | python3 -c "
 import sys, json
 d = json.load(sys.stdin)
-alive = [b for b in d['backends'] if b['status'] == 'alive']
-down = [b for b in d['backends'] if b['status'] in ('down', 'stale')]
-if len(alive) == 1 and len(down) == 1 and 'llamacpp' in alive[0]['url'] and 'ollama' in down[0]['url']:
+alive_urls = [b['url'] for b in d['backends'] if b['status'] == 'alive']
+down_urls = [b['url'] for b in d['backends'] if b['status'] in ('down', 'stale')]
+llamacpp_alive = any('llamacpp' in u for u in alive_urls)
+ollama_down = any('ollama:' in u for u in down_urls)
+if llamacpp_alive and ollama_down:
     sys.exit(0)
 else:
-    print(f'alive={alive}, down={down}', file=sys.stderr)
+    print(f'alive_urls={alive_urls}, down_urls={down_urls}', file=sys.stderr)
     sys.exit(1)
 "; then
     pass "/readyz body shows llamacpp alive + ollama down (inverse of subsection A -- profile swap took effect)"
@@ -899,17 +910,25 @@ rm -f "${SCP4C_HEADERS_FILE}"
 
 # ── SC-P4-D: vision happy path via URL ──────────────────────────────────────
 # NOTE: the image URL choice is intentional —
-#   https://raw.githubusercontent.com/ollama/ollama/main/docs/images/ollama.png
+#   https://raw.githubusercontent.com/ollama/ollama/main/docs/ollama.png
 # is a small (~10 KB) public HTTPS image on a stable GitHub raw path. It tests
 # the full D-C4 URL-fetch pipeline (HTTPS scheme → DNS lookup → 10 MB cap →
 # image/* content-type → bare base64 forwarded to /api/chat). If the smoke
 # environment has no outbound network, set SKIP_URL=1 to skip this section.
 echo ""
 echo "[smoke-test-router] SC-P4-D: POST /v1/messages vision URL happy path ..."
+# UAT 2026-05-18: pre-flight VRAM check. The vision model is ~7.8 GiB and the
+# one-backend-hot pattern (PROJECT.md) means it cannot coexist with vllm +
+# vllm-embed which together hold ~10 GiB on a 16 GiB GPU. If insufficient VRAM
+# is free, skip with a clear operator action instead of hanging the request.
+VISION_NEED_MIB=8500   # ~7.8 GiB + headroom for KV cache
+VRAM_FREE_MIB=$(docker compose exec -T ollama nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits 2>/dev/null | tr -d '[:space:]' || echo 0)
 if ! docker compose exec -T ollama ollama list 2>/dev/null | grep -q "${VISION_MODEL}"; then
   skip "SC-P4-D: vision model not pulled; run: docker compose exec ollama ollama pull ${VISION_MODEL}"
 elif [[ "${SKIP_URL:-}" == "1" ]]; then
   skip "SC-P4-D: SKIP_URL=1; smoke env has no outbound network for image fetch"
+elif [[ -n "${VRAM_FREE_MIB}" ]] && [[ "${VRAM_FREE_MIB}" =~ ^[0-9]+$ ]] && (( VRAM_FREE_MIB < VISION_NEED_MIB )); then
+  skip "SC-P4-D: insufficient VRAM (${VRAM_FREE_MIB} MiB free, need ${VISION_NEED_MIB} MiB). Stop vllm/vllm-embed first (one-backend-hot pattern): docker compose --profile vllm stop vllm vllm-embed"
 else
   SCP4D_BODY=$(python3 -c '
 import json
@@ -920,7 +939,7 @@ print(json.dumps({
     "role": "user",
     "content": [
       {"type": "image", "source": {"type": "url",
-        "url": "https://raw.githubusercontent.com/ollama/ollama/main/docs/images/ollama.png"}},
+        "url": "https://raw.githubusercontent.com/ollama/ollama/main/docs/ollama.png"}},
       {"type": "text", "text": "Describe this image in one sentence."}
     ]
   }]
@@ -1281,7 +1300,16 @@ fi
 echo ""
 echo "[smoke-test-router] OBS-05: every service has a real healthcheck reporting healthy ..."
 UNHEALTHY_LINES=$(docker compose ps --format '{{.Name}} {{.Health}}' 2>/dev/null | grep -vE 'healthy|gpu-preflight|pg-backup' || true)
-UNHEALTHY_COUNT=$(echo -n "${UNHEALTHY_LINES}" | grep -c . || echo 0)
+# UAT 2026-05-18 fix: `... | grep -c . || echo 0` emitted "0\n0" for empty
+# input (grep -c outputs "0" + exits 1 -> the || appends another "0"). The
+# resulting two-line string broke `[[ ... == "0" ]]` and triggered a spurious
+# fail with message "OBS-05: 0\n0 service(s) not healthy". Single-source the
+# count by short-circuiting on empty LINES.
+if [[ -z "${UNHEALTHY_LINES}" ]]; then
+  UNHEALTHY_COUNT=0
+else
+  UNHEALTHY_COUNT=$(printf '%s\n' "${UNHEALTHY_LINES}" | grep -c .)
+fi
 if [[ "${UNHEALTHY_COUNT}" == "0" ]]; then
   pass "OBS-05: all long-running services healthy (gpu-preflight + pg-backup excluded by design — see Plan 01 D-G1 + Plan 03 D-F2)"
 else
@@ -1629,9 +1657,19 @@ else
   if [[ -z "${P8_RL_KEY}" ]]; then
     fail "Phase 8: no ratelimit:* keys present — rate-limit middleware may not be wired"
   else
+    # UAT 2026-05-18 fix: pre-seed BOTH minute N and N+1 keys to defeat the
+    # minute-boundary flake (warm-up curl can take >60s under model swap;
+    # without the second key, the probe lands in minute N+1 fresh and 429
+    # doesn't fire). Mirrors the smoke-test-cloud.sh §6 fix.
+    P8_RL_HASH=$(printf '%s' "${P8_RL_KEY}" | awk -F: '{print $2}')
+    P8_RL_CUR_MIN=$(printf '%s' "${P8_RL_KEY}" | awk -F: '{print $3}')
+    P8_RL_NEXT_MIN=$(( P8_RL_CUR_MIN + 1 ))
     P8_OVER_RPM=$(( P8_RPM + 1 ))
-    p8_valkey_cli SET "${P8_RL_KEY}" "${P8_OVER_RPM}" KEEPTTL >/dev/null 2>&1 \
-      || p8_valkey_cli SET "${P8_RL_KEY}" "${P8_OVER_RPM}" EX 90 >/dev/null
+    for P8_MIN in "${P8_RL_CUR_MIN}" "${P8_RL_NEXT_MIN}"; do
+      P8_K="ratelimit:${P8_RL_HASH}:${P8_MIN}"
+      p8_valkey_cli SET "${P8_K}" "${P8_OVER_RPM}" KEEPTTL >/dev/null 2>&1 \
+        || p8_valkey_cli SET "${P8_K}" "${P8_OVER_RPM}" EX 90 >/dev/null
+    done
     P8_RL_FILE=$(mktemp)
     P8_RL_HFILE=$(mktemp)
     P8_RL_STATUS=$(curl -s -o "${P8_RL_FILE}" -D "${P8_RL_HFILE}" -w '%{http_code}' \
@@ -1658,7 +1696,9 @@ else
     else
       fail "Phase 8: Retry-After on 429 missing or non-numeric ('${P8_RL_RETRY}')"
     fi
-    p8_valkey_cli DEL "${P8_RL_KEY}" >/dev/null
+    for P8_MIN in "${P8_RL_CUR_MIN}" "${P8_RL_NEXT_MIN}"; do
+      p8_valkey_cli DEL "ratelimit:${P8_RL_HASH}:${P8_MIN}" >/dev/null
+    done
     rm -f "${P8_RL_FILE}" "${P8_RL_HFILE}"
   fi
 
