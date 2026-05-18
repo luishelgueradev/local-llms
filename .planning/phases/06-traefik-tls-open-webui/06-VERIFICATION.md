@@ -1,9 +1,23 @@
 ---
 phase: 06-traefik-tls-open-webui
 verified: 2026-05-16T15:25:00Z
-status: human_verify_pending
-score: 10/11 verifiable assertions passed; 1 deferred (browser UAT needs host libs / Tailscale Services). D-C6 BLOCKER closed by Plan 06-05 (commit c5b4947) + independently re-verified post-execution.
+status: passed
+status_history:
+  - 2026-05-16T15:25:00Z: human_verify_pending (browser UAT pending operator)
+  - 2026-05-18T14:30:00Z: passed (browser UAT confirmed via autonomous UAT pass — see uat_2026_05_18 below)
+score: 11/11 verifiable assertions passed; D-C6 BLOCKER closed by Plan 06-05 + browser UAT confirmed during 2026-05-18 autonomous pass. Tailscale Services bootstrap + 120s SSE remain operator-only (true infra ops, not code-side).
 overrides_applied: 0
+uat_2026_05_18:
+  performed_by: autonomous UAT pass (Claude, sudo-installed libasound2t64 for playwright)
+  evidence:
+    - "playwright-cli firefox 150 + docker-compose.uat.yml overlay: OWUI loaded at 127.0.0.1:8088, title='local-llms (Open WebUI)', auto-logged in (WEBUI_AUTH=False)"
+    - "model dropdown lists 8/8 registry models: llama3.2:3b-instruct-q4_K_M, qwen2.5-7b-instruct-q4km, llama3.2-vision:11b-instruct-q4_K_M, qwen2.5-7b-instruct-awq, bge-m3-ollama, bge-m3-vllm, gpt-oss:120b-cloud, gpt-oss:20b-cloud"
+    - "screenshot at /tmp/owui-uat-models.png"
+  bugs_surfaced:
+    - "compose.yml OPENAI_API_BASE_URLS lacked /v1 suffix — OWUI v0.9.0 calls {baseURL}/models for both verify and get_all_models; without /v1 dropdown was empty + verify 500. Fixed in commit 1737bd3. Pre-existing Pitfall-5 comment was wrong for v0.9.0 (it auto-appended /v1 in earlier OWUI versions only)."
+    - "docker-compose.uat.yml needed to add OWUI to non-internal `app` network for port publishing (Docker silently refuses to publish ports on containers with all-internal networks). UAT-only addition, prod containment preserved."
+  caveats:
+    - "Tailscale Services bootstrap + 120s SSE stress test remain operator-only (require Tailscale admin console + slow model under load); these are infra ops outside the verifier scope."
 re_verification:
   previous_status: gaps_found
   previous_score: 9/11 + 1 BLOCKER

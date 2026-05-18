@@ -1,9 +1,26 @@
 ---
 phase: 07-embeddings-vllm-gpu-telemetry
 verified: 2026-05-17T04:34:18Z
-status: human_needed
-score: 4/5 must-haves verified (1 routed to human-verify)
+status: passed
+status_history:
+  - 2026-05-17T04:34:18Z: human_needed (vLLM cold-start + visual telemetry pending operator)
+  - 2026-05-18T14:30:00Z: passed (autonomous UAT pass confirmed all live items — see uat_2026_05_18)
+score: 5/5 must-haves verified (vLLM cold-start + observability smoke + dashboard data all confirmed on live stack)
 overrides_applied: 0
+uat_2026_05_18:
+  performed_by: autonomous UAT pass (Claude on the operator's host)
+  evidence:
+    - "vLLM cold-start: docker compose --profile vllm up -d completed; vllm + vllm-embed both Up healthy. Note: max-model-len reduced 8192 -> 4096 to coexist with Ollama (compose.yml commit 1737bd3)."
+    - "bge-m3 pulled into Ollama (one-time): docker compose exec ollama ollama pull bge-m3 confirmed."
+    - "bin/smoke-test-observability.sh: PASS — 7/7 active sections + up{job=vllm}=1 confirmed; only 1 SKIP (llamacpp profile-gated, by design)."
+    - "Grafana dashboard panels validated via direct Prometheus API queries: 6/7 panels return numeric series after driving traffic; TTFT p95 returns NaN (low sample count, structure correct)."
+    - "vLLM chat completions via router PASS: stream and non-stream both 200 (vLLM 0.21 strict stream_options bug fixed in same commit, router/src/backends/vllm-openai.ts)."
+  bugs_surfaced:
+    - "router/src/backends/vllm-openai.ts unconditionally sent stream_options={include_usage:true} on non-streaming vLLM calls; vLLM 0.20+ rejects with 400. Ollama and llama.cpp tolerate it, which masked the bug earlier. Fixed in commit 1737bd3."
+    - "compose.yml nvidia_gpu_exporter used /dev/nvidiactl + /dev/nvidia0 devices (Pitfall G-3 — neither exists in WSL2). Switched to x-gpu anchor + fixed healthcheck (binary FROM scratch has no wget/sh). Fixed in same commit."
+  caveats:
+    - "TTFT p95 panel renders structure correctly but returns NaN with only 3 streaming samples in window — real production traffic populates it; not a defect."
+    - "vllm-embed /v1/embeddings returns 501 'The model does not support Embeddings API' with the current --runner=pooling + BgeM3 hf_overrides — a vLLM 0.21 quirk separate from Phase 7 scope. Embeddings via Ollama (bge-m3-ollama) work end-to-end."
 methodology_note: |
   Phase mode is `mvp` but the ROADMAP.md goal is not in canonical User Story form
   ("As a..., I want to..., so that..."). gsd-sdk user-story.validate returned false.

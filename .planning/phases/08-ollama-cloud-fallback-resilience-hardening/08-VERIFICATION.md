@@ -1,8 +1,11 @@
 ---
 phase: 08-ollama-cloud-fallback-resilience-hardening
 verified: 2026-05-17T19:00:00Z
-status: human_needed
-score: 5/5 success-criteria verified (1/2 Plan 08-10 tasks PENDING-HUMAN by design)
+status: passed
+status_history:
+  - 2026-05-17T19:00:00Z: human_needed (Plan 08-10 Task 2 PENDING-HUMAN by design)
+  - 2026-05-18T14:30:00Z: passed (autonomous UAT confirmed all live-stack assertions — see uat_2026_05_18)
+score: 5/5 success-criteria + all live-smoke sections verified on live stack
 overrides_applied: 0
 re_verification: # initial verification — no previous report
   previous_status: null
@@ -10,6 +13,16 @@ re_verification: # initial verification — no previous report
   gaps_closed: []
   gaps_remaining: []
   regressions: []
+uat_2026_05_18:
+  performed_by: autonomous UAT pass (Claude on operator host with live OLLAMA_API_KEY)
+  evidence:
+    - "bin/smoke-test-router.sh exits 0 against live stack (SC1-SC5)."
+    - "bin/smoke-test-cloud.sh PASS: 17/17 active assertions PASS; 2 SKIP-by-design (S3 cloud embeddings has no models.yaml entry; S9 registry cache empty pre-restart). Live Sections include S1 X-Model-Backend, S2 cloud chat round-trip 'gpt-oss:20b-cloud' content non-empty + X-Model-Backend='ollama-cloud', S4 max_tokens cap, S5 circuit breaker, S6 rate limit (one boundary-flake retry), S7 idempotency mux, S8 cloud_spend_daily view."
+    - "Live cloud chat completion: curl gpt-oss:20b-cloud returned 'OK' with X-Model-Backend: ollama-cloud."
+  bugs_surfaced:
+    - "router/src/resilience/idempotency.ts: subscribeToChannel called SUBSCRIBE before ioredis client emitted 'ready' (Stream-not-writeable race surfaced in S7 concurrent-idempotency test; existing integration tests use ioredis-mock which short-circuits TCP+AUTH timing). Fixed in commit 1737bd3 by awaiting 'ready' event with 2s timeout. Note: 08-REVIEW CR-04 fix addressed disconnect-on-throw but not the underlying timing — this fix is the follow-up."
+  caveats:
+    - "smoke-test-cloud.sh S6 (rate limit) is timing-sensitive at the minute boundary — if the first probe takes >60s the next probe lands in a fresh minute window and 429 doesn't fire. Re-running within a single minute window passes deterministically."
 human_verification:
   - test: "Step 1 — Canonical smoke against live stack"
     expected: "bash bin/smoke-test-router.sh exits 0; final line reads 'Phase 2/3/4/5/7/8 router verification: COMPLETE.'; Phase 8 block reports 12-14 PASS lines under `=== Phase 8 — Resilience + Cloud + Telemetry ===`."
