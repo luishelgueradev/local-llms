@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, renameSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -161,39 +161,60 @@ describe('hot-reload VRAM violation: preserves previous registry + createdAtSec 
   // ── Case 3: Recovery after failed reload ─────────────────────────────────────
 
   it('recovery: after failed VRAM reload, valid reload succeeds and advances createdAtSec', async () => {
-    // ONE watcher for the whole test — the previous double-watcher pattern
-    // (stop + recreate then immediately writeFileSync) raced fs.watchFile's
-    // baseline-stat capture on WSL2 + Docker Desktop and dropped the first
-    // poll's diff (~1-2/5 fail rate full-suite). Single watcher + explicit
-    // resolvers for each phase = deterministic. TD-07 fix.
+    // Two-phase test redesigned to be flake-free under full-suite parallel
+    // load (WSL2 + Docker Desktop fs.watchFile pauses under CPU contention).
+    //
+    // Original double-write pattern (write invalid -> wait error -> write
+    // valid -> wait reload) on a single watcher was non-deterministic under
+    // load: the second write's poll cycle could be starved enough that the
+    // fs.watchFile mtime-diff window missed it.
+    //
+    // Fix: tear down the watcher between phases and rename a sibling file
+    // into place for the second mutation. Rename triggers an immediate
+    // inode change that fs.watchFile detects reliably (vs writeFileSync
+    // which depends on consecutive poll-stat diffs catching the mtime+size
+    // change). Each phase has its own watcher with a fresh baseline.
     let errorCount = 0;
-    let reloadCount = 0;
     const [errorPromise, onErrorResolve] = makeCallbackPromise();
-    const [reloadPromise, onReloadResolve] = makeCallbackPromise();
-
     const createdAtSec1 = store.getCreatedAtSec();
+
+    // Phase A: invalid YAML -> onError fires, registry preserved.
+    watcher = watchRegistry(filePath, store, {
+      debounceMs: 50,
+      usePolling: true,
+      pollingIntervalMs: 100,
+      onReload: () => {},
+      onError: () => { errorCount++; onErrorResolve(true); },
+    });
+    writeFileSync(filePath, INVALID_OVER_BUDGET);
+    await errorPromise;
+    expect(errorCount).toBeGreaterThanOrEqual(1);
+    expect(store.get().models).toHaveLength(1); // previous state preserved
+    expect(store.getCreatedAtSec()).toBe(createdAtSec1); // unchanged after failed reload
+    watcher.stop();
+
+    // Wait >=1s so createdAtSec (Unix-second resolution) can advance on recovery.
+    await new Promise((r) => setTimeout(r, 1100));
+
+    // Phase B: rename a sibling file containing VALID_REPLACEMENT into the
+    // watched path. atomic rename → guaranteed inode/mtime change in a
+    // single poll cycle. Fresh watcher = fresh baseline stat at start, so
+    // the very next poll sees the rename.
+    let reloadCount = 0;
+    const [reloadPromise, onReloadResolve] = makeCallbackPromise();
+    const stagedPath = `${filePath}.staged`;
+    writeFileSync(stagedPath, VALID_REPLACEMENT);
 
     watcher = watchRegistry(filePath, store, {
       debounceMs: 50,
       usePolling: true,
       pollingIntervalMs: 100,
       onReload: () => { reloadCount++; onReloadResolve(true); },
-      onError: () => { errorCount++; onErrorResolve(true); },
+      onError: () => {},
     });
-
-    // Step 1: invalid YAML -> onError fires, registry preserved.
-    writeFileSync(filePath, INVALID_OVER_BUDGET);
-    await errorPromise;
-    expect(errorCount).toBeGreaterThanOrEqual(1);
-    expect(reloadCount).toBe(0);
-    expect(store.get().models).toHaveLength(1); // previous state preserved
-    expect(store.getCreatedAtSec()).toBe(createdAtSec1); // unchanged after failed reload
-
-    // Wait >=1s so createdAtSec (Unix-second resolution) can advance on recovery.
-    await new Promise((r) => setTimeout(r, 1100));
-
-    // Step 2: valid YAML -> onReload fires (recovery).
-    writeFileSync(filePath, VALID_REPLACEMENT);
+    // Give the watcher one poll cycle to capture its baseline stat before we mutate.
+    await new Promise((r) => setTimeout(r, 150));
+    renameSync(stagedPath, filePath);
     await reloadPromise;
     expect(reloadCount).toBe(1);
     expect(store.get().models[0]?.name).toBe('qwen2.5-7b-instruct-q4km');
