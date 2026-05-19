@@ -230,7 +230,17 @@ else
 fi
 
 # /v1/embeddings — bge-m3-ollama if available, otherwise skip cleanly.
-if docker compose exec -T ollama ollama list 2>/dev/null | grep -q '^bge-m3'; then
+# UAT-surfaced flake: a single `docker compose exec ... ollama list` can return
+# empty / non-zero exit transiently right after stack-up while the ollama daemon
+# is still warming. Retry up to 3 times with a 1s gap so a transient flap
+# doesn't show up as a spurious "bge-m3 not pulled" SKIP.
+OLLAMA_LIST=""
+for _ in 1 2 3; do
+  OLLAMA_LIST=$(docker compose exec -T ollama ollama list 2>/dev/null || true)
+  [[ -n "${OLLAMA_LIST}" ]] && break
+  sleep 1
+done
+if printf '%s\n' "${OLLAMA_LIST}" | grep -q '^bge-m3'; then
   EMB_HEADERS=$(curl -fsS -D - -o /dev/null \
     -X POST "${ROUTER_URL}/v1/embeddings" \
     -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \

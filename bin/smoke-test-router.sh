@@ -923,7 +923,14 @@ echo "[smoke-test-router] SC-P4-D: POST /v1/messages vision URL happy path ..."
 # is free, skip with a clear operator action instead of hanging the request.
 VISION_NEED_MIB=8500   # ~7.8 GiB + headroom for KV cache
 VRAM_FREE_MIB=$(docker compose exec -T ollama nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits 2>/dev/null | tr -d '[:space:]' || echo 0)
-if ! docker compose exec -T ollama ollama list 2>/dev/null | grep -q "${VISION_MODEL}"; then
+# UAT-surfaced flake: retry transient empty exec output (see Phase 7 P7_OLLAMA_LIST).
+SCP4D_OLLAMA_LIST=""
+for _ in 1 2 3; do
+  SCP4D_OLLAMA_LIST=$(docker compose exec -T ollama ollama list 2>/dev/null || true)
+  [[ -n "${SCP4D_OLLAMA_LIST}" ]] && break
+  sleep 1
+done
+if ! printf '%s\n' "${SCP4D_OLLAMA_LIST}" | grep -q "${VISION_MODEL}"; then
   skip "SC-P4-D: vision model not pulled; run: docker compose exec ollama ollama pull ${VISION_MODEL}"
 elif [[ "${SKIP_URL:-}" == "1" ]]; then
   skip "SC-P4-D: SKIP_URL=1; smoke env has no outbound network for image fetch"
@@ -1339,7 +1346,16 @@ echo ""
 echo "[smoke-test-router] === Phase 7 — /v1/embeddings + request_log ==="
 
 # 1. Ensure bge-m3 is present in Ollama (idempotent pull).
-if docker compose exec -T "${OLLAMA_SVC}" ollama list 2>/dev/null | grep -q '^bge-m3'; then
+# UAT-surfaced flake: `docker compose exec ... ollama list` can return empty
+# transiently right after stack-up. Retry up to 3 times before falling through
+# to an unnecessary `ollama pull`.
+P7_OLLAMA_LIST=""
+for _ in 1 2 3; do
+  P7_OLLAMA_LIST=$(docker compose exec -T "${OLLAMA_SVC}" ollama list 2>/dev/null || true)
+  [[ -n "${P7_OLLAMA_LIST}" ]] && break
+  sleep 1
+done
+if printf '%s\n' "${P7_OLLAMA_LIST}" | grep -q '^bge-m3'; then
   pass "Phase 7: bge-m3 already present in Ollama (skip pull)"
 else
   echo "[smoke-test-router] Pulling bge-m3 into Ollama (first-run only — may take a few minutes)..."
@@ -1564,7 +1580,14 @@ else
     fail "Phase 8: X-Model-Backend missing on /v1/messages"
   fi
 
-  if docker compose exec -T "${OLLAMA_SVC}" ollama list 2>/dev/null | grep -q '^bge-m3'; then
+  # UAT-surfaced flake: retry transient empty exec output (see Phase 7 above).
+  P8_OLLAMA_LIST=""
+  for _ in 1 2 3; do
+    P8_OLLAMA_LIST=$(docker compose exec -T "${OLLAMA_SVC}" ollama list 2>/dev/null || true)
+    [[ -n "${P8_OLLAMA_LIST}" ]] && break
+    sleep 1
+  done
+  if printf '%s\n' "${P8_OLLAMA_LIST}" | grep -q '^bge-m3'; then
     P8_EMB_HEADERS=$(curl -fsS -D - -o /dev/null \
       -X POST "${ROUTER_URL}/v1/embeddings" \
       -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
