@@ -11,6 +11,7 @@ import { makeUsageDailyScheduler } from './db/usageDaily.js';
 import { makeMetricsRegistry } from './metrics/registry.js';
 import { makeValkeyClient } from './clients/valkey.js';
 import { makeRegistryCache } from './config/registryCache.js';
+import { installGlobalBackendDispatcher } from './backends/http-dispatcher.js';
 
 /**
  * Plan 08-02 (CLOUD-01 + D-A2) — refuses boot when the registry declares any
@@ -38,6 +39,12 @@ export function assertCloudEnvIfConfigured(reg: Registry, env: Env): void {
 }
 
 async function main(): Promise<void> {
+  // router-504-stale-sockets: replace the process-wide undici dispatcher with a
+  // no-idle-keep-alive Agent BEFORE any backend client is constructed or any
+  // request is made. This evicts the stale/poisoned-socket reuse that caused
+  // idle requests to hang to the 30s route deadline → 504. See http-dispatcher.ts.
+  installGlobalBackendDispatcher();
+
   const env = loadEnv();
   const loggerOpts = makeLoggerOptions({ level: env.LOG_LEVEL, isDev: env.NODE_ENV !== 'production' });
 

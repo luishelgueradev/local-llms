@@ -10,6 +10,7 @@ import {
   openAIChatCompletionToCanonical,
   openAIChunksToCanonicalEvents,
 } from '../translation/openai-out.js';
+import { backendFetchOptions } from './http-dispatcher.js';
 
 /**
  * VLLMOpenAIAdapter — Phase 7 (Plan 07-03). vLLM exposes the OpenAI-compatible
@@ -49,7 +50,15 @@ export class VLLMOpenAIAdapter implements BackendAdapter {
     // apiKey is a non-empty placeholder; vLLM does not enforce auth on the internal
     // backend network in this stack. SDK v6 throws at construction time on empty
     // apiKey (RESEARCH §Anti-Patterns) — matches the ollama + llamacpp pattern.
-    this.client = new OpenAI({ baseURL, apiKey: 'vllm', timeout: 60_000 });
+    // fetchOptions.dispatcher → shared keep-alive-tuned undici Agent so idle
+    // sockets are recycled before the network silently kills them
+    // (debug session router-504-stale-sockets). See http-dispatcher.ts.
+    this.client = new OpenAI({
+      baseURL,
+      apiKey: 'vllm',
+      timeout: 60_000,
+      fetchOptions: backendFetchOptions(),
+    });
   }
 
   /**

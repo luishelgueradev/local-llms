@@ -11,6 +11,7 @@ import {
   openAIChunksToCanonicalEvents,
 } from '../translation/openai-out.js';
 import { CapabilityNotSupportedError } from '../errors/envelope.js';
+import { backendFetchOptions } from './http-dispatcher.js';
 
 /**
  * LlamacppOpenAIAdapter — mirrors OllamaOpenAIAdapter exactly modulo the apiKey
@@ -32,7 +33,15 @@ export class LlamacppOpenAIAdapter implements BackendAdapter {
     // baseURL example: 'http://llamacpp:8080/v1'
     // apiKey is a non-empty placeholder per D-B1; llama.cpp-server ignores it.
     // SDK v6 throws at construction time on empty apiKey (RESEARCH §Anti-Patterns).
-    this.client = new OpenAI({ baseURL, apiKey: 'llamacpp', timeout: 60_000 });
+    // fetchOptions.dispatcher → shared keep-alive-tuned undici Agent so idle
+    // sockets are recycled before the network silently kills them
+    // (debug session router-504-stale-sockets). See http-dispatcher.ts.
+    this.client = new OpenAI({
+      baseURL,
+      apiKey: 'llamacpp',
+      timeout: 60_000,
+      fetchOptions: backendFetchOptions(),
+    });
   }
 
   /**

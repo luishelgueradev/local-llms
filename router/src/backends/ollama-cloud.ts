@@ -49,6 +49,7 @@ import {
 } from '../translation/openai-out.js';
 import { CLOUD_ADAPTER_TIMEOUT_MS } from '../config/constants.js';
 import { truncateAndRedact } from '../metrics/recordOutcome.js';
+import { backendFetchOptions } from './http-dispatcher.js';
 
 export class OllamaCloudAdapter implements BackendAdapter {
   private readonly client: OpenAI;
@@ -71,7 +72,17 @@ export class OllamaCloudAdapter implements BackendAdapter {
     }
     // CLOUD_ADAPTER_TIMEOUT_MS is the single source of truth shared with the
     // circuit breaker's probe_lock TTL (08-REVIEW CR-03 invariant).
-    this.client = new OpenAI({ baseURL, apiKey, timeout: CLOUD_ADAPTER_TIMEOUT_MS });
+    // fetchOptions.dispatcher → shared keep-alive-tuned undici Agent so idle
+    // sockets are recycled before they go stale (debug session
+    // router-504-stale-sockets). The dispatcher's per-socket headers/body
+    // timeouts (45s) are independent of CLOUD_ADAPTER_TIMEOUT_MS (the SDK's
+    // total per-request budget) — both apply. See http-dispatcher.ts.
+    this.client = new OpenAI({
+      baseURL,
+      apiKey,
+      timeout: CLOUD_ADAPTER_TIMEOUT_MS,
+      fetchOptions: backendFetchOptions(),
+    });
   }
 
   async chatCompletionsCanonical(

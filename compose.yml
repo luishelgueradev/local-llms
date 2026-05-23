@@ -578,6 +578,11 @@ services:
       - CIRCUIT_FAILURE_THRESHOLD=${CIRCUIT_FAILURE_THRESHOLD:-5}
       - CIRCUIT_WINDOW_MS=${CIRCUIT_WINDOW_MS:-30000}
       - CIRCUIT_COOLDOWN_MS=${CIRCUIT_COOLDOWN_MS:-60000}
+      # router-504-stale-sockets: raise libuv threadpool so concurrent backend
+      # DNS getaddrinfo calls (5 liveness probes every 10s) cannot starve each
+      # other. Defense-in-depth — the primary fix is the c-ares connect.lookup
+      # in router/src/backends/http-dispatcher.ts which resolves OFF the pool.
+      - UV_THREADPOOL_SIZE=${UV_THREADPOOL_SIZE:-16}
       # OLLAMA_URL removed: parsed from env.ts but never consumed — backend URLs
       # are authoritative from models.yaml backend_url fields (03-REVIEW WR-04).
     # ── No host ports (EDGE-03 / Phase 6 D-A4) ───────────────────────────────

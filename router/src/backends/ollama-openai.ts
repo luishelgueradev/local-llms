@@ -15,6 +15,8 @@ import {
   canonicalToOllamaNativeChat,
   ollamaNativeChunksToCanonicalEvents,
 } from '../translation/ollama-native-out.js';
+import type { Agent } from 'undici';
+import { makeBackendAgent } from './http-dispatcher.js';
 
 /**
  * Walk canonical.messages → returns true iff any message has an image content block.
@@ -36,6 +38,12 @@ export class OllamaOpenAIAdapter implements BackendAdapter {
   private readonly client: OpenAI;
   private readonly baseURL: string;
   /**
+   * Per-backend undici Agent (failure isolation + no idle keep-alive reuse;
+   * debug session router-504-stale-sockets). Shared between the SDK client and
+   * the native /api/chat vision fetch path so both benefit from fresh sockets.
+   */
+  private readonly dispatcher: Agent;
+  /**
    * Derived native base — strips the trailing `/v1` so the Ollama-native
    * `/api/chat` endpoint can be reached for vision dispatch (VISION-03).
    */
@@ -46,7 +54,16 @@ export class OllamaOpenAIAdapter implements BackendAdapter {
     // apiKey is a non-empty placeholder per D-B1; local Ollama ignores it.
     // SDK v6 throws at construction time on empty apiKey (RESEARCH §Anti-Patterns).
     this.baseURL = baseURL;
-    this.client = new OpenAI({ baseURL, apiKey: 'ollama', timeout: 60_000 });
+    // Per-backend dispatcher: no idle keep-alive reuse + isolated pool so a
+    // dead-from-idle or abort-poisoned socket is never reused
+    // (debug session router-504-stale-sockets). See http-dispatcher.ts.
+    this.dispatcher = makeBackendAgent();
+    this.client = new OpenAI({
+      baseURL,
+      apiKey: 'ollama',
+      timeout: 60_000,
+      fetchOptions: { dispatcher: this.dispatcher },
+    });
     this.nativeBase = baseURL.replace(/\/v1\/?$/, '');
   }
 
@@ -121,6 +138,9 @@ export class OllamaOpenAIAdapter implements BackendAdapter {
    * speaks Ollama's wire shape, not OpenAI's. Raw `fetch` with the AbortSignal
    * forwarded preserves the SC3 (client-disconnect) abort propagation chain.
    *
+   * The shared keep-alive dispatcher is passed here too so this path benefits
+   * from the same stale-socket recycling as the SDK path (router-504-stale-sockets).
+   *
    * Errors:
    *   - canonicalToOllamaNativeChat throws InvalidImageUrlError / ImageFetchError
    *     when URL-source images fail any of the SSRF guards. These bubble up to
@@ -139,7 +159,10 @@ export class OllamaOpenAIAdapter implements BackendAdapter {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(nativeReq),
       signal,
-    });
+      // dispatcher is undici's fetch extension (not in lib.dom RequestInit) —
+      // cast through unknown per the established pattern in ollama-native-out.ts.
+      dispatcher: this.dispatcher,
+    } as unknown as RequestInit);
     if (!res.ok) {
       throw new APIConnectionError({
         cause: new Error(`Ollama native /api/chat returned ${res.status}`),
@@ -180,7 +203,9 @@ export class OllamaOpenAIAdapter implements BackendAdapter {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(nativeReq),
       signal,
-    });
+      // Shared keep-alive dispatcher (router-504-stale-sockets) — see above.
+      dispatcher: this.dispatcher,
+    } as unknown as RequestInit);
     if (!res.ok) {
       throw new APIConnectionError({
         cause: new Error(`Ollama native /api/chat returned ${res.status}`),
