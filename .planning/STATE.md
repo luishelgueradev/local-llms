@@ -111,6 +111,7 @@ Overall: ████░░░░░░ 38% (29/76 v1 requirements)
 | # | Description | Date | Commit | Directory |
 |---|-------------|------|--------|-----------|
 | 260510-v8z | Phase 01 script cleanup — non-blocking warnings + info items from 01-REVIEW.md | 2026-05-10 | 20d57d2 | [260510-v8z-phase-01-script-cleanup-non-blocking-war](./quick/260510-v8z-phase-01-script-cleanup-non-blocking-war/) |
+| 260525-0hr | Perfil Ollama-only optimizado (MAX_LOADED=2, KEEP_ALIVE=-1) + alias de modelo por rol (chat/vision/embed-local, big-cloud) | 2026-05-25 | c7b0e82 | [260525-0hr-perfil-solo-ollama-optimizado-nombres-de](./quick/260525-0hr-perfil-solo-ollama-optimizado-nombres-de/) |
 | Phase 08 P08 | 15min | 1 tasks | 3 files |
 | Phase 08 P09 | 4min | 1 tasks | 3 files |
 | Phase 08 P10 | 30min | 1 tasks | 4 files |
@@ -134,3 +135,4 @@ Stopped at: Phase 9 Plan 03 (OPS-03 — disk-usage alert) COMPLETE. New bin/disk
 ---
 *State initialized: 2026-05-10 after roadmap creation*
 *Last activity: 2026-05-17 — Phase 7 Plan 06 tasks 1-2 auto-complete (smoke scripts in tree); task 3 awaits operator human-verify*
+| 2026-05-23 | fast | publish router loopback host port 3210 | ✅ |
