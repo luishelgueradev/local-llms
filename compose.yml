@@ -142,9 +142,16 @@ services:
       # Bind to all interfaces inside the container so the backend network can
       # reach it. Default in the official image, but explicit > implicit.
       - OLLAMA_HOST=0.0.0.0:11434
-      # Cap concurrent loaded models at 1 (16 GB VRAM constraint per
-      # CLAUDE.md). PITFALLS Pitfall 3 — VRAM thrashing prevention.
-      - OLLAMA_MAX_LOADED_MODELS=1
+      # Allow 2 concurrently-loaded models (260525-0hr): keeps a chat 7B
+      # (~5.5 GB) and bge-m3 embeddings (~1.2 GB) hot at the same time —
+      # ~6.7 GB, comfortably inside the ~10.6 GB usable on this box (16 GB
+      # minus the ~5.7 GB Windows/WSL floor). Was 1 (PITFALLS Pitfall 3 VRAM
+      # thrashing); 2 is the sweet spot for the Ollama-only profile where the
+      # heavy vLLM/llamacpp backends are kept down.
+      - OLLAMA_MAX_LOADED_MODELS=2
+      # Keep loaded models resident indefinitely (260525-0hr): agents/n8n hit
+      # a warm model with no cold-load latency. -1 = never auto-unload.
+      - OLLAMA_KEEP_ALIVE=-1
       # Cap parallel requests per loaded model. KV cache scales with this;
       # PITFALLS Pitfall 3 + Performance Traps row "OLLAMA_NUM_PARALLEL".
       - OLLAMA_NUM_PARALLEL=2

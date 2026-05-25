@@ -122,3 +122,51 @@ models:
     concurrency: 4
     max_model_len: 32768
     profile: cloud
+
+  # ── Logical role aliases (260525-0hr) ──────────────────────────────────────
+  # Stable role-based names so agents/n8n target a ROLE, not a model tag. These
+  # are additional names over the canonical entries above — the registry maps by
+  # `name`, so duplicate backend_model under a different name is fine.
+  # vram_budget_gb: 0 — they are pointers to models already budgeted under their
+  # canonical entry (or that Ollama swaps in/out at runtime); 0 keeps them from
+  # double-counting against the per-backend VRAM envelope (registry.ts
+  # superRefine sums vram_budget_gb per backend, must stay ≤ VRAM_ENVELOPE_GB).
+  - name: chat-local
+    backend: ollama
+    backend_url: http://ollama:11434/v1
+    backend_model: qwen2.5:7b-instruct-q4_K_M
+    capabilities: [chat, tools]
+    vram_budget_gb: 0
+    concurrency: 2
+    max_model_len: 8192
+    profile: ollama
+
+  - name: vision-local
+    backend: ollama
+    backend_url: http://ollama:11434/v1
+    backend_model: llama3.2-vision:11b-instruct-q4_K_M
+    capabilities: [chat, vision]
+    vram_budget_gb: 0
+    concurrency: 2
+    max_model_len: 8192
+    profile: ollama
+
+  - name: embed-local
+    backend: ollama
+    backend_url: http://ollama:11434/v1
+    backend_model: bge-m3
+    capabilities: [embeddings]
+    vram_budget_gb: 0
+    concurrency: 4
+    max_model_len: 8192
+    profile: ollama
+
+  - name: big-cloud
+    backend: ollama-cloud
+    backend_url: https://ollama.com/v1
+    backend_model: gpt-oss:120b-cloud
+    capabilities: [chat, tools]
+    vram_budget_gb: 0
+    concurrency: 4
+    max_model_len: 65536
+    profile: cloud
