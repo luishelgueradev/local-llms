@@ -107,10 +107,19 @@ async function main(): Promise<void> {
   // cache command. The client is constructed with lazyConnect:false +
   // enableOfflineQueue:false; without this guard, get()/set() fire before the
   // TCP+AUTH handshake completes and ioredis throws "Stream isn't writeable".
-  // Fail-open: if Valkey never becomes ready within 2000ms, waitUntilReady
-  // resolves and the existing try/catch inside registryCache.get/set + file-load
-  // fallback handle the Valkey-down case normally.
-  await waitUntilReady(valkey);
+  //
+  // Fail-open boot (08-11 WR-01 fix): waitUntilReady resolves on the 2000ms
+  // timeout (rejectOnTimeout defaults to false), but it still REJECTS if ioredis
+  // emits an 'error' event first (e.g. ECONNREFUSED when Valkey is down at boot).
+  // The boot path must not crash on a down Valkey, so the rejection is caught here
+  // and we fall through to the registryCache.get/set try/catch + file-load fallback.
+  // The idempotency subscriber keeps its fail-closed reject-on-error semantics —
+  // only this call site opts into fail-open.
+  try {
+    await waitUntilReady(valkey);
+  } catch (err) {
+    bootLog.warn({ err }, 'valkey not ready at boot; continuing with file-load fallback');
+  }
 
   // Fail-fast on bad models.yaml (D-C3 startup half — hot-reload's keep-previous semantics
   // land in plan 02-05's watcher).
