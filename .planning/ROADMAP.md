@@ -18,7 +18,7 @@ Un endpoint HTTPS único que hable simultáneamente OpenAI y Anthropic, despache
 - [x] **Phase 5: Postgres + Observability Seam** — `request_log` buffered async writes, `usage_daily` aggregation, `pg_dump` cron + tested restore drill, Prometheus `/metrics` on the router, real Compose healthchecks, and `X-Agent-Id` surfaced into logs. (completed 2026-05-15)
 - [ ] **Phase 6: Traefik + TLS + Open WebUI** — Real HTTPS endpoint with four-network topology, SSE-friendly Traefik config, 120s+ E2E streaming verified through the proxy, and Open WebUI on a separate subdomain configured to talk only to the router.
 - [x] **Phase 7: Embeddings + vLLM + GPU Telemetry** — `/v1/embeddings` (OpenAI surface), vLLM AWQ backend with explicit VRAM partitioning, vLLM/llama.cpp `/metrics` scraped, GPU exporter, and a Grafana dashboard for VRAM/ttft/error rate. (completed 2026-05-17)
-- [ ] **Phase 8: Ollama Cloud Fallback + Resilience Hardening** — `backend: ollama-cloud` with bearer auth, circuit breaker, cloud-spend metric, hard `max_tokens` cap, Valkey-backed rate limit, `Idempotency-Key`, and `X-Model-Backend` response header.
+- [x] **Phase 8: Ollama Cloud Fallback + Resilience Hardening** — `backend: ollama-cloud` with bearer auth, circuit breaker, cloud-spend metric, hard `max_tokens` cap, Valkey-backed rate limit, `Idempotency-Key`, and `X-Model-Backend` response header. (completed 2026-05-27)
 - [x] **Phase 9: Operations Hardening** ✅ Complete 2026-05-17 — `bin/gc-models.sh` keyed off `models.yaml`, off-host backup destination via restic, disk-usage alert via host cron + structured log + optional ntfy hook, and documented bearer-token rotation procedure with OWUI PersistentConfig pivot.
 
 ## Phase Details
@@ -216,7 +216,7 @@ Plans:
   3. `max_tokens` is hard-capped at 16,384 for cloud-served models (requests above the cap are rejected with a structured error); a `cloud_spend_daily` metric (sum of generation_duration_ms scoped to cloud-backed requests) is recorded in Postgres and queryable.
   4. `valkey/valkey:8-alpine` runs as a Compose service backing a server-side per-token-per-minute rate limit (`ratelimit:{token}:{minute}`); excess requests receive `429 Retry-After`. A small `models.yaml` cache is also served from Valkey.
   5. An `Idempotency-Key` request header attaches retries to the in-flight stream rather than starting a new generation — a chaos test that fires N concurrent requests with the same key consumes only one GPU-stream worth of tokens and all N clients receive the same response.
-**Plans:** 9/11 plans executed
+**Plans:** 12/12 plans complete
 Plans:
 **Wave 0**
 - [x] 08-00-PLAN.md — CR-02 precondition fix: registry validator + probeAdapterFor cache key widening (CLOUD-01 prerequisite)
@@ -269,7 +269,7 @@ Plans:
 | 5. Postgres + Observability Seam | 6/6 | Complete    | 2026-05-15 |
 | 6. Traefik + TLS + Open WebUI | 0/4 | Planned | - |
 | 7. Embeddings + vLLM + GPU Telemetry | 7/7 | Complete   | 2026-05-17 |
-| 8. Ollama Cloud Fallback + Resilience Hardening | 9/11 | In Progress|  |
+| 8. Ollama Cloud Fallback + Resilience Hardening | 12/12 | Complete   | 2026-05-27 |
 | 9. Operations Hardening | 4/4 | Complete | 2026-05-17 |
 
 ## Coverage Summary
