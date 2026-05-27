@@ -1,14 +1,21 @@
 // router/src/config/registryCache.ts — Plan 08-09 (DATA-06).
+// Gap-closure 08-11: TTL raised from 30s to 300s; "read-through" misnomer
+// corrected to "boot-warm" throughout.
 //
-// 30s Valkey-backed read-through cache for the parsed models.yaml.
+// 300s Valkey-backed boot-warm cache for the parsed models.yaml.
+//
+// Design note: this is NOT a "read-through" cache.  The request path reads an
+// in-memory registry.get() snapshot and NEVER consults Valkey.  The cache is
+// only read at boot (get() — warm restart shortcut) and written at boot + on
+// every hot-reload (set() — propagates latest snapshot for the next restart).
 //
 // File is the source of truth (D-D4 — "fs.watch invalidates the cache on file
 // change"); the cache is a derivative. The factory exposes:
 //
-//   get():   Promise<Registry | null>  — read-through; null on miss or any
+//   get():   Promise<Registry | null>  — boot-warm read; null on miss or any
 //                                          recoverable failure (malformed
 //                                          JSON, schema mismatch, Valkey down).
-//   set():   Promise<void>             — SETEX (EX 30) the JSON-serialized
+//   set():   Promise<void>             — SETEX (EX 300) the JSON-serialized
 //                                          Registry. Non-fatal on Valkey error.
 //   clear(): Promise<void>             — DEL the cache key. Non-fatal on
 //                                          Valkey error. Used by future
@@ -31,7 +38,7 @@ import type { ValkeyClient } from '../clients/valkey.js';
 import { RegistrySchema, type Registry } from './registry.js';
 
 const CACHE_KEY = 'registry:models-yaml:cache:v1';
-const TTL_SEC = 30;
+const TTL_SEC = 300;
 
 export interface RegistryCache {
   get(): Promise<Registry | null>;

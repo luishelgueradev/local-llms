@@ -78,3 +78,63 @@ export async function closeValkey(client: IORedisClient, log?: Logger): Promise<
 // Re-export the IORedis client type so downstream Phase 8 plans import a single
 // stable name (`type ValkeyClient = IORedisClient`) — easier to mock in tests.
 export type ValkeyClient = IORedisClient;
+
+/**
+ * Gap-closure 08-11 (DATA-06): shared await-ready helper.
+ *
+ * Waits for an ioredis client to emit 'ready' before returning, with a
+ * configurable timeout. Used on two paths:
+ *
+ *   1. Boot path (index.ts): fail-open — timeout resolves so boot continues.
+ *      Default opts.rejectOnTimeout = false.
+ *
+ *   2. Idempotency subscriber path (idempotency.ts): fail-closed — a subscriber
+ *      that never becomes ready must NOT proceed (the multiplexer's try/finally
+ *      releases the sub connection). Pass opts.rejectOnTimeout = true.
+ *
+ * Short-circuits immediately for:
+ *   - Clients whose status is already 'ready'.
+ *   - Mock clients without an `once` method (tests that inject bare objects).
+ */
+export async function waitUntilReady(
+  client: ValkeyClient,
+  timeoutMs = 2000,
+  opts: { rejectOnTimeout?: boolean } = {},
+): Promise<void> {
+  // Cast to an internal shape so we can inspect optional ioredis-specific props
+  // without widening the public type. Mock clients (tests) typically have no
+  // `once` method and will fall through to the immediate-return path.
+  const c = client as unknown as {
+    status?: string;
+    once?: (event: string, cb: (...a: unknown[]) => void) => unknown;
+    removeListener?: (event: string, cb: (...a: unknown[]) => void) => unknown;
+  };
+  // Short-circuit: already ready, or no event-emitter interface (mock).
+  if (typeof c.once !== 'function' || c.status === 'ready') return;
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      c.removeListener?.('ready', onReady);
+      c.removeListener?.('error', onError);
+      if (opts.rejectOnTimeout) {
+        reject(new Error(`valkey: not ready within ${timeoutMs}ms`));
+      } else {
+        // FAIL-OPEN: timeout resolves so the boot path is never blocked
+        // indefinitely. The caller's try/catch + file-load fallback handles
+        // the Valkey-down scenario.
+        resolve();
+      }
+    }, timeoutMs);
+    const onReady = (): void => {
+      clearTimeout(timer);
+      c.removeListener?.('error', onError);
+      resolve();
+    };
+    const onError = (err: unknown): void => {
+      clearTimeout(timer);
+      c.removeListener?.('ready', onReady);
+      reject(err instanceof Error ? err : new Error(String(err)));
+    };
+    c.once?.('ready', onReady);
+    c.once?.('error', onError);
+  });
+}

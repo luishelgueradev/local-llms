@@ -27,7 +27,7 @@ import { loadRegistryFromString, type Registry } from '../../src/config/registry
 import type { ValkeyClient } from '../../src/clients/valkey.js';
 
 const CACHE_KEY = 'registry:models-yaml:cache:v1';
-const TTL_SEC = 30;
+const TTL_SEC = 300;
 
 const VALID_YAML = `
 models:
@@ -160,8 +160,8 @@ describe('makeRegistryCache (Plan 08-09 / DATA-06)', () => {
     expect(firstWarnMsg).toMatch(/schema/i);
   });
 
-  // ── Test 5: set TTL is 30s via EX mode ──────────────────────────────────
-  it('Test 5: set writes with EX mode and TTL=30 seconds', async () => {
+  // ── Test 5: set TTL is 300s via EX mode (gap-closure 08-11 raises from 30→300) ─
+  it('Test 5: set writes with EX mode and TTL=300 seconds', async () => {
     const cache = makeCache();
     await cache.set(reg);
     expect(valkey.setCalls.length).toBe(1);

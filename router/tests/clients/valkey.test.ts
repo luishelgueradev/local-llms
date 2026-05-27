@@ -237,8 +237,11 @@ describe('waitUntilReady', () => {
     const client = makeFakeClient('connecting');
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const p = waitUntilReady(client as any, 500, { rejectOnTimeout: true });
+    // Attach the rejection handler BEFORE advancing timers so the rejection
+    // is never "unhandled" from vitest's perspective.
+    const assertion = expect(p).rejects.toThrow(/not ready within/i);
     await vi.advanceTimersByTimeAsync(1000);
-    await expect(p).rejects.toThrow(/not ready within/i);
+    await assertion;
   });
 });
 
