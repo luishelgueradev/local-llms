@@ -1,8 +1,9 @@
 ---
-status: diagnosed
+status: resolved
 trigger: "DATA-06 Phase 8 UAT: registry cache boot get/set fail with 'Stream isn't writeable' + steady-state cache key absent"
+resolved_by: "08-11 gap-closure (waitUntilReady boot guard + fail-open + TTL 300s)"
 created: 2026-05-27T00:00:00Z
-updated: 2026-05-27T00:00:00Z
+updated: 2026-05-27T14:15:00Z
 ---
 
 ## Current Focus
