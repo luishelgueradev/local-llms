@@ -133,6 +133,27 @@ completed: 2026-05-27
 - DATA-06 is now fully closed structurally: rate-limit counters (08-06) + registry cache (08-09 + 08-11 gap-closure) both use Valkey correctly with boot-race protection
 - Phase 8 closure gate remains: Plan 08-10 Task 2 PENDING-HUMAN — operator must run smoke scripts on live stack
 
+## Post-Review Fix (WR-01)
+
+Code review (08-REVIEW.md) and phase verification flagged that the new boot-path
+`await waitUntilReady(valkey)` was unguarded: `waitUntilReady` rejects on an ioredis
+`'error'` event (e.g. ECONNREFUSED) even when `rejectOnTimeout` is false, so a Valkey
+that is down at startup would crash boot via `main()`'s `process.exit(1)` — violating the
+fail-open must_have. Fixed in commit `68dd25a` by wrapping the boot call site in
+try/catch (fall through to the registryCache file-load fallback). The idempotency
+subscriber path keeps its fail-closed reject-on-error semantics. Re-verification: 5/5
+must_haves passed.
+
+Review findings dispositioned:
+- **CR-01 (BLOCKER) — rejected as false positive.** Claims a TOCTOU race between the
+  `status==='ready'` check and the `once('ready')` attach. Both run in the same
+  synchronous Promise-executor tick; Node is single-threaded and ioredis emits `'ready'`
+  on a later event-loop tick, so no interleaving is possible.
+- **WR-01 (WARNING) — fixed** (commit 68dd25a, above).
+- **WR-03 (WARNING) — accepted by design.** The 300s TTL is an explicit must_have of this plan.
+- **WR-04 (WARNING) — out of scope + mooted.** `closeGracefully` not calling `closeValkey`
+  is pre-existing (08-11 did not touch it) and `process.exit(0)` reaps the socket.
+
 ---
 *Phase: 08-ollama-cloud-fallback-resilience-hardening*
 *Completed: 2026-05-27*
