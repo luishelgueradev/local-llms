@@ -30,6 +30,23 @@ isolation and on suite rerun. Root cause: pre-existing fs.watch debounce
 race in the hot-reload watcher under concurrent test-file pressure (Pitfall 7
 in PITFALLS.md). NOT introduced by 08-06; tracked here for future hardening.
 
+## Plan 08-11 gap-closure: DATA-06 boot-race + TTL fix (APPLIED)
+
+**Applied 2026-05-27 during 08-11 Task 3.**
+
+waitUntilReady + TTL=300 applied. Section 9 of smoke-test-cloud.sh should now
+PASS after `docker compose up -d --no-deps router` (image rebuild required for
+the live stack; `docker compose restart` alone re-uses old dist).
+
+Integration verification on live stack confirmed:
+- EXISTS registry:models-yaml:cache:v1 = 1 after cold start
+- TTL = 285 (in range [1, 300])
+- No "Stream isn't writeable" errors in router logs
+- "valkey connected" log now appears BEFORE "registry: warm cache miss" confirming
+  waitUntilReady allowed the TCP handshake to complete before the first cache command
+
+smoke-test-cloud.sh Section 9: expected to transition from SKIP to PASS.
+
 ## Plan 08-08 deferred (out-of-scope)
 
 **Discovered 2026-05-17 during 08-08 typecheck.**
