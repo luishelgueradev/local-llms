@@ -27,7 +27,7 @@
 #               and write request_log rows that share upstream_message_id.
 #   CLOUD-05  — Section 8: cloud_spend_daily Postgres view exists.
 #   DATA-06   — Section 9: Valkey-backed registry cache key is populated
-#               with a non-empty JSON blob and the TTL is 1..30 s.
+#               with a non-empty JSON blob and the TTL is 1..300 s.
 #
 # Usage:
 #   bash bin/smoke-test-cloud.sh
@@ -650,7 +650,7 @@ echo ""
 
 # ─────────────────────────────────────────────────────────────────────────────
 echo "[smoke-test-cloud] === Section 9: Valkey registry cache populated (DATA-06) ==="
-# Plan 08-09's cache key: 'registry:models-yaml:cache:v1' with TTL 30s.
+# Plan 08-09's cache key: 'registry:models-yaml:cache:v1' (TTL 300s after 08-11).
 # Boot wires `registryCache.get()` FIRST; on miss, loads from file + sets
 # the cache. The first request to /v1/models or /v1/chat/completions will
 # populate it through hot-reload's onReload callback.
@@ -676,12 +676,12 @@ else
     fail "registry cache key present but does not look like JSON — head: $(echo "${REG_BLOB}" | head -c 80)"
   fi
 
-  # TTL must be 1..30.
+  # TTL must be 1..300 (08-11 raised TTL_SEC 30 -> 300 so the key survives a restart cycle).
   REG_TTL=$(valkey_cli TTL "${REG_KEY}" 2>/dev/null | tr -d '[:space:]')
-  if [[ "${REG_TTL}" =~ ^[0-9]+$ ]] && (( REG_TTL >= 1 && REG_TTL <= 30 )); then
-    pass "registry cache TTL = ${REG_TTL}s (expected 1..30)"
+  if [[ "${REG_TTL}" =~ ^[0-9]+$ ]] && (( REG_TTL >= 1 && REG_TTL <= 300 )); then
+    pass "registry cache TTL = ${REG_TTL}s (expected 1..300)"
   else
-    fail "registry cache TTL = '${REG_TTL}' (expected 1..30)"
+    fail "registry cache TTL = '${REG_TTL}' (expected 1..300)"
   fi
 fi
 echo ""

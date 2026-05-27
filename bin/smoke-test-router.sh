@@ -1495,7 +1495,7 @@ echo "[smoke-test-router] === Phase 7 section complete ==="
 #                          requests return byte-identical bodies + 1 distinct
 #                          upstream_message_id in request_log.
 #   CLOUD-05 — Section 8: cloud_spend_daily Postgres view exists and is queryable.
-#   DATA-06  — Section 9: Valkey registry cache key populated + TTL ∈ [1, 30].
+#   DATA-06  — Section 9: Valkey registry cache key populated + TTL ∈ [1, 300].
 # ─────────────────────────────────────────────────────────────────────────────
 
 echo ""
@@ -1802,10 +1802,10 @@ else
       fail "Phase 8: registry cache key present but not JSON — head: $(echo "${P8_REG_BLOB}" | head -c 80)"
     fi
     P8_REG_TTL=$(p8_valkey_cli TTL "${P8_REG_KEY}" 2>/dev/null | tr -d '[:space:]')
-    if [[ "${P8_REG_TTL}" =~ ^[0-9]+$ ]] && (( P8_REG_TTL >= 1 && P8_REG_TTL <= 30 )); then
-      pass "Phase 8: registry cache TTL = ${P8_REG_TTL}s (expected 1..30)"
+    if [[ "${P8_REG_TTL}" =~ ^[0-9]+$ ]] && (( P8_REG_TTL >= 1 && P8_REG_TTL <= 300 )); then
+      pass "Phase 8: registry cache TTL = ${P8_REG_TTL}s (expected 1..300)"
     else
-      fail "Phase 8: registry cache TTL = '${P8_REG_TTL}' (expected 1..30)"
+      fail "Phase 8: registry cache TTL = '${P8_REG_TTL}' (expected 1..300)"
     fi
   fi
 fi
