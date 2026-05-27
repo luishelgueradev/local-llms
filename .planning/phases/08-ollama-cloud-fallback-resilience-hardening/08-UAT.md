@@ -1,9 +1,9 @@
 ---
-status: diagnosed
+status: resolved
 phase: 08-ollama-cloud-fallback-resilience-hardening
 source: [08-00-SUMMARY.md, 08-01-SUMMARY.md, 08-02-SUMMARY.md, 08-03-SUMMARY.md, 08-04-SUMMARY.md, 08-05-SUMMARY.md, 08-06-SUMMARY.md, 08-07-SUMMARY.md, 08-08-SUMMARY.md, 08-09-SUMMARY.md, 08-10-SUMMARY.md]
 started: 2026-05-27T00:00:00Z
-updated: 2026-05-27T12:35:00Z
+updated: 2026-05-27T14:15:00Z
 ---
 
 ## Current Test
@@ -99,7 +99,8 @@ blocked: 0
 ## Gaps
 
 - truth: "On cold start, the Valkey warm registry cache (registry:models-yaml:cache:v1, DATA-06) is populated so the registry is served from cache rather than re-parsed from disk."
-  status: failed
+  status: resolved
+  resolved_by: "08-11 gap-closure (commits ce6a788 waitUntilReady, ae05039 boot await, 68dd25a fail-open guard)"
   reason: "User reported: boot-path registry cache get AND set both failed at router restart — 'Stream isn't writeable and enableOfflineQueue options is false'. Router fell back to file (fail-open, non-fatal), so warm cache was not populated on cold start and the failed set means it won't self-heal until re-triggered. Same 'Stream isn't writeable' ioredis-not-ready race as the idempotency bug fixed in commit 1737bd3, on the registryCache boot path in buildApp."
   severity: minor
   test: 1
@@ -117,7 +118,8 @@ blocked: 0
   debug_session: .planning/debug/registry-cache-boot-race.md
 
 - truth: "DATA-06: registry:models-yaml:cache:v1 is served read-through from Valkey (present with TTL <= 30s) during normal operation, not re-parsed from disk every request."
-  status: failed
+  status: resolved
+  resolved_by: "08-11 gap-closure (boot set now succeeds via waitUntilReady; TTL raised 30s→300s; live check EXISTS=1/TTL=285)"
   reason: "User reported: cache key absent (EXISTS=0/TTL=-2) in steady state even after many requests + full smoke run. set() is only called on boot path and watcher onReload; the request path reads an in-memory registry.get() snapshot and never repopulates the Valkey cache on miss. Combined with the failed boot set (Test 1 race), the warm cache stays empty until a models.yaml change (touch repopulated it: EXISTS=1, TTL=15). Router stays functional via in-memory fallback, so the Valkey warm-cache optimization is defeated in normal operation. Sub-notes: TTL=15 immediately after a fresh EX 30 set is unexpected; 30s TTL is marginal for a restart-survival cache."
   severity: minor
   test: 7
