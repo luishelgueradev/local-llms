@@ -1,5 +1,5 @@
 ---
-status: complete
+status: diagnosed
 phase: 08-ollama-cloud-fallback-resilience-hardening
 source: [08-00-SUMMARY.md, 08-01-SUMMARY.md, 08-02-SUMMARY.md, 08-03-SUMMARY.md, 08-04-SUMMARY.md, 08-05-SUMMARY.md, 08-06-SUMMARY.md, 08-07-SUMMARY.md, 08-08-SUMMARY.md, 08-09-SUMMARY.md, 08-10-SUMMARY.md]
 started: 2026-05-27T00:00:00Z
@@ -103,17 +103,34 @@ blocked: 0
   reason: "User reported: boot-path registry cache get AND set both failed at router restart — 'Stream isn't writeable and enableOfflineQueue options is false'. Router fell back to file (fail-open, non-fatal), so warm cache was not populated on cold start and the failed set means it won't self-heal until re-triggered. Same 'Stream isn't writeable' ioredis-not-ready race as the idempotency bug fixed in commit 1737bd3, on the registryCache boot path in buildApp."
   severity: minor
   test: 1
-  root_cause: ""
-  artifacts: []
-  missing: []
-  debug_session: ""
+  root_cause: "buildApp/index.ts calls registryCache.get() (L114) and set() (L124) with zero await/event-loop yield after constructing the Valkey client (L74, lazyConnect:false + enableOfflineQueue:false). The client is still connecting (not 'ready'), so ioredis throws 'Stream isn't writeable'. Identical race fixed on the idempotency SUBSCRIBE path in commit 1737bd3, never applied to the registry-cache boot path. ioredis-mock hides it in unit tests."
+  artifacts:
+    - path: "router/src/index.ts"
+      issue: "L74 client construction; L114 get / L124 set fire before client 'ready' — no await-ready guard"
+    - path: "router/src/clients/valkey.ts"
+      issue: "L45-58 makeValkeyClient sets enableOfflineQueue:false with no waitUntilReady helper (trigger condition)"
+    - path: "router/src/resilience/idempotency.ts"
+      issue: "L235-268 reference implementation of the await-'ready' + 2s setTimeout fallback guard to reuse"
+  missing:
+    - "Extract shared waitUntilReady(client, timeoutMs) helper in clients/valkey.ts (status==='ready' short-circuit else await once('ready') with ~2s timeout)"
+    - "Await readiness before the first boot-path registryCache.get()/set() in index.ts; reuse it in the idempotency path too"
+  debug_session: .planning/debug/registry-cache-boot-race.md
 
 - truth: "DATA-06: registry:models-yaml:cache:v1 is served read-through from Valkey (present with TTL <= 30s) during normal operation, not re-parsed from disk every request."
   status: failed
   reason: "User reported: cache key absent (EXISTS=0/TTL=-2) in steady state even after many requests + full smoke run. set() is only called on boot path and watcher onReload; the request path reads an in-memory registry.get() snapshot and never repopulates the Valkey cache on miss. Combined with the failed boot set (Test 1 race), the warm cache stays empty until a models.yaml change (touch repopulated it: EXISTS=1, TTL=15). Router stays functional via in-memory fallback, so the Valkey warm-cache optimization is defeated in normal operation. Sub-notes: TTL=15 immediately after a fresh EX 30 set is unexpected; 30s TTL is marginal for a restart-survival cache."
   severity: minor
   test: 7
-  root_cause: ""
-  artifacts: []
-  missing: []
-  debug_session: ""
+  root_cause: "registryCache is invoked in only two places (index.ts boot get/set + watchRegistry onReload set). Route handlers serve the registry from the in-memory makeRegistryStore snapshot (app.ts L399/459/480/498) and never read or write Valkey. So once the boot set fails (gap test 1), nothing rewrites the key until an operator edits models.yaml (onReload set — why `touch` repopulated it). Despite the 08-09 SUMMARY calling it 'read-through', it is actually read-once-at-boot + write-on-reload; there is no repopulate-on-miss. TTL=15 was a mid-window measurement artifact (set always uses EX 30), not a defect."
+  artifacts:
+    - path: "router/src/index.ts"
+      issue: "L114/124 boot + L211 onReload are the ONLY registryCache writers"
+    - path: "router/src/app.ts"
+      issue: "L399/459/480/498 route handlers read in-memory registry.get(), bypassing Valkey at request time — no repopulate-on-miss"
+    - path: "router/src/config/registryCache.ts"
+      issue: "fail-open get/set (swallows the boot throw); not itself buggy — the integration is"
+  missing:
+    - "Fix gap test 1 first — a succeeding boot set is the primary remedy and keeps the key warm via the 30s TTL"
+    - "Decide read-through scope: (a) doc-only — stop calling it read-through (boot-warm-only), OR (b) make registry read path consult/repopulate Valkey on miss"
+    - "Design decision: raise TTL well past 30s (minutes) or make non-expiring with explicit invalidation on onReload/clear, since a 30s TTL cannot survive a restart that exceeds 30s wall-clock"
+  debug_session: .planning/debug/registry-cache-boot-race.md
