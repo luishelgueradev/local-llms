@@ -30,4 +30,31 @@ export function registerModelsRoute(app: FastifyInstance, registry: RegistryStor
       })),
     };
   });
+
+  // GET /v1/models/:id — OpenAI "Retrieve model" surface. Some OpenAI clients
+  // (e.g. n8n's "Message a Model" node) probe this before chat; without it they
+  // get a 404 and fail even though the model is valid. Same auth + no-leak
+  // projection as the list route. Unknown id → OpenAI-style model_not_found.
+  app.get<{ Params: { id: string } }>('/v1/models/:id', async (req, reply) => {
+    const reg = registry.get();
+    const entry = reg.models.find((m) => m.name === req.params.id);
+    if (!entry) {
+      reply.code(404);
+      return {
+        error: {
+          message: `The model '${req.params.id}' does not exist`,
+          type: 'invalid_request_error' as const,
+          param: null,
+          code: 'model_not_found' as const,
+        },
+      };
+    }
+    return {
+      id: entry.name,
+      object: 'model' as const,
+      created: registry.getCreatedAtSec(),
+      owned_by: 'local-llms' as const,
+      capabilities: entry.capabilities,
+    };
+  });
 }

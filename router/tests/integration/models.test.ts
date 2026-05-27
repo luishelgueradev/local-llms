@@ -212,6 +212,45 @@ describe('GET /v1/models — D-C1 shape, auth, no-leak, liveness-decoupled, D-C3
     }
   }, 10_000);
 
+  // Case R1: retrieve a single model → 200 + same projection as list
+  it('GET /v1/models/:id returns 200 + D-C1 shape for an existing model', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/v1/models/qwen2.5-7b-instruct-q4km',
+      headers: { authorization: `Bearer ${TOKEN}` },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json<{ id: string; object: string; owned_by: string; capabilities: string[] }>();
+    expect(Object.keys(body).sort()).toEqual(['capabilities', 'created', 'id', 'object', 'owned_by'].sort());
+    expect(body.id).toBe('qwen2.5-7b-instruct-q4km');
+    expect(body.object).toBe('model');
+    expect(body.owned_by).toBe('local-llms');
+    expect(body.capabilities).toEqual(['chat', 'tools']);
+    // T-3-A2: no backend leak on the retrieve route either
+    expect(body).not.toHaveProperty('backend_url');
+    expect(body).not.toHaveProperty('backend');
+    expect(body).not.toHaveProperty('backend_model');
+  });
+
+  // Case R2: unknown model → 404 + OpenAI-style model_not_found envelope
+  it('GET /v1/models/:id returns 404 model_not_found for an unknown id', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/v1/models/does-not-exist',
+      headers: { authorization: `Bearer ${TOKEN}` },
+    });
+    expect(res.statusCode).toBe(404);
+    const body = res.json<{ error: { code: string; type: string } }>();
+    expect(body.error.code).toBe('model_not_found');
+    expect(body.error.type).toBe('invalid_request_error');
+  });
+
+  // Case R3: retrieve is bearer-gated too
+  it('GET /v1/models/:id returns 401 without a bearer', async () => {
+    const res = await app.inject({ method: 'GET', url: '/v1/models/llama3.2:3b-instruct-q4_K_M' });
+    expect(res.statusCode).toBe(401);
+  });
+
   // Case 8: D-C3 — created advances on hot-reload (revision 1, Blocker 4)
   it('created advances after registry._swap (D-C3 advance on hot-reload)', async () => {
     const registry = makeRegistryStore(loadRegistryFromString(ONE_ENTRY_YAML));
