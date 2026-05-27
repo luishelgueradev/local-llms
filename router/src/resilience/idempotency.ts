@@ -44,6 +44,7 @@
 //
 // CONTEXT D-D5 / threat T-08-T-07: single-user single-bearer scope here.
 // Multi-tenant would need bearer-prefixed keys; out of scope for v1.
+import { waitUntilReady } from '../clients/valkey.js';
 import type { ValkeyClient } from '../clients/valkey.js';
 import type { Logger } from 'pino';
 
@@ -239,32 +240,10 @@ async function subscribeToChannel(
   // Wait for 'ready' (or for the client to already BE ready) up to 2s before
   // issuing SUBSCRIBE. Mock clients without a 'ready' event proceed directly.
   try {
-    const subAny = sub as unknown as {
-      status?: string;
-      once?: (event: string, cb: (...a: unknown[]) => void) => unknown;
-      removeListener?: (event: string, cb: (...a: unknown[]) => void) => unknown;
-    };
-    if (typeof subAny.once === 'function' && subAny.status !== 'ready') {
-      await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(() => {
-          subAny.removeListener?.('ready', onReady);
-          subAny.removeListener?.('error', onError);
-          reject(new Error('idempotency: subscriber connection not ready within 2000ms'));
-        }, 2000);
-        const onReady = (): void => {
-          clearTimeout(timer);
-          subAny.removeListener?.('error', onError);
-          resolve();
-        };
-        const onError = (err: unknown): void => {
-          clearTimeout(timer);
-          subAny.removeListener?.('ready', onReady);
-          reject(err instanceof Error ? err : new Error(String(err)));
-        };
-        subAny.once?.('ready', onReady);
-        subAny.once?.('error', onError);
-      });
-    }
+    // Gap-closure 08-11: use shared waitUntilReady from clients/valkey.ts.
+    // rejectOnTimeout:true — a subscriber that never becomes ready must NOT proceed
+    // (the idempotency multiplexer will catch this throw and release the sub connection).
+    await waitUntilReady(sub as unknown as ValkeyClient, 2000, { rejectOnTimeout: true });
     await (sub as unknown as { subscribe(c: string): Promise<unknown> }).subscribe(channel);
   } catch (err) {
     // Best-effort teardown — disconnect() is synchronous + non-throwing on

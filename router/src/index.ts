@@ -9,7 +9,7 @@ import { runMigrations } from './db/migrate.js';
 import { makeBufferedWriter } from './db/bufferedWriter.js';
 import { makeUsageDailyScheduler } from './db/usageDaily.js';
 import { makeMetricsRegistry } from './metrics/registry.js';
-import { makeValkeyClient } from './clients/valkey.js';
+import { makeValkeyClient, waitUntilReady } from './clients/valkey.js';
 import { makeRegistryCache } from './config/registryCache.js';
 import { installGlobalBackendDispatcher } from './backends/http-dispatcher.js';
 
@@ -103,6 +103,15 @@ async function main(): Promise<void> {
   // offline) is recovered at the next tick.
   const usageDailyScheduler = makeUsageDailyScheduler({ db, log: bootLog });
 
+  // Gap-closure 08-11 (DATA-06): await Valkey readiness before issuing the first
+  // cache command. The client is constructed with lazyConnect:false +
+  // enableOfflineQueue:false; without this guard, get()/set() fire before the
+  // TCP+AUTH handshake completes and ioredis throws "Stream isn't writeable".
+  // Fail-open: if Valkey never becomes ready within 2000ms, waitUntilReady
+  // resolves and the existing try/catch inside registryCache.get/set + file-load
+  // fallback handle the Valkey-down case normally.
+  await waitUntilReady(valkey);
+
   // Fail-fast on bad models.yaml (D-C3 startup half — hot-reload's keep-previous semantics
   // land in plan 02-05's watcher).
   //
@@ -110,7 +119,7 @@ async function main(): Promise<void> {
   // the YAML re-parse + zod re-validation; on miss, fall back to the file (the
   // source of truth) and populate the cache for the next restart / next instance.
   // A cache miss on a fresh restart is expected; a cache hit indicates the
-  // previous router instance wrote the registry within the 30s TTL window.
+  // previous router instance wrote the registry within the 300s TTL window.
   const cachedRegistry = await registryCache.get();
   let initialRegistry;
   if (cachedRegistry) {
