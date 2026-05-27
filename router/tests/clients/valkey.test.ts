@@ -65,7 +65,7 @@ vi.mock('ioredis', () => {
   return { Redis: Ctor, default: Ctor };
 });
 
-import { makeValkeyClient, closeValkey } from '../../src/clients/valkey.js';
+import { makeValkeyClient, closeValkey, waitUntilReady } from '../../src/clients/valkey.js';
 
 function makeSpyLog() {
   return {
@@ -130,6 +130,115 @@ describe('makeValkeyClient', () => {
     connectCb!(undefined);
     expect(log.info).toHaveBeenCalledTimes(1);
     expect(log.info).toHaveBeenCalledWith({ url: 'redis://valkey:6379' }, 'valkey connected');
+  });
+});
+
+// --------------------------------------------------------------------------
+// Helper — builds a minimal fake Valkey client with controllable status/events
+// --------------------------------------------------------------------------
+
+interface FakeClient {
+  status: string;
+  once: ReturnType<typeof vi.fn>;
+  removeListener: ReturnType<typeof vi.fn>;
+  _emit: (event: string, arg?: unknown) => void;
+}
+
+function makeFakeClient(status = 'connecting'): FakeClient {
+  const handlers = new Map<string, Array<(...args: unknown[]) => void>>();
+  return {
+    status,
+    once: vi.fn((event: string, cb: (...args: unknown[]) => void) => {
+      if (!handlers.has(event)) handlers.set(event, []);
+      handlers.get(event)!.push(cb);
+    }),
+    removeListener: vi.fn((event: string, cb: (...args: unknown[]) => void) => {
+      const arr = handlers.get(event);
+      if (arr) {
+        const idx = arr.indexOf(cb);
+        if (idx !== -1) arr.splice(idx, 1);
+      }
+    }),
+    _emit(event: string, arg?: unknown) {
+      const arr = handlers.get(event);
+      if (arr) [...arr].forEach((cb) => cb(arg));
+    },
+  };
+}
+
+describe('waitUntilReady', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // ── Test A: already-ready short-circuit ────────────────────────────────
+  it('A: resolves immediately when client.status is already "ready" (no listeners attached)', async () => {
+    const client = makeFakeClient('ready');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await expect(waitUntilReady(client as any)).resolves.toBeUndefined();
+    expect(client.once).not.toHaveBeenCalled();
+  });
+
+  // ── Test B: no once method → resolves immediately (mock-client path) ───
+  it('B: resolves immediately when client has no once() method', async () => {
+    const bare = { status: 'connecting' };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await expect(waitUntilReady(bare as any)).resolves.toBeUndefined();
+  });
+
+  // ── Test C: emits 'ready' after a tick → resolves ──────────────────────
+  it('C: resolves when client emits "ready" after a tick', async () => {
+    const client = makeFakeClient('connecting');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const p = waitUntilReady(client as any);
+    // Emit ready on the next microtask
+    await Promise.resolve();
+    client._emit('ready');
+    await expect(p).resolves.toBeUndefined();
+  });
+
+  // ── Test D: timeout fail-open (default rejectOnTimeout=false) ──────────
+  it('D: resolves (does NOT reject) after timeoutMs when client never emits ready', async () => {
+    vi.useFakeTimers();
+    const client = makeFakeClient('connecting');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const p = waitUntilReady(client as any, 100);
+    await vi.advanceTimersByTimeAsync(200);
+    await expect(p).resolves.toBeUndefined();
+  });
+
+  // ── Test E: error before ready → rejects ───────────────────────────────
+  it('E: rejects with the emitted error when client emits "error" before "ready"', async () => {
+    const client = makeFakeClient('connecting');
+    const boom = new Error('connection refused');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const p = waitUntilReady(client as any);
+    await Promise.resolve();
+    client._emit('error', boom);
+    await expect(p).rejects.toThrow('connection refused');
+  });
+
+  // ── Test F: once called with correct event names ────────────────────────
+  it('F: once() is called with "ready" and "error" event names', async () => {
+    const client = makeFakeClient('connecting');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const p = waitUntilReady(client as any);
+    await Promise.resolve();
+    client._emit('ready');
+    await p;
+    const eventNames = client.once.mock.calls.map((c: unknown[]) => c[0]);
+    expect(eventNames).toContain('ready');
+    expect(eventNames).toContain('error');
+  });
+
+  // ── Test G: timeout with rejectOnTimeout=true → rejects ────────────────
+  it('G: rejects with "not ready within Nms" when rejectOnTimeout=true and timeout fires', async () => {
+    vi.useFakeTimers();
+    const client = makeFakeClient('connecting');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const p = waitUntilReady(client as any, 500, { rejectOnTimeout: true });
+    await vi.advanceTimersByTimeAsync(1000);
+    await expect(p).rejects.toThrow(/not ready within/i);
   });
 });
 
