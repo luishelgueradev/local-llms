@@ -15,8 +15,8 @@ progress:
 
 # Project State: local-llms
 
-**Last Updated:** 2026-05-27 — Phase 08 Plan 11 COMPLETE (DATA-06 gap-closure: waitUntilReady helper + TTL=300; UAT Tests 1+7 gaps closed; smoke Section 9 expected PASS); Phase 09 Plan 04 previously COMPLETE; Milestone v0.9.0 closes; Phase 08 Plan 10 Task 2 still PENDING-HUMAN
-**Status:** Phase 09 COMPLETE — Milestone v0.9.0 closes (Phase 08 incl. 08-11 gap-closure done & verified 5/5; Phase 08 Plan 10 Task 2 + Phase 07 07-06 Task 3 PENDING-HUMAN)
+**Last Updated:** 2026-05-28 — Pending-debt sweep: re-auditados TD-01/04/07 → todos resueltos de facto (commits post-audit 2026-05-17). Phase 08 Plan 10 Task 2 cerrado 2026-05-27 con smokes live PASS. Pending real único: Phase 07 Plan 07-06 Task 3 (vLLM cold-start, deferred por decisión Ollama-only).
+**Status:** Phase 09 COMPLETE — Milestone v0.9.0 ready-to-close (todos los TD bloqueantes y Phase 08 smoke gate resueltos; única traba opcional: Phase 07 07-06 Task 3 PENDING-HUMAN por diseño)
 
 ## Project Reference
 
