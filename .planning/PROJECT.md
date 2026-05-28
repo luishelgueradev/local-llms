@@ -8,53 +8,66 @@ Stack autohospedado en Docker que sirve LLMs locales sobre GPU NVIDIA y los unif
 
 Un endpoint único, estable y multi-protocolo para que los agentes del usuario consuman cualquier modelo disponible — local cuando cabe, Ollama Cloud cuando no — sin que el cliente se entere de quién está respondiendo detrás.
 
+## Current State
+
+**Shipped: v0.9.0 MVP (2026-05-28)** — 76/76 v1 requirements delivered across 9 phases / 55 plans / 112 tasks. Full archive in [`milestones/v0.9.0-ROADMAP.md`](./milestones/v0.9.0-ROADMAP.md) and [`MILESTONES.md`](./MILESTONES.md).
+
+Consumed in production by the user's agents (n8n in a remote VPS over Cloudflare Tunnel `https://local-llms.luishelguera.dev`) and by the local Whisper sidecar via the same host. Workhorse local model: `qwen2.5:7b-instruct-q4_K_M` (alias `chat-local`). Cloud fallback: `gpt-oss:120b-cloud` / `gpt-oss:20b-cloud` via Ollama Cloud (alias `big-cloud`).
+
+## Next Milestone Goals
+
+(Not yet defined — start with `/gsd:new-milestone`. Candidate themes from research backlog and v2 considerations: fine-tuning workflow integration, structured outputs / JSON-mode hardening, MCP-server surface for Claude clients, observability dashboards v2, multi-tenant when the single-user assumption breaks.)
+
 ## Requirements
 
-### Validated
+### Validated (v0.9.0 — 2026-05-28)
 
-<!-- Shipped and confirmed valuable. -->
+<!-- Shipped and confirmed valuable. Detailed traceability in milestones/v0.9.0-REQUIREMENTS.md. -->
 
-(Ninguno todavía — proyecto greenfield)
+**Infraestructura Docker / GPU**
+- ✓ Stack Docker Compose con NVIDIA Container Toolkit (driver `nvidia`, `capabilities: [gpu]`) — v0.9.0 / Phase 1
+- ✓ Volúmenes separados para modelos (`models-gguf/`, `models-hf/`) — v0.9.0 / Phase 1
+- ✓ Networking interno: 4-network topology (edge/app/backend/data) — v0.9.0 / Phase 1+6
+
+**Backends de inferencia**
+- ✓ Ollama como backend principal — v0.9.0 / Phase 1
+- ✓ llama.cpp-server como backend GGUF — v0.9.0 / Phase 3
+- ✓ vLLM como backend HF AWQ + embeddings — v0.9.0 / Phase 7
+- ✓ Ollama Cloud como `backend: ollama-cloud` declarado — v0.9.0 / Phase 8
+
+**Router unificado (Node + Fastify + TypeScript)**
+- ✓ OpenAI `/v1/chat/completions` + `/v1/embeddings` + `/v1/models` (+ retrieve) — v0.9.0 / Phase 2+7
+- ✓ Anthropic `/v1/messages` + `/v1/messages/count_tokens` — v0.9.0 / Phase 4
+- ✓ Streaming SSE en ambos protocolos con heartbeats + abort propagation — v0.9.0 / Phase 2+4
+- ✓ Tool calling bidireccional con 9 golden round-trip fixtures — v0.9.0 / Phase 4
+- ✓ Vision multimodal (URL + base64, SSRF-guarded) — v0.9.0 / Phase 4
+- ✓ Auth bearer único (constant-time, RFC 7235 case-insensitive scheme) — v0.9.0 / Phase 2
+- ✓ Registry declarativo (`models.yaml`) con hot-reload + Valkey boot-warm cache — v0.9.0 / Phase 2+3+8
+- ✓ `X-Model-Backend` response header — v0.9.0 / Phase 8
+
+**Resilience layer**
+- ✓ Valkey-backed circuit breaker per-backend (5/30s → 60s + Retry-After) — v0.9.0 / Phase 8
+- ✓ Rate limit per-bearer (600 RPM default, fail-open on Valkey down) — v0.9.0 / Phase 8
+- ✓ `Idempotency-Key` multiplexer (N retries → 1 generation, byte-identical SSE replay) — v0.9.0 / Phase 8
+- ✓ Hard `max_tokens=16384` cap on cloud-served models — v0.9.0 / Phase 8
+
+**Observability + Ops**
+- ✓ Postgres `request_log` buffered async writes + `usage_daily` + `cloud_spend_daily` view — v0.9.0 / Phase 5+8
+- ✓ Prometheus `/metrics` + Grafana dashboard (7 OBS-04 panels) + nvidia_gpu_exporter — v0.9.0 / Phase 5+7
+- ✓ pg_dump cron + restore drill + off-host backup via restic — v0.9.0 / Phase 5+9
+- ✓ `bin/gc-models.sh`, `bin/disk-alert.sh`, bearer-token rotation runbook — v0.9.0 / Phase 9
+
+**Plataforma**
+- ✓ Open WebUI v0.9 con basic-auth at edge + isolated webui-app network — v0.9.0 / Phase 6
+- ✓ Valkey 8 (rate-limit + breaker + idempotency + registry cache) — v0.9.0 / Phase 8
+- ✓ PostgreSQL 17 (usage + audit) — v0.9.0 / Phase 5
+- ✓ Traefik v3.7 reverse proxy con TLS + Tailscale-hostname routing — v0.9.0 / Phase 6
 
 ### Active
 
-<!-- Current scope. Building toward these. -->
+<!-- Empty — next milestone not yet defined. Populated by /gsd:new-milestone. -->
 
-**Infraestructura Docker / GPU**
-
-- [ ] Stack Docker Compose con NVIDIA Container Toolkit configurado (driver `nvidia`, `capabilities: [gpu]`)
-- [ ] Volumen compartido para modelos descargados (reutilizable entre runtimes)
-- [ ] Networking interno: backends sólo accesibles vía router; router expuesto con auth
-
-**Backends de inferencia local**
-
-- [ ] Ollama como backend principal para catálogo cómodo y descarga de modelos
-- [ ] llama.cpp-server como backend GGUF de control fino
-- [ ] vLLM como backend para modelos HuggingFace con batching/throughput
-
-**Backend remoto / fallback**
-
-- [ ] Integración con Ollama Cloud como fallback para modelos que no caben en 16 GB de VRAM
-
-**Router unificado (Node + Fastify + TypeScript)**
-
-- [x] Endpoint compatible OpenAI: `/v1/chat/completions` *(Phase 2 — /v1/embeddings llega en Phase 7)*
-- [x] Endpoint compatible Anthropic: `/v1/messages` *(Phase 4 — non-stream + stream + count_tokens)*
-- [x] Streaming SSE obligatorio en ambos protocolos *(Phase 2 OpenAI + Phase 4 Anthropic)*
-- [x] Tool calling / function calling estructurado en ambos formatos *(Phase 4 — bidirectional with 9 golden round-trip fixtures)*
-- [x] Modalidad chat/completions *(Phase 2)*
-- [ ] Modalidad embeddings *(Phase 7)*
-- [x] Modalidad vision/multimodal (entrada con imágenes) *(Phase 4 — URL + base64, SSRF-guarded, native /api/chat dispatch for Ollama)*
-- [x] Selección de modelo explícita por nombre (`model: "<name>"`) — el router resuelve qué backend lo sirve *(Phase 2/3)*
-- [x] Auth por bearer token único (configurable vía `.env`) *(Phase 2)*
-- [x] Configuración declarativa de modelos disponibles y su backend (YAML/JSON) *(Phase 2/3 — models.yaml)*
-
-**Servicios de plataforma (alcance "plataforma completa")**
-
-- [ ] Open WebUI para probar y comparar modelos manualmente
-- [ ] Redis para cache/queue infrastructure (ámbito de uso a definir en planning)
-- [ ] PostgreSQL para estado, métricas e historial de uso
-- [ ] Traefik como reverse proxy con TLS y service discovery
+(empty — to be defined in the next milestone planning session)
 
 ### Out of Scope
 
@@ -80,7 +93,7 @@ Un endpoint único, estable y multi-protocolo para que los agentes del usuario c
 
 ## Phase Progress
 
-- **Phase 1 — GPU + Compose Foundation:** ✅ Complete (2026-05-10). Walking Skeleton runnable end-to-end on a real GPU host. Five inline fixes applied during verification (egress, healthcheck, libcuda wrapper, smoke-test WSL2 adaptation, in-container driver capture). Bin scripts and `compose.yml` form the foundation Phase 2+ will build on.
+**Milestone v0.9.0 — all 9 phases shipped 2026-05-28.** See [`MILESTONES.md`](./MILESTONES.md) for the consolidated summary and [`milestones/v0.9.0-ROADMAP.md`](./milestones/v0.9.0-ROADMAP.md) for per-phase details.
 
 ## Constraints
 
@@ -98,14 +111,14 @@ Un endpoint único, estable y multi-protocolo para que los agentes del usuario c
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
 | Router en Node + Fastify + TypeScript | Ecosistema OpenAI/Anthropic SDK maduro en TS, streaming SSE bien resuelto, ligero en Docker | ✓ Validated in Phase 2 — Fastify 5.8 + openai 6.37 + fastify-sse-v2 entrega SSE + non-stream + auth + hot-reload con 66 tests verdes |
-| API contract dual: OpenAI + Anthropic | Maximiza compatibilidad con SDKs y herramientas de agentes existentes | ◐ Partially Validated — Phase 2 entrega la mitad OpenAI (`POST /v1/chat/completions` stream + non-stream); Anthropic surface llega en Phase 4 |
+| API contract dual: OpenAI + Anthropic | Maximiza compatibilidad con SDKs y herramientas de agentes existentes | ✓ Validated in v0.9.0 — OpenAI surface en Phase 2; Anthropic `/v1/messages` + count_tokens + streaming + tools + vision en Phase 4; 9 golden round-trip fixtures |
 | Selección de modelo explícita por nombre | Simple, predecible, fácil de depurar; los agentes ya saben qué modelo quieren | ✓ Validated in Phase 2 — `models.yaml` + zod registry + `_swap` hot-reload pattern; client manda `model: <name>` y el router resuelve al backend |
 | Auth: bearer token único | Single user; multi-key añade complejidad sin valor en v1 | ✓ Validated in Phase 2 — bearer `onRequest` hook con timing-safe compare + length-padding; `/healthz` público; `/v1/*` requiere bearer (401 en miss/wrong) |
-| Backends: Ollama + llama.cpp + vLLM | Cubre el espectro: catálogo cómodo, control GGUF, throughput HF | ◐ Partially Validated — Ollama vivo en Phase 2 vía `OllamaOpenAIAdapter` + `BackendAdapter` seam; llama.cpp + vLLM llegan en Phase 3/7 |
-| Ollama Cloud como fallback (no backend principal) | Aprovecha hardware local y delega solo lo que no cabe | — Pending Phase 8 |
-| Alcance "plataforma completa" (incluye Open WebUI + Redis + Postgres + Traefik) | Decisión consciente del usuario tras pesar MVP lean vs plataforma; orientado a una mini-plataforma personal | ⚠️ Revisit — riesgo de scope creep documentado |
+| Backends: Ollama + llama.cpp + vLLM | Cubre el espectro: catálogo cómodo, control GGUF, throughput HF | ✓ Validated in v0.9.0 — los 3 backends son first-class en el registry; en producción el usuario corre Ollama-only (qwen2.5:7b workhorse) por presión de VRAM compartida con Whisper; llama.cpp + vLLM siguen vivos como fixtures de diseño multi-backend |
+| Ollama Cloud como fallback (no backend principal) | Aprovecha hardware local y delega solo lo que no cabe | ✓ Validated in Phase 8 — `backend: ollama-cloud` declarado en `models.yaml`; aliases `big-cloud` + `gpt-oss:120b-cloud` enrutan vía Ollama Cloud sin diferencia visible para el cliente; resilience + spend tracking + max_tokens cap protegen la cuota cloud |
+| Alcance "plataforma completa" (incluye Open WebUI + Valkey + Postgres + Traefik) | Decisión consciente del usuario tras pesar MVP lean vs plataforma; orientado a una mini-plataforma personal | ✓ Validated in v0.9.0 — todas las piezas entregadas y consumidas en producción; Valkey reemplazó a Redis por licencia (BSD vs AGPL) |
 | Fine-tuning fuera de v1 | Foco en estabilizar router primero; fine-tuning es un proyecto distinto en milestone futuro | — Pending |
-| Modalidades v1: chat + embeddings + vision + tool calling | Cubre todas las necesidades típicas de agentes modernos | ◐ Partially Validated — chat live in Phase 2; embeddings/vision/tools llegan en Phase 4/7 |
+| Modalidades v1: chat + embeddings + vision + tool calling | Cubre todas las necesidades típicas de agentes modernos | ✓ Validated in v0.9.0 — chat (Phase 2 OpenAI + Phase 4 Anthropic), tools + vision (Phase 4 bidirectional), embeddings (Phase 7 Ollama + vLLM-embed) |
 | Router es la única superficie externa (Ollama no expone host port) | Defensa en profundidad: aunque el cliente esté en loopback, no puede saltarse el router | ✓ Validated in Phase 2 (D-A4) — `ports: ['127.0.0.1:11434:11434']` retirado de Ollama; smoke verifica que `curl http://127.0.0.1:11434/api/tags` da connection refused |
 
 ## Evolution
@@ -126,4 +139,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-05-14 after Phase 4 (Anthropic Surface — `/v1/messages`, Tool Calling, Vision) completion.*
+*Last updated: 2026-05-28 after v0.9.0 milestone (MVP — Router multi-backend con cloud fallback + observability + ops) shipped.*
