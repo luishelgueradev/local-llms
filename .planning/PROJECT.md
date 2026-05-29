@@ -63,11 +63,33 @@ Consumed in production by the user's agents (n8n in a remote VPS over Cloudflare
 - ✓ PostgreSQL 17 (usage + audit) — v0.9.0 / Phase 5
 - ✓ Traefik v3.7 reverse proxy con TLS + Tailscale-hostname routing — v0.9.0 / Phase 6
 
-### Active
+### Active (v0.10.0 — Cognitive Primitives, in progress)
 
-<!-- Empty — next milestone not yet defined. Populated by /gsd:new-milestone. -->
+**Theme:** Capacidades cognitivas reutilizables sobre el router. *Primitives, not solutions* — RAG empresarial y memoria semántica son aplicaciones que se construyen ENCIMA, no DENTRO.
 
-(empty — to be defined in the next milestone planning session)
+**Phase 10 — Structured Outputs / JSON Mode (JSON-01..06)**
+- [ ] `response_format: {type: "json_object" | "json_schema"}` con AJV validation
+- [ ] Retry-with-repair (exactamente 1 retry con instrucción sintética)
+- [ ] Nueva capability `json_mode` en `models.yaml`
+- [ ] Métricas `router_json_validation_total{result}`
+
+**Phase 11 — Reranker (RERANK-01..06)**
+- [ ] `POST /v1/rerank` Cohere/Jina-compat
+- [ ] `BackendAdapter.rerank()` seam
+- [ ] `bge-reranker-v2-m3` como modelo seed (alias `bge-reranker-local`)
+- [ ] Nueva capability `rerank`
+
+**Phase 12 — Embeddings Hardening (EMB-H01..06)**
+- [ ] Cache Valkey por `hash(model+input)`, TTL configurable
+- [ ] `dims` declaradas en registry + enforcement en response
+- [ ] Métricas cache hit/miss + batch sizes + dims served
+- [ ] Cache fail-open (Valkey down → bypass + warn)
+
+**Phase 13 — Cost Observability + `/v1/responses` (COST-01..04, RESP-01..04)**
+- [ ] Columna `cost_cents` en `request_log` + `pricing:` en `models.yaml`
+- [ ] Header `X-Cost-Cents`
+- [ ] View `cost_per_agent_daily`
+- [ ] `/v1/responses` no-stream (cierra el gap del nodo "Message a Model" de n8n)
 
 ### Out of Scope
 
