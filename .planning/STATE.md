@@ -1,17 +1,16 @@
 ---
 gsd_state_version: 1.0
-milestone: v0.10.0
-milestone_name: Cognitive Primitives
-status: completed
-stopped_at: "Milestone v0.10.0 Cognitive Primitives completed and archived 2026-05-29. All 4 phases (10–13) shipped via freeform single-shot feat(NN): commits — JSON mode (Phase 10), Reranker /v1/rerank (Phase 11), Embeddings cache+dims+metrics (Phase 12), Cost observability + /v1/responses minimal (Phase 13). 26/26 requirements verified. tsc clean, ESM build clean, full suite 780 pass / 7 skipped / 0 fail, live local smoke 79 PASS / 4 SKIP / 0 FAIL, live tunnel smoke confirmed /v1/responses + X-Cost-Cents header survives Cloudflare/Traefik + cost_per_agent_daily view aggregation."
-last_updated: "2026-05-29T13:42:00.000Z"
-last_activity: 2026-05-29 — Milestone v0.10.0 completed and archived
+milestone: v0.11.0
+milestone_name: Retrieval-Ready Infrastructure
+status: planning
+last_updated: "2026-05-29T22:14:37.458Z"
+last_activity: 2026-05-29
 progress:
-  total_phases: 13
-  completed_phases: 13
-  total_plans: 55
-  completed_plans: 55
-  percent: 100
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State: local-llms
@@ -27,10 +26,10 @@ progress:
 
 ## Current Position
 
-Phase: Milestone v0.10.0 complete
+Phase: Not started (defining requirements)
 Plan: —
-Status: Awaiting next milestone
-Last activity: 2026-05-29 — Milestone v0.10.0 completed and archived
+Status: Defining requirements
+Last activity: 2026-05-29 — Milestone v0.11.0 started
 
 ### Progress
 

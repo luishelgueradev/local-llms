@@ -22,9 +22,32 @@ Full v0.10.0 archive in [`milestones/v0.10.0-ROADMAP.md`](./milestones/v0.10.0-R
 
 Consumed in production by the user's agents (n8n in a remote VPS over Cloudflare Tunnel `https://local-llms.luishelguera.dev`) and by the local Whisper sidecar via the same host. Workhorse local model: `qwen2.5:7b-instruct-q4_K_M` (alias `chat-local`). Cloud fallback: `gpt-oss:120b-cloud` / `gpt-oss:20b-cloud` via Ollama Cloud (alias `big-cloud`). Cost telemetry: per-1M-token pricing for cloud models declared in `models.yaml` (placeholder rates until Ollama publishes formal pricing); operator updates as the rates firm up.
 
-## Next Milestone Goals
+## Current Milestone: v0.11.0 Retrieval-Ready Infrastructure
 
-(Not yet defined — start with `/gsd:new-milestone`. Candidate themes from v0.10.0 backlog: `/v1/responses` streaming + tools, `/v1/audio/transcriptions` (Whisper passthrough — the user already has Whisper aparte), MCP-as-server surface (expose chat/embeddings/rerank as MCP tools), observability dashboards v2 with cost panels, multi-tenant when the single-user assumption breaks.)
+**Goal:** Convertir el router en infraestructura *retrieval-ready* exponiendo las cinco interfaces (`SessionStore`, `ContextProvider`, `RetrieverProvider`, `EmbeddingProvider`, `SummaryProvider`), MCP en ambas direcciones, streaming first-class, y los policy primitives mínimos — sin que el router asuma una sola línea de lógica de retrieval, memoria semántica, ni esquemas de negocio.
+
+**Strategic frame:** *"Retrieval Interfaces, not Retrieval Logic"* · *"Memory Abstraction Layer, not Memory implementation"* · *"local-llms = infraestructura; RAG/KB empresarial = consumidor downstream"*.
+
+**Priority order (locked):**
+
+| # | Bloque | Qué entrega |
+|---|---|---|
+| **P1** | **MCP-as-server (host first-class) + MCP client (generic capability)** | Host: expone `chat`/`embeddings`/`rerank`/`responses` como MCP tools. Client: capability genérica para consumir MCP servers externos — **no una retrieval framework**. |
+| **P2** | **`/v1/responses` streaming + tools** | Cierra deuda v0.10.0 Phase 13. First-class streaming para UIs, MCP, Responses API compat. |
+| **P3** | **Knowledge hooks — `RetrieverProvider` + pre-completion hook seam** | MCP tool-driven retrieval primary; pre-completion hook como extension point opcional. Hooks aceptan payload rico (filtros, top-k, metadata, hybrid flags) **sin orquestar retrieval**. |
+| **P4** | **Memory abstraction — `SessionStore` + `ContextProvider` + `SummaryProvider`** | `SessionStore`: Postgres-backed default, persistencia opcional. `ContextProvider`: history loading + window management, sin memoria semántica. `SummaryProvider`: seam declarado, comportamiento diferido. |
+| **+** | **Policy primitives (slim)** | Model allowlists · cloud restrictions · sensitive-workload routing · tenant/project/agent IDs en tracing/`request_log`/metadata. **NO el policy engine completo.** |
+
+**Constraints (locked):**
+- Stack downstream = TS/Node → MCP HTTP/SSE first, stdio second.
+- Topología same WSL2 host hoy, portable a VPS/LAN futuro → auth bearer + MCP-token capability.
+- Integration patterns: (a) RAG→router + (c) RAG→router→RAG (tool-call) **primary** · (b) router→MCP externos **secondary** · (d) router como retrieval orchestrator **rechazada por diseño**.
+- Contenido: texto only (docs, código, PDF text, audio transcripts pre-procesados). Multimodal/vision OUT.
+- Primer consumidor real: n8n agentes/workflows ya en producción. Human-facing chat = secundario.
+- Multi-tenant downstream esperado → tenant/project/agent IDs en tracing desde día 1, policy engine completo difiere.
+- Production-oriented: interfaces stable-from-day-1, reference impls minimales.
+
+**Continuación normal:** phase numbering desde Phase 14 (no reset). v0.11.0 es continuación, no major.
 
 ## Requirements
 
@@ -82,9 +105,20 @@ Consumed in production by the user's agents (n8n in a remote VPS over Cloudflare
 - ✓ Embeddings hardening (Phase 12, EMB-H01..06): Valkey cache key=`hash(backend|backend_model|encoding_format|dimensions|input)` TTL configurable via `ROUTER_EMBED_CACHE_TTL_SEC` + registry-required `dims` enforcement + 3 new metrics + fail-open on Valkey
 - ✓ Cost observability + `/v1/responses` (Phase 13, COST-01..04 + RESP-01..04): `cost_cents NUMERIC(10,4)` column (migration 0003) + `X-Cost-Cents` header on success + `cost_per_agent_daily` view (migration 0004) + new `POST /v1/responses` minimal non-stream endpoint sharing all plumbing with chat-completions
 
-### Active (v0.11.0+ — TBD)
+### Active (v0.11.0 — Retrieval-Ready Infrastructure)
 
-(Not yet defined. Candidate themes documented in MILESTONES.md / Next Milestone Goals section above.)
+<!-- Locked 2026-05-29. Detailed REQ-IDs in REQUIREMENTS.md after research-first. -->
+
+**Theme:** Retrieval Interfaces, not Retrieval Logic. Memory Abstraction Layer, not Memory implementation. Exposición de seams MCP + 5 provider interfaces + streaming first-class + policy primitives slim, sin lógica de retrieval/memoria/knowledge dentro del router.
+
+- **MCP-as-server (P1):** router como MCP host first-class + MCP client generic. Exposición de `chat`/`embeddings`/`rerank`/`responses` como MCP tools.
+- **`/v1/responses` streaming + tools (P2):** cierre de deuda v0.10.0 Phase 13.
+- **`RetrieverProvider` + pre-completion hook (P3):** MCP tool-driven retrieval primary, pre-completion hook como extension point opcional; payload rico (filtros, top-k, metadata, hybrid flags) sin orquestar retrieval.
+- **`SessionStore` + `ContextProvider` + `SummaryProvider` (P4):** abstracción de memory/session sin behavior; `SessionStore` Postgres-backed opcional, `ContextProvider` window-management sin semántica, `SummaryProvider` seam noop-default.
+- **`EmbeddingProvider` interface name + MCP exposure:** formalización del capability existente (v0.10.0 Phase 12) como provider interface con nombre estable.
+- **Policy primitives (slim):** model allowlists · cloud restrictions (`cloud_allowed: false`) · sensitive-workload routing · tenant/project/agent IDs en tracing/`request_log`/metadata.
+
+REQ-IDs concretos se definen en REQUIREMENTS.md post-research.
 
 ### Out of Scope
 
@@ -157,4 +191,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-05-28 after v0.9.0 milestone (MVP — Router multi-backend con cloud fallback + observability + ops) shipped.*
+*Last updated: 2026-05-29 — v0.11.0 Retrieval-Ready Infrastructure milestone opened after v0.10.0 Cognitive Primitives shipped.*
