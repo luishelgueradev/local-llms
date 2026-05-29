@@ -1,55 +1,231 @@
 # Roadmap: local-llms
 
-**Coverage:** 76/76 v1 requirements shipped in v0.9.0 · 26/26 v0.10.0 requirements shipped
-**Status:** v0.10.0 "Cognitive Primitives" — ✅ shipped 2026-05-29. Next milestone TBD.
+**Coverage:** 76/76 v1 requirements shipped in v0.9.0 · 26/26 v0.10.0 requirements shipped · 48/48 v0.11.0 requirements mapped
+**Status:** v0.11.0 "Retrieval-Ready Infrastructure" — in planning.
 
 ## Milestones
 
 - ✅ **v0.9.0 MVP** — Router multi-backend con cloud fallback + observability + ops · Phases 1-9 · shipped 2026-05-28 · 9 phases, 55 plans, 112 tasks · [archive](./milestones/v0.9.0-ROADMAP.md) · [requirements](./milestones/v0.9.0-REQUIREMENTS.md) · [audit](./milestones/v0.9.0-MILESTONE-AUDIT.md)
 - ✅ **v0.10.0 Cognitive Primitives** — Structured outputs · Reranker · Embeddings hardening · Cost obs + Responses API · Phases 10-13 · shipped 2026-05-29 · 4 phases (freeform single-shot pattern), 26 requirements · [archive](./milestones/v0.10.0-ROADMAP.md) · [requirements](./milestones/v0.10.0-REQUIREMENTS.md) · [audit](./milestones/v0.10.0-MILESTONE-AUDIT.md)
+- 🚧 **v0.11.0 Retrieval-Ready Infrastructure** — MCP-as-server/client · `/v1/responses` streaming + tools · SessionStore/ContextProvider/SummaryProvider · RetrieverProvider + pre-completion hook · EmbeddingProvider interface · Policy primitives · Phases 14-19
 
 ## Phases
 
-### Backlog (post-v0.10.0)
+### v0.11.0 Retrieval-Ready Infrastructure (Phases 14–19)
 
-- /v1/responses streaming + tools (deferred from Phase 13 — current minimal surface is no-stream only)
-- /v1/audio/transcriptions (Whisper passthrough — el usuario ya tiene Whisper aparte)
-- MCP-as-server surface (expose chat/embeddings/rerank como tools MCP)
-- Multi-tenant / per-bearer policies engine (cuando deje de ser single-user)
-- Observability dashboards v2 with cost panels (cost_per_agent_daily → Grafana)
-- Update cloud model pricing in `models.yaml` when Ollama publishes formal per-model rates
+- [ ] **Phase 14: Policy Primitives + Tenant/Project ID Foundation** — Additive zero-dep policy gate + tenant/project ID headers in logs and request_log; every later phase inherits correct observability context from this foundation.
+- [ ] **Phase 15: MCP Host (Router as MCP Server)** — Router exposes five MCP tools (chat, embeddings, rerank, responses, list_models) over Streamable HTTP at `/mcp`; any MCP-compatible client can consume the router as a tool server.
+- [ ] **Phase 16: `/v1/responses` Streaming + Tool Calls** — Full Responses API streaming with `OutputItemStateMachine`, tool-call events, and `response.completed` always last; closes v0.10.0 streaming debt.
+- [ ] **Phase 17: SessionStore + ContextProvider + SummaryProvider** — Postgres-backed session persistence, context window management, and SummaryProvider noop seam; routes gain stateful multi-turn capability without retrieval logic.
+- [ ] **Phase 18: MCP Client + RetrieverProvider + Pre-Completion Hook** — Generic MCP client capability (lazy-connect, tool namespace prefix, 60s Valkey cache), RetrieverProvider interface + pre-completion hook seam with explicit fail-open/closed, and EmbeddingProvider interface formalization.
+- [ ] **Phase 19: EmbeddingProvider Formalization + Observability Hardening** — EmbeddingProvider interface extracted, all new surfaces covered by smoke tests and Prometheus metrics, cardinality CI guard, docs updated.
 
 <details>
 <summary>✅ v0.10.0 Cognitive Primitives (Phases 10-13) — SHIPPED 2026-05-29</summary>
 
-- [x] **Phase 10: Structured Outputs / JSON Mode** ✅ 2026-05-29 — AJV validation + single-shot retry-with-repair + `json_mode` capability gate + `router_json_validation_total{result}` counter. Converts `response_format: {type: "json_object"|"json_schema"}` from a silent passthrough into a contract with structured 400 on irrecoverable failure.
-- [x] **Phase 11: Reranker (`POST /v1/rerank`)** ✅ 2026-05-29 — Cohere/Jina-compat endpoint over cross-encoders (`bge-reranker-v2-m3` default via Ollama native `/api/rerank`); new `BackendAdapter.rerank()` seam; capability `rerank`; same auth + breaker + idempotency + request_log + X-Model-Backend plumbing as chat.
-- [x] **Phase 12: Embeddings Hardening** ✅ 2026-05-29 — Valkey-backed per-input cache with 24h TTL configurable via `ROUTER_EMBED_CACHE_TTL_SEC`, fail-open on Valkey errors, key invalidates on `backend_model` swap. Registry-required `dims` contract with mismatch refusal (500 + structured log). Three new Prometheus metrics: cache_total{hit|miss|bypass}, batch_size histogram, dims_total{model,dims}.
-- [x] **Phase 13: Cost Observability + `/v1/responses`** ✅ 2026-05-29 — `cost_cents NUMERIC(10,4)` column via migration 0003 + `X-Cost-Cents` response header (survives Cloudflare/Traefik) + `cost_per_agent_daily` view via migration 0004. New `POST /v1/responses` minimal non-stream endpoint sharing all plumbing with /v1/chat/completions; closes the n8n "Message a Model" 404 gap. Streaming deferred to v0.11.
+- [x] **Phase 10: Structured Outputs / JSON Mode** ✅ 2026-05-29
+- [x] **Phase 11: Reranker (`POST /v1/rerank`)** ✅ 2026-05-29
+- [x] **Phase 12: Embeddings Hardening** ✅ 2026-05-29
+- [x] **Phase 13: Cost Observability + `/v1/responses`** ✅ 2026-05-29
 
 </details>
 
 <details>
 <summary>✅ v0.9.0 MVP (Phases 1-9) — SHIPPED 2026-05-28</summary>
 
-- [x] **Phase 1: GPU + Compose Foundation** ✅ 2026-05-10 — Reproducible GPU passthrough verified by preflight, volume layout, `x-gpu` anchor, single Ollama instance proving end-to-end GPU inference.
-- [x] **Phase 2: MVP Vertical Slice — Router + Ollama + SSE** ✅ 2026-05-12 — One-backend Fastify router exposing `POST /v1/chat/completions` with bearer auth, `models.yaml`, SSE streaming, pino redaction, client-disconnect→upstream-abort.
-- [x] **Phase 3: Multi-Backend Dispatch — llama.cpp + Registry Hardening** ✅ 2026-05-13 — Second backend via `models.yaml`, per-backend liveness/readiness probes, concurrency caps, `GET /v1/models`, VRAM budgets, Compose profiles per backend.
-- [x] **Phase 4: Anthropic Surface — `/v1/messages`, Tool Calling, Vision** ✅ 2026-05-14 — Native Anthropic protocol with typed streaming events, count_tokens, role/system semantics, bidirectional tool translation, vision in both protocols.
-- [x] **Phase 5: Postgres + Observability Seam** ✅ 2026-05-15 — `request_log` buffered async writes, `usage_daily` aggregation, `pg_dump` + restore drill, Prometheus `/metrics`, real Compose healthchecks, `X-Agent-Id` in logs.
-- [x] **Phase 6: Open WebUI + Traefik Edge** ✅ 2026-05-15 — Traefik v3.7 + Open WebUI v0.9 with basic-auth at the edge, internal-only Docker networks (anti-bypass), Tailscale-hostname routing, isolated webui-app network closing the OWUI→ollama bypass.
-- [x] **Phase 7: Embeddings + vLLM + GPU Telemetry** ✅ 2026-05-17 — `/v1/embeddings` OpenAI surface, vLLM AWQ backend with explicit VRAM partitioning, vLLM/llama.cpp `/metrics` scraped, GPU exporter, Grafana dashboard for VRAM/TTFT/error rate.
-- [x] **Phase 8: Ollama Cloud Fallback + Resilience Hardening** ✅ 2026-05-27 — `backend: ollama-cloud` with bearer auth, circuit breaker, cloud-spend metric, hard `max_tokens` cap, Valkey-backed rate limit, `Idempotency-Key` multiplexer, `X-Model-Backend` response header.
-- [x] **Phase 9: Operations Hardening** ✅ 2026-05-17 — `bin/gc-models.sh` keyed off `models.yaml`, off-host backup destination via restic, disk-usage alert via host cron, documented bearer-token rotation runbook with OWUI PersistentConfig pivot.
+- [x] **Phase 1: GPU + Compose Foundation** ✅ 2026-05-10
+- [x] **Phase 2: MVP Vertical Slice — Router + Ollama + SSE** ✅ 2026-05-12
+- [x] **Phase 3: Multi-Backend Dispatch — llama.cpp + Registry Hardening** ✅ 2026-05-13
+- [x] **Phase 4: Anthropic Surface — `/v1/messages`, Tool Calling, Vision** ✅ 2026-05-14
+- [x] **Phase 5: Postgres + Observability Seam** ✅ 2026-05-15
+- [x] **Phase 6: Open WebUI + Traefik Edge** ✅ 2026-05-15
+- [x] **Phase 7: Embeddings + vLLM + GPU Telemetry** ✅ 2026-05-17
+- [x] **Phase 8: Ollama Cloud Fallback + Resilience Hardening** ✅ 2026-05-27
+- [x] **Phase 9: Operations Hardening** ✅ 2026-05-17
 
 </details>
 
+## Phase Details
+
+### Phase 14: Policy Primitives + Tenant/Project ID Foundation
+
+**Goal**: Operators can configure model allowlists and cloud restrictions in `models.yaml`; tenant/project context flows through every request log entry from this phase onward.
+
+**Depends on**: Phase 13 (continuation; all v0.10.0 surfaces exist)
+
+**Requirements**: POL-01, POL-02, POL-03, POL-04, POL-05, POL-06
+
+**Design constraints (BLOCK-severity from PITFALLS.md):**
+- Policy gate fires BEFORE circuit breaker check (P8-01 BLOCK) — same position as existing capability gate; allowlist violations must NOT count as backend failures
+- `cloud_allowed: false` checked against `entry.backend === 'ollama-cloud'` (P8-02 BLOCK) — no per-request override; route Zod schemas use `.strict()`
+- Prometheus metric labels NEVER include `tenant_id`, `project_id`, `agent_id`, `session_id` (P8-03 BLOCK) — these IDs live only in Postgres + pino; CI check validates `/metrics` output against `_id` suffix
+- Migration journal: read `_journal.json` as first action to assign next sequential number (P9-01 BLOCK) — `tenant_id` + `project_id` columns on `request_log` require one migration file
+- `X-Workload-Class: sensitive` is opaque metadata only — no content classification (Frame-04 BLOCK)
+
+**Success Criteria** (what must be TRUE):
+1. An operator who adds `model_allowlist: ["chat-local"]` to a registry entry sees any request for a different model return `403 { code: "model_not_in_allowlist", model }` before the circuit breaker is consulted (verified by integration test asserting breaker counter unchanged after the 403).
+2. An operator who sets `policy.cloud_allowed: false` for a registry entry sees requests routed to `backend: ollama-cloud` return `403 { code: "cloud_not_allowed", model }`, with no cloud request emitted to Ollama Cloud.
+3. A caller sending `X-Tenant-ID: acme` and `X-Project-ID: agents` sees both values appear in the Postgres `request_log` row for that request (verified by integration test querying the DB row).
+4. The live `/metrics` endpoint contains no label matching `.*_id` on `router_request_total` or `router_request_duration_seconds` (verified by the new `scripts/check-prometheus-cardinality.ts` CI check).
+5. Existing smoke test suite passes unchanged (policy defaults to allow-all with no config declared).
+
+**Plans**: TBD
+
+---
+
+### Phase 15: MCP Host (Router as MCP Server)
+
+**Goal**: Any MCP-compatible client (n8n MCP trigger, Claude Desktop, Cursor) can connect to `/mcp` over Streamable HTTP and invoke the router's existing capabilities as MCP tools — using the same bearer token and observability stack.
+
+**Depends on**: Phase 14 (policy gate in place before MCP tool exposure; tenant IDs in logs)
+
+**Requirements**: MCPS-01, MCPS-02, MCPS-03, MCPS-04, MCPS-05, MCPS-06
+
+**Design constraints (BLOCK-severity from PITFALLS.md):**
+- Streamable HTTP ONLY — no stdio transport (P1-01 BLOCK) — n8n production compatibility; stdio is explicitly NOT exposed (MCPS-06)
+- Bearer auth inherited from app-level `onRequest` hook (P1-02 BLOCK) — MCP plugin registered under the same Fastify scope; no separate auth mechanism; unauthenticated access returns 401 before any MCP-level handling
+- MCP tool JSON Schemas generated programmatically from existing Zod schemas via `z.toJSONSchema()` (P1-03 BLOCK) — no hand-authored duplicate schemas; prevents drift
+- Session GC loop every 30 min + SIGTERM handler calls `transport.close()` for all sessions with 5s hard timeout (P1-04 BLOCK) — wired into Fastify `onClose` hook
+- Raw `req.raw`/`reply.raw` integration only — no `@modelcontextprotocol/fastify` or other community alpha plugins (constraint from REQUIREMENTS.md + SUMMARY.md)
+- Tool handler errors return `isError: true` with `{ error, code, message }` content block (MCPS-04) — not thrown exceptions
+- Exactly five tools exposed: `chat_completion`, `create_response`, `create_embedding`, `rerank`, `list_models` — explicit allowlist, no auto-discovery of routes (P1-05 FLAG)
+
+**Success Criteria** (what must be TRUE):
+1. A caller using the `@modelcontextprotocol/sdk` TypeScript `Client` connects to `POST /mcp` with `Authorization: Bearer <token>` and successfully calls `tools/list`, receiving at least the five declared tools (`chat_completion`, `create_response`, `create_embedding`, `rerank`, `list_models`).
+2. A caller who omits the `Authorization` header on `POST /mcp` receives `401` before any MCP-level JSON-RPC handling occurs.
+3. A caller invokes the `chat_completion` MCP tool with `{ model: "chat-local", messages: [...] }` and receives a non-error MCP tool result containing the model's text response — verified by integration test using the `@modelcontextprotocol/sdk` Client.
+4. When the router receives `SIGTERM`, all active MCP sessions are closed cleanly within 5 seconds (verified by integration test triggering shutdown and asserting no leaked session entries in the session map).
+5. The `router_mcp_active_sessions` Prometheus gauge is present in `/metrics` output and reflects the current session count (0 when no MCP clients are connected).
+
+**Plans**: TBD
+**UI hint**: no
+
+---
+
+### Phase 16: `/v1/responses` Streaming + Tool Calls
+
+**Goal**: Callers can stream responses from `POST /v1/responses` with `stream: true` and receive the canonical Responses API event sequence including tool-call events; the non-streaming path from v0.10.0 is fully preserved.
+
+**Depends on**: Phase 14 (policy gate wired to responses route), Phase 15 (tool-call event pattern reference from MCP work)
+
+**Requirements**: RESS-01, RESS-02, RESS-03, RESS-04, RESS-05
+
+**Design constraints (BLOCK-severity from PITFALLS.md):**
+- Dedicated `responsesStreamTranslator` module with explicit `OutputItemStateMachine` (P3-01 BLOCK, P3-02 BLOCK) — states: `idle | text | function_call`; never re-use chat-completions SSE events
+- `response.completed` is always the final event on every successful stream (P3-03 BLOCK) — verified by integration test asserting last-event invariant
+- Heartbeats MUST use SSE comment lines (`: keep-alive`) not data events (P3-04 FLAG) — same existing pattern; regression risk on copy-paste
+- Golden fixture for non-streaming `/v1/responses` shape from v0.10.0 must pass unchanged (P9-02 BLOCK) — streaming addition must not alter non-streaming wire shape
+
+**Success Criteria** (what must be TRUE):
+1. A caller sends `POST /v1/responses` with `{ stream: true, model: "chat-local", input: "hello" }` and receives an SSE stream whose events in order are: `response.created`, `response.in_progress`, `response.output_item.added`, `response.content_part.added`, one or more `response.output_text.delta`, `response.output_text.done`, `response.content_part.done`, `response.output_item.done`, `response.completed` — and `response.completed` is the final non-comment event.
+2. A caller sends the same request with a function-calling model and tool definitions; the stream surfaces `response.function_call_arguments.delta` events and the final `response.completed` includes `status: "requires_action"`.
+3. The existing non-streaming `POST /v1/responses` golden fixture (v0.10.0) passes unchanged — wire shape, `usage`, and `output` fields are byte-identical to the v0.10.0 fixture.
+4. The streaming path reuses the existing `fastify-sse-v2` plumbing, idempotency multiplexer replay, and `X-Cost-Cents` header emission (verified by smoke test confirming `X-Cost-Cents` header present on a cloud model streaming response).
+5. Each streaming event carries a `sequence_number` field and the stream never closes before `response.completed` under normal completion.
+
+**Plans**: TBD
+
+---
+
+### Phase 17: SessionStore + ContextProvider + SummaryProvider
+
+**Goal**: Callers can maintain persistent multi-turn sessions across requests via `X-Session-ID`; ContextProvider manages the context window by strategy; SummaryProvider seam is declared with a noop default — the router gains stateful conversation capability without implementing any retrieval or semantic memory.
+
+**Depends on**: Phase 14 (tenant_id/agent_id in request_log for session attribution), Phase 16 (responses route in final streaming form before session injection is wired into it)
+
+**Requirements**: SESS-01, SESS-02, SESS-03, SESS-04, SESS-05, SESS-06, CTXP-01, CTXP-02, CTXP-03, CTXP-04, SUMP-01, SUMP-02, SUMP-03
+
+**Phase 17 split rationale (kept whole):** SESS-01..06 (SessionStore + DB), CTXP-01..04 (ContextProvider strategies), and SUMP-01..03 (SummaryProvider seam) all wire into the same route integration point at the same time — splitting would leave routes half-integrated (session loading without window management) and double the integration overhead. 13 REQs with clear internal sequencing (SESS → CTXP → SUMP) fit a single coherent delivery boundary.
+
+**Design constraints (BLOCK-severity from PITFALLS.md):**
+- `sessions.expires_at TIMESTAMPTZ NOT NULL` in migration from day one (P4-01 BLOCK) — no unbounded retention path; default TTL 7 days
+- `pg_advisory_xact_lock(hashtext(session_id))` inside transaction wrapping turn append (P4-02 BLOCK) — prevents concurrent write race for same session_id
+- `SessionStore.loadHistory()` requires `agent_id` as mandatory parameter (P4-03 BLOCK) — cross-agent leakage prevented at query layer; WHERE clause always includes `agent_id`
+- System messages are NEVER evictable by window management (P4-04 BLOCK) — pinned turns (role=system) always appear first; only user/assistant/tool turns are evictable
+- `SummaryProvider.summarize()` is NEVER invoked when session has a pending tool call (P6-01 BLOCK) — `has_pending_tool_call` flag prevents summarization until tool round-trip completes (SUMP-03)
+- Session persistence is optional — callers without `X-Session-ID` operate stateless with zero SessionStore involvement (SESS-06)
+- Session writes are synchronous durable writes (NOT async-buffered like request_log) — fail-open under 1s timeout with `persisted: false` flag (SESS-04)
+- No FK from `session_turns` to `request_log` — sessions must be independently deletable (P4-06 FLAG)
+- Migration journal: assign number as first task; consult `_journal.json` before writing any SQL (P9-01 BLOCK)
+
+**Success Criteria** (what must be TRUE):
+1. A caller sends `POST /v1/chat/completions` twice with the same `X-Session-ID: <id>` header; the second request's model response demonstrates awareness of the first turn's content (the history was loaded and injected into the second request's message array).
+2. A caller sends `X-Session-ID` with one `agent_id` and attempts to load that session with a different `agent_id`; they receive an empty history (cross-tenant leakage prevention verified by integration test).
+3. A model entry declaring `context_strategy: sliding-window` with `ctx_size: 4096` receives a long session; the ContextProvider trims the history to fit, the system message is always present at index 0 in the trimmed context, and no 400 "context length exceeded" error occurs from the backend.
+4. A session created without `X-Session-ID` in the request operates fully stateless — no `sessions` or `session_turns` rows are written, and the response is identical to pre-Phase-17 behavior.
+5. The `X-Session-ID` response header is set on responses when a session is active; the `NoopSummaryProvider` is the default and never calls any model.
+
+**Plans**: TBD
+
+---
+
+### Phase 18: MCP Client + RetrieverProvider + Pre-Completion Hook
+
+**Goal**: Operators can declare external MCP servers in `models.yaml` and the router lazily connects to them to inject their tools into model requests; operators can register a `RetrieverProvider` pre-completion hook that injects retrieved context before the model call; both mechanisms coexist without interference.
+
+**Depends on**: Phase 15 (MCP SDK installed, Streamable HTTP transport integration pattern established), Phase 17 (ContextProvider fully wired; hooks receive post-context-window canonical)
+
+**Requirements**: MCPC-01, MCPC-02, MCPC-03, MCPC-04, MCPC-05, MCPC-06, RETR-01, RETR-02, RETR-03, RETR-04, RETR-05, RETR-06
+
+**Design constraints (BLOCK-severity from PITFALLS.md):**
+- MCP clients connect LAZILY on first use (P2-01 BLOCK) — router boot MUST NOT block on external MCP server availability; `/readyz` does not check MCP client connectivity
+- Tool names namespace-prefixed `{server_alias}__{tool_name}` on ingestion; stripped on dispatch (P2-02 BLOCK) — prevents collision across multiple MCP servers
+- External MCP tool descriptions validated: name must match `[a-z0-9_]{1,64}`, description truncated at 512 chars with warning (P2-03 BLOCK) — defense-in-depth against tool poisoning
+- Inbound bearer token is NEVER forwarded to external MCP servers (P2-04 BLOCK) — per-server `auth_value` from config used; verified by integration test asserting outbound headers contain only per-server credential
+- `RetrieverProvider` hook interface requires explicit `on_timeout: "fail-open" | "fail-closed"` field (P5-01 BLOCK) — no default; missing field is a startup error
+- Every hook call wrapped in `Promise.race([hookPromise, timeoutPromise])` (P5-02 BLOCK) — `router_hook_duration_ms{hook_name}` Prometheus histogram
+- Retrieved content fenced as `<retrieved_context source="{hook_name}">...</retrieved_context>` with 4000 char limit (P5-03 BLOCK) — `hook_log` JSONB column or table for audit (RETR-04)
+- `EmbeddingProvider` formalization does NOT change `/v1/embeddings` wire shape (P7-01 BLOCK) — interface is a wrapper over existing `BackendAdapter`; route handler is not modified
+- Tool list cached in Valkey with 60s TTL keyed by `mcp:tools:{server_alias}` (MCPC-06) — consistent with existing `model-registry:*` key pattern
+- MCP tool-call loop capped at 10 iterations (MCPC-04) — structured error `{ code: "mcp_tool_loop_exceeded" }` on cap
+- No in-process retriever implementation shipped (Frame-01 BLOCK) — `NoopRetrieverProvider` exists only in tests via `msw` fixture server
+
+**Success Criteria** (what must be TRUE):
+1. An operator declares an external MCP server in `mcp_servers:` in `models.yaml`; the router starts cleanly even if that server is unreachable at boot time, and only fails at request time when an MCP-tool-enabled request is made (integration test: unresponsive MCP server during boot, router `/readyz` returns 200).
+2. Two external MCP servers each register a tool named `search`; after tool injection the model's tool list contains `serverA__search` and `serverB__search` with no collision, and calling `serverA__search` routes to server A while `serverB__search` routes to server B.
+3. A request with a pre-completion hook configured with `on_timeout: fail-open` continues to completion when the hook times out (request succeeds, `X-Hook-Error` response header is set, hook timeout is logged); a request with `on_timeout: fail-closed` returns 502 when the hook times out.
+4. Retrieved documents appear in the `request_log.hook_log` JSONB column with `context_hash` (SHA256 of content), `hook_name`, `latency_ms`, and `chars_retrieved` — not the full content.
+5. The existing `/v1/embeddings` smoke test passes byte-identical to pre-Phase-18 (no wire shape change from EmbeddingProvider formalization).
+6. When both a pre-completion hook and an MCP tool are configured for the same route, both execute independently on the same request — the hook fires before the model call, the MCP tool fires via the model's tool-call loop after the first model response.
+
+**Plans**: TBD
+
+---
+
+### Phase 19: EmbeddingProvider Formalization + Observability Hardening
+
+**Goal**: All new v0.11.0 surfaces are covered by smoke tests and Prometheus metrics; the cardinality CI guard is enforced; documentation reflects the full v0.11.0 configuration surface; the milestone is ready for production verification.
+
+**Depends on**: Phase 18 (all new surfaces exist and are stable)
+
+**Requirements**: EMBP-01, EMBP-02, OBSV-01, OBSV-02, OBSV-03, OBSV-04
+
+**Design constraints (BLOCK-severity from PITFALLS.md):**
+- Prometheus cardinality CI check (`scripts/check-prometheus-cardinality.ts`) FAILS on any label containing `_id` suffix (P8-03 BLOCK) — enforcement of zero-cardinality-explosion guarantee for `tenant_id`, `agent_id`, etc.
+- `OBSV-04`: If `hook_log` JSONB column on `request_log` was not added in Phase 18, migration 0007 adds it here as safety net — migration journal must be consulted first (P9-01 BLOCK)
+- Smoke test extension is not optional (P9-03 BLOCK) — new PASS entries required for `/mcp` initialize + tools/list + tools/call, streaming `/v1/responses` with and without tools, session round-trip, hook invocation, policy enforcement
+
+**Success Criteria** (what must be TRUE):
+1. `bin/smoke-test-router.sh` runs end-to-end against the live stack with new sections covering: `/mcp` (initialize + tools/list + `list_models` tool call), streaming `/v1/responses` (with and without function calls), `X-Session-ID` round-trip, pre-completion hook invocation, and policy `model_allowlist` enforcement — all printing PASS.
+2. The `scripts/check-prometheus-cardinality.ts` CI check passes against the live `/metrics` output, confirming no label contains an `_id` suffix.
+3. `README.md` and `DEPLOY.md` contain sections documenting: MCP host endpoint + five tools + auth header requirement; `mcp_servers:` config schema; `X-Session-ID` lifecycle and `SESSION_TTL_DAYS` env; pre-completion hook registration and `on_timeout` field; `model_allowlist` and `cloud_allowed` policy stanza; `X-Tenant-ID`/`X-Project-ID` headers.
+4. A caller can call `fastify.embeddingProvider.embed(input, opts)` directly (Fastify decorator injected) and receive the same embedding output as `POST /v1/embeddings` — verified by unit test asserting interface conformance (EMBP-01); the `/v1/embeddings` wire shape is byte-identical to pre-Phase-19 (EMBP-02 regression).
+5. Vitest full suite passes with 0 failures; `tsc --noEmit` reports 0 errors.
+
+**Plans**: TBD
+
+---
+
 ## Progress
 
-| Milestone | Phases | Plans | Status | Shipped |
-|-----------|--------|-------|--------|---------|
-| v0.9.0 MVP | 1-9 | 55/55 | Complete | 2026-05-28 |
-| v0.10.0 Cognitive Primitives | 10-13 | n/a (freeform commits) | Complete | 2026-05-29 |
+| Phase | Plans Complete | Status | Completed |
+|-------|----------------|--------|-----------|
+| 14. Policy Primitives + Tenant ID Foundation | 0/TBD | Not started | - |
+| 15. MCP Host (Router as MCP Server) | 0/TBD | Not started | - |
+| 16. /v1/responses Streaming + Tool Calls | 0/TBD | Not started | - |
+| 17. SessionStore + ContextProvider + SummaryProvider | 0/TBD | Not started | - |
+| 18. MCP Client + RetrieverProvider + Pre-Completion Hook | 0/TBD | Not started | - |
+| 19. EmbeddingProvider Formalization + Observability Hardening | 0/TBD | Not started | - |
 
 ---
 
@@ -60,3 +236,4 @@
 *Requirements traceability per milestone:*
 - v0.9.0 — [`milestones/v0.9.0-REQUIREMENTS.md`](./milestones/v0.9.0-REQUIREMENTS.md)
 - v0.10.0 — [`milestones/v0.10.0-REQUIREMENTS.md`](./milestones/v0.10.0-REQUIREMENTS.md)
+- v0.11.0 — REQUIREMENTS.md (active, this milestone)

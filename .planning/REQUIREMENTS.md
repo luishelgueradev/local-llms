@@ -178,22 +178,60 @@ The roadmap and plan-phase agents must reject any task that would:
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| POL-01..06 | Phase 14 (provisional) | Pending |
-| MCPS-01..06 | Phase 15 (provisional) | Pending |
-| RESS-01..05 | Phase 16 (provisional) | Pending |
-| SESS-01..06 | Phase 17 (provisional) | Pending |
-| CTXP-01..04 | Phase 17 (provisional) | Pending |
-| SUMP-01..03 | Phase 17 (provisional) | Pending |
-| MCPC-01..06 | Phase 18 (provisional) | Pending |
-| RETR-01..06 | Phase 18 (provisional) | Pending |
-| EMBP-01..02 | Phase 19 (provisional) | Pending |
-| OBSV-01..04 | Phase 19 (provisional) | Pending |
+| POL-01 | Phase 14 | Pending |
+| POL-02 | Phase 14 | Pending |
+| POL-03 | Phase 14 | Pending |
+| POL-04 | Phase 14 | Pending |
+| POL-05 | Phase 14 | Pending |
+| POL-06 | Phase 14 | Pending |
+| MCPS-01 | Phase 15 | Pending |
+| MCPS-02 | Phase 15 | Pending |
+| MCPS-03 | Phase 15 | Pending |
+| MCPS-04 | Phase 15 | Pending |
+| MCPS-05 | Phase 15 | Pending |
+| MCPS-06 | Phase 15 | Pending |
+| RESS-01 | Phase 16 | Pending |
+| RESS-02 | Phase 16 | Pending |
+| RESS-03 | Phase 16 | Pending |
+| RESS-04 | Phase 16 | Pending |
+| RESS-05 | Phase 16 | Pending |
+| SESS-01 | Phase 17 | Pending |
+| SESS-02 | Phase 17 | Pending |
+| SESS-03 | Phase 17 | Pending |
+| SESS-04 | Phase 17 | Pending |
+| SESS-05 | Phase 17 | Pending |
+| SESS-06 | Phase 17 | Pending |
+| CTXP-01 | Phase 17 | Pending |
+| CTXP-02 | Phase 17 | Pending |
+| CTXP-03 | Phase 17 | Pending |
+| CTXP-04 | Phase 17 | Pending |
+| SUMP-01 | Phase 17 | Pending |
+| SUMP-02 | Phase 17 | Pending |
+| SUMP-03 | Phase 17 | Pending |
+| MCPC-01 | Phase 18 | Pending |
+| MCPC-02 | Phase 18 | Pending |
+| MCPC-03 | Phase 18 | Pending |
+| MCPC-04 | Phase 18 | Pending |
+| MCPC-05 | Phase 18 | Pending |
+| MCPC-06 | Phase 18 | Pending |
+| RETR-01 | Phase 18 | Pending |
+| RETR-02 | Phase 18 | Pending |
+| RETR-03 | Phase 18 | Pending |
+| RETR-04 | Phase 18 | Pending |
+| RETR-05 | Phase 18 | Pending |
+| RETR-06 | Phase 18 | Pending |
+| EMBP-01 | Phase 19 | Pending |
+| EMBP-02 | Phase 19 | Pending |
+| OBSV-01 | Phase 19 | Pending |
+| OBSV-02 | Phase 19 | Pending |
+| OBSV-03 | Phase 19 | Pending |
+| OBSV-04 | Phase 19 | Pending |
 
 **Coverage:**
 - v0.11.0 requirements: 48 total
-- Mapped to phases (provisional, finalized by `ROADMAP.md`): 48
+- Mapped to phases (finalized by ROADMAP.md 2026-05-29): 48/48
 - Unmapped: 0 ✓
 
 ---
 *Requirements defined: 2026-05-29*
-*Last updated: 2026-05-29 after research synthesis (STACK/FEATURES/ARCHITECTURE/PITFALLS → SUMMARY).*
+*Last updated: 2026-05-29 — traceability finalized by roadmap (phases 14–19).*
