@@ -1,5 +1,54 @@
 # Project Retrospective: local-llms
 
+## Milestone: v0.10.0 — Cognitive Primitives — Structured outputs · Reranker · Embeddings hardening · Cost obs + Responses API
+
+**Shipped:** 2026-05-29
+**Phases:** 4 (10–13) | **Plans:** n/a (freeform single-shot commit per phase) | **Requirements:** 26/26
+**Timeline:** 2026-05-29 (single-day milestone; bootstrap commit + 4 phase commits)
+**Repo stats:** 4 commits · 48 files changed · +4,187 / -65 LOC · 4 `feat` + 0 `fix` commits
+
+### What Was Built
+
+Capacidades cognitivas reusables sobre el router v0.9.0 — *primitives, not solutions*. Cuatro piezas que cierran gaps recurrentes en clientes modernos: (a) JSON mode con AJV + repair retry (Phase 10), (b) reranker `/v1/rerank` Cohere-compat sobre cross-encoders vía Ollama (Phase 11), (c) embeddings cache + dims contract + métricas (Phase 12), (d) cost telemetry `cost_cents` + `X-Cost-Cents` header + `cost_per_agent_daily` view + minimal `/v1/responses` no-stream surface (Phase 13 — cierra el n8n "Message a Model" 404 permanentemente).
+
+### What Worked
+
+- **Freeform single-shot pattern.** Each phase shipped as ONE atomic `feat(NN):` commit with implementation + tests + smoke section + docs. 4 commits total, no per-phase planning artifacts. The pattern fits when phases are small-scope (5-10 requirements each) and independently shippable — the GSD discipline of v0.9.0 (76 reqs / 55 plans / 112 tasks across 9 phases) would be overkill here. Pragmatic choice for the milestone's scale.
+- **Canonical seam paid off again.** `/v1/responses` (Phase 13) reused `adapter.chatCompletionsCanonical` via a Responses↔canonical translator pair — no duplication of the 800-LOC chat-completions pipeline. Same plumbing (auth, breaker, semaphore, idempotency, request_log, X-Cost-Cents) shared end-to-end. The fact that adding a third wire surface needed ~370 LOC (responses.ts) + ~50 LOC translator is the dividend on the v0.9.0 canonical investment.
+- **Registry capability gates kept new endpoints honest.** `json_mode` (Phase 10), `rerank` (Phase 11), `dims` (Phase 12), `chat` (RESP-04 in Phase 13) — every new behavior gets a registry capability + a route-side gate + an integration test asserting the 400 envelope. Adding the rerank-only model `bge-reranker-local` immediately broke the chat tests (caught at type-check time via the discriminated enum) — that's the test we want.
+- **Cost helper as pure function.** `computeCostCents(entry, tokensIn, tokensOut)` lives in its own module with 8 unit tests covering null contract + formula derivation. Wiring it into 5 routes (chat-completions stream/non-stream/follower, messages stream/non-stream/follower, embeddings, rerank, responses) was a one-line call each — the helper's purity made the cost-of-coverage trivial.
+- **Smoke section template.** The Phase 12 + 13 smoke sections in `bin/smoke-test-router.sh` follow the exact same pattern as Phase 7/8 — scrape /metrics → make a call → scrape /metrics → assert delta. Reusable mental model, easy to extend for v0.11.
+
+### What Was Inefficient
+
+- **Discovered Fastify v5 onSend timing the hard way.** First Phase 13 implementation stamped `req.computedCostCents` in the route's `finally` block — but Fastify v5 fires `onSend` SYNCHRONOUSLY inside `reply.send()`, BEFORE the try/finally's return-trigger. Required restructuring all 5 routes to stamp the value BEFORE `reply.send()`. Cost: ~30 min of debug + 5 mechanical refactors. Lesson: when wiring response headers from a hook, verify hook timing against `reply.send()` semantics with a sentinel BEFORE committing.
+- **Fake adapters returning 1 vector for batch input.** Three test fixtures (`x-model-backend.test.ts`, `cloud-max-tokens-integration.test.ts`, `idempotency-integration.test.ts`) had `async embeddings() { return data: [{ ... }] }` — single result regardless of input shape. Worked pre-Phase-12 because the route was a passthrough; broke immediately when the new route added a count-mismatch defense. Lesson: when widening a route's defenses, audit fake adapters in the same change.
+- **Embeddings models missing `dims` in test fixtures.** Making `dims` required on the registry (the right call — that's the EMB-H02 contract) immediately broke 6 test YAMLs that had `capabilities: [embeddings]` without `dims:`. Mechanical fix but caught only by running the full suite — a stricter unit test on the registry schema would have surfaced this sooner. Lesson: when adding a `superRefine` rule, prebake a unit test against a deliberate violating fixture before touching the consuming routes.
+- **Two cloud model pricing values are placeholders.** `models.yaml` declares $0.50 / $1.50 per 1M tokens for `gpt-oss:120b-cloud` and $0.10 / $0.30 for `gpt-oss:20b-cloud` — conservative guesses, not Ollama's published rates (Ollama Cloud doesn't publish per-model pricing as of 2026-05). The router computes cost faithfully but the absolute numbers are operator-set. Acknowledged in `models.yaml` comment + STATE.md deferred section — not a defect, just incomplete data.
+
+### Patterns Established
+
+- **Single-shot freeform commit per phase** (this milestone): full implementation + tests + smoke + docs in one `feat(NN):` commit. Best for small-scope phases. Documented in the close-time audit so future milestones can pick the right pattern by scope.
+- **Compute-cost-before-send + record-cost-in-finally**: the route stamps `req.computedCostCents` BEFORE `reply.send()` (header path) AND passes the same value to `safeRecord(...)` in finally (request_log row path). Same value, two emissions; cost helper is called twice but it's pure + cheap.
+- **`X-Cost-Cents` survives the edge**: response header pattern that survives Cloudflare Tunnel + Traefik forward-headers — verified live for `big-cloud` through `https://local-llms.luishelguera.dev`. Trust the existing `X-Model-Backend` precedent: if Traefik passes one, it passes others.
+- **Drizzle migration journal as authoritative**: `db/migrations/meta/_journal.json` had to be updated alongside the new SQL files. Without that, drizzle's migrator ignores files not in the journal. Captured this as a pre-commit reminder in the migration template comments.
+
+### Key Lessons
+
+1. **Hook timing > intuition.** Fastify v5's `onSend` fires inside `reply.send()`, not after the route's promise resolves. When stamping per-request data for hooks, set it BEFORE `.send()`, not in `finally`. This is a Fastify-v5-specific behavior worth documenting at the project level.
+2. **Small phases want small ceremony.** v0.9.0's GSD discipline (4 docs per phase × 9 phases = 36 planning artifacts) was load-bearing for that scope. v0.10.0's 4 phases × 5-10 reqs each shipped cleanly as 4 commits with zero planning docs. The framework should accommodate both — and the choice is the operator's based on scope, not a default.
+3. **`/metrics` scraping IS the smoke oracle for counters.** The Phase 12 smoke section reads `router_embeddings_cache_total{result="hit"}` before AND after two identical calls, asserts the delta. This pattern is more reliable than parsing log lines and works for any prom-counter you add — make it the default smoke template for any new metric.
+4. **Cost numbers are operator data, not router data.** The router computes correctly from declared pricing. The pricing values themselves come from the operator's view of upstream rates (Ollama Cloud doesn't publish a stable table). Document this distinction in `models.yaml` + retrospective; don't pretend the placeholder numbers are real.
+5. **Migration files + schema columns + journal entry are an indivisible unit.** All three got added in this milestone (cost_cents column + cost_per_agent_daily view); forgetting any one would have meant a silent skip at boot. Future migrations should be code-reviewed as a tuple, not file-by-file.
+
+### Cost Observations
+
+- **Model mix:** primarily Claude Opus 4.7 for end-to-end milestone autonomy (planning, code-archeology, integration-test design, doc drafting). No sub-agent delegation needed at this scale — the milestone fit in a single conversation context.
+- **Sessions:** 1 session (this one). The user delegated full autonomy and the work completed end-to-end including milestone closure.
+- **Notable efficiency:** the canonical seam from v0.9.0 dropped Phase 13's `/v1/responses` cost from "another 800 LOC of route logic" to "370 LOC of route + 50 LOC of translator" — a real concrete dividend on the architectural choice made 20 days earlier.
+
+---
+
 ## Milestone: v0.9.0 — MVP — Router multi-backend con cloud fallback + observability + ops
 
 **Shipped:** 2026-05-28
@@ -60,3 +109,4 @@ Self-hosted OpenAI- and Anthropic-compatible HTTP router that unifies local GPU 
 | Milestone | Phases | Plans | Days | Commits | LOC delta | Notes |
 |-----------|--------|-------|------|---------|-----------|-------|
 | v0.9.0 | 9 | 55 | 20 | 498 | +116,415 | MVP — first ship; established the GSD discipline + smoke-as-oracle pattern |
+| v0.10.0 | 4 | n/a (freeform) | 1 | 4 | +4,187 | Cognitive Primitives — freeform single-shot pattern paid the dividends of v0.9.0's canonical seam (370 LOC of new route reuses 800 LOC of shared plumbing). Caught a Fastify v5 onSend timing quirk that v0.9.0 hadn't surfaced |

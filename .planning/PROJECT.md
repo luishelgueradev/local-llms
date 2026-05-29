@@ -10,13 +10,21 @@ Un endpoint único, estable y multi-protocolo para que los agentes del usuario c
 
 ## Current State
 
-**Shipped: v0.9.0 MVP (2026-05-28)** — 76/76 v1 requirements delivered across 9 phases / 55 plans / 112 tasks. Full archive in [`milestones/v0.9.0-ROADMAP.md`](./milestones/v0.9.0-ROADMAP.md) and [`MILESTONES.md`](./MILESTONES.md).
+**Shipped: v0.10.0 Cognitive Primitives (2026-05-29)** — 26/26 new requirements delivered across 4 phases (10–13) shipped as freeform single-shot `feat(NN):` commits.
 
-Consumed in production by the user's agents (n8n in a remote VPS over Cloudflare Tunnel `https://local-llms.luishelguera.dev`) and by the local Whisper sidecar via the same host. Workhorse local model: `qwen2.5:7b-instruct-q4_K_M` (alias `chat-local`). Cloud fallback: `gpt-oss:120b-cloud` / `gpt-oss:20b-cloud` via Ollama Cloud (alias `big-cloud`).
+- **JSON mode** with AJV validation + single-shot repair + `json_mode` capability gate
+- **`POST /v1/rerank`** Cohere/Jina-compatible cross-encoder endpoint (`bge-reranker-v2-m3` default via Ollama native `/api/rerank`)
+- **Embeddings cache** in Valkey (fail-open, 24h TTL, swap-invalidating key) + registry-enforced `dims` contract + 3 new Prometheus metrics
+- **`X-Cost-Cents`** response header + `cost_cents NUMERIC(10,4)` column + `cost_per_agent_daily` view (migrations 0003 + 0004)
+- **`POST /v1/responses`** minimal non-stream surface — closes the n8n "Message a Model" 404 gap permanently
+
+Full v0.10.0 archive in [`milestones/v0.10.0-ROADMAP.md`](./milestones/v0.10.0-ROADMAP.md) + audit + requirements traceability. Previous milestone (v0.9.0 MVP, shipped 2026-05-28) archived in [`milestones/v0.9.0-ROADMAP.md`](./milestones/v0.9.0-ROADMAP.md).
+
+Consumed in production by the user's agents (n8n in a remote VPS over Cloudflare Tunnel `https://local-llms.luishelguera.dev`) and by the local Whisper sidecar via the same host. Workhorse local model: `qwen2.5:7b-instruct-q4_K_M` (alias `chat-local`). Cloud fallback: `gpt-oss:120b-cloud` / `gpt-oss:20b-cloud` via Ollama Cloud (alias `big-cloud`). Cost telemetry: per-1M-token pricing for cloud models declared in `models.yaml` (placeholder rates until Ollama publishes formal pricing); operator updates as the rates firm up.
 
 ## Next Milestone Goals
 
-(Not yet defined — start with `/gsd:new-milestone`. Candidate themes from research backlog and v2 considerations: fine-tuning workflow integration, structured outputs / JSON-mode hardening, MCP-server surface for Claude clients, observability dashboards v2, multi-tenant when the single-user assumption breaks.)
+(Not yet defined — start with `/gsd:new-milestone`. Candidate themes from v0.10.0 backlog: `/v1/responses` streaming + tools, `/v1/audio/transcriptions` (Whisper passthrough — the user already has Whisper aparte), MCP-as-server surface (expose chat/embeddings/rerank as MCP tools), observability dashboards v2 with cost panels, multi-tenant when the single-user assumption breaks.)
 
 ## Requirements
 
@@ -63,33 +71,20 @@ Consumed in production by the user's agents (n8n in a remote VPS over Cloudflare
 - ✓ PostgreSQL 17 (usage + audit) — v0.9.0 / Phase 5
 - ✓ Traefik v3.7 reverse proxy con TLS + Tailscale-hostname routing — v0.9.0 / Phase 6
 
-### Active (v0.10.0 — Cognitive Primitives, in progress)
+### Validated (v0.10.0 — 2026-05-29)
+
+<!-- Shipped and confirmed valuable. Detailed traceability in milestones/v0.10.0-REQUIREMENTS.md. -->
 
 **Theme:** Capacidades cognitivas reutilizables sobre el router. *Primitives, not solutions* — RAG empresarial y memoria semántica son aplicaciones que se construyen ENCIMA, no DENTRO.
 
-**Phase 10 — Structured Outputs / JSON Mode (JSON-01..06)**
-- [ ] `response_format: {type: "json_object" | "json_schema"}` con AJV validation
-- [ ] Retry-with-repair (exactamente 1 retry con instrucción sintética)
-- [ ] Nueva capability `json_mode` en `models.yaml`
-- [ ] Métricas `router_json_validation_total{result}`
+- ✓ Structured outputs / JSON mode (Phase 10, JSON-01..06): AJV validation + 1-shot repair + `json_mode` capability + `router_json_validation_total{result}` counter
+- ✓ Reranker (Phase 11, RERANK-01..06): `POST /v1/rerank` Cohere/Jina-compat + `BackendAdapter.rerank()` seam + `bge-reranker-v2-m3` default via Ollama native `/api/rerank` + capability `rerank`
+- ✓ Embeddings hardening (Phase 12, EMB-H01..06): Valkey cache key=`hash(backend|backend_model|encoding_format|dimensions|input)` TTL configurable via `ROUTER_EMBED_CACHE_TTL_SEC` + registry-required `dims` enforcement + 3 new metrics + fail-open on Valkey
+- ✓ Cost observability + `/v1/responses` (Phase 13, COST-01..04 + RESP-01..04): `cost_cents NUMERIC(10,4)` column (migration 0003) + `X-Cost-Cents` header on success + `cost_per_agent_daily` view (migration 0004) + new `POST /v1/responses` minimal non-stream endpoint sharing all plumbing with chat-completions
 
-**Phase 11 — Reranker (RERANK-01..06)**
-- [ ] `POST /v1/rerank` Cohere/Jina-compat
-- [ ] `BackendAdapter.rerank()` seam
-- [ ] `bge-reranker-v2-m3` como modelo seed (alias `bge-reranker-local`)
-- [ ] Nueva capability `rerank`
+### Active (v0.11.0+ — TBD)
 
-**Phase 12 — Embeddings Hardening (EMB-H01..06)**
-- [ ] Cache Valkey por `hash(model+input)`, TTL configurable
-- [ ] `dims` declaradas en registry + enforcement en response
-- [ ] Métricas cache hit/miss + batch sizes + dims served
-- [ ] Cache fail-open (Valkey down → bypass + warn)
-
-**Phase 13 — Cost Observability + `/v1/responses` (COST-01..04, RESP-01..04)**
-- [ ] Columna `cost_cents` en `request_log` + `pricing:` en `models.yaml`
-- [ ] Header `X-Cost-Cents`
-- [ ] View `cost_per_agent_daily`
-- [ ] `/v1/responses` no-stream (cierra el gap del nodo "Message a Model" de n8n)
+(Not yet defined. Candidate themes documented in MILESTONES.md / Next Milestone Goals section above.)
 
 ### Out of Scope
 
@@ -115,7 +110,8 @@ Consumed in production by the user's agents (n8n in a remote VPS over Cloudflare
 
 ## Phase Progress
 
-**Milestone v0.9.0 — all 9 phases shipped 2026-05-28.** See [`MILESTONES.md`](./MILESTONES.md) for the consolidated summary and [`milestones/v0.9.0-ROADMAP.md`](./milestones/v0.9.0-ROADMAP.md) for per-phase details.
+- **Milestone v0.10.0 Cognitive Primitives — all 4 phases shipped 2026-05-29.** See [`MILESTONES.md`](./MILESTONES.md) for the consolidated summary and [`milestones/v0.10.0-ROADMAP.md`](./milestones/v0.10.0-ROADMAP.md) for per-phase details.
+- **Milestone v0.9.0 MVP — all 9 phases shipped 2026-05-28.** Archived in [`milestones/v0.9.0-ROADMAP.md`](./milestones/v0.9.0-ROADMAP.md).
 
 ## Constraints
 
