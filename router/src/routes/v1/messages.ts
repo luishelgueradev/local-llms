@@ -62,6 +62,7 @@ import {
   type OutcomeContext,
   type RecordRequestOutcome,
 } from '../../metrics/recordOutcome.js';
+import { computeCostCents } from '../../cost/computeCostCents.js';
 
 /**
  * Permissive body schema. The translator's AnthropicMessagesRequestSchema is the
@@ -334,6 +335,15 @@ export function registerMessagesRoute(
                 : final?.error
                   ? deriveStatusClass(httpStatusFollow, false)
                   : deriveStatusClass(reply.statusCode, false);
+              // Phase 13 (v0.10.0 — COST-01): follower replays the leader's
+              // canonical stream — same token counts → same per-request cost.
+              const followerCost = final?.error
+                ? undefined
+                : computeCostCents({
+                    entry,
+                    tokensIn: final?.tokensIn,
+                    tokensOut: final?.tokensOut,
+                  }) ?? undefined;
               safeRecord({
                 protocol: 'anthropic',
                 route: req.url.split('?')[0] ?? req.url,
@@ -356,6 +366,7 @@ export function registerMessagesRoute(
                 upstreamMessageId: followerUpstreamMessageId ?? final?.upstreamMessageId,
                 // 08-REVIEW CR-01: persist Idempotency-Key for the follower path.
                 idempotencyKey,
+                costCents: followerCost,
                 timestamp: new Date(),
               });
             };
@@ -563,6 +574,17 @@ export function registerMessagesRoute(
                 ? 'client_disconnect'
                 : undefined;
             const errorMessage = hasUpstreamError ? final!.error!.message : undefined;
+            // Phase 13 (v0.10.0 — COST-01): record cost on the Anthropic stream
+            // path too. X-Cost-Cents header is not emittable for streams (SSE
+            // headers flushed before tokens are known) — the request_log row is
+            // the only durable cost record.
+            const costCents = hasUpstreamError
+              ? undefined
+              : computeCostCents({
+                  entry,
+                  tokensIn: final?.tokensIn,
+                  tokensOut: final?.tokensOut,
+                }) ?? undefined;
             safeRecord({
               protocol: 'anthropic',
               route: req.url.split('?')[0] ?? req.url,
@@ -581,6 +603,7 @@ export function registerMessagesRoute(
               upstreamMessageId: final?.upstreamMessageId,
               // 08-REVIEW CR-01: persist Idempotency-Key for the stream-end path.
               idempotencyKey,
+              costCents,
               timestamp: new Date(),
             });
           };
@@ -631,6 +654,17 @@ export function registerMessagesRoute(
         // The canonical object is NOT mutated — downstream observers (Phase 5
         // logging, tests) still see canonical.model verbatim.
         req.raw.socket?.off('close', onClose);
+        // Phase 13 (v0.10.0 — COST-02): stamp X-Cost-Cents header source BEFORE
+        // reply.send() — Fastify v5 fires onSend synchronously inside .send().
+        const earlyCost =
+          computeCostCents({
+            entry,
+            tokensIn: canonicalResult.usage.input_tokens,
+            tokensOut: canonicalResult.usage.output_tokens,
+          }) ?? undefined;
+        if (earlyCost !== undefined) {
+          req.computedCostCents = earlyCost;
+        }
         const wireBody = canonicalToAnthropicResponse(canonicalResult, {
           displayModel: entry.name,
         });
@@ -691,6 +725,18 @@ export function registerMessagesRoute(
         // anything else that throws in the stream branch outer scope.
         if (body.stream !== true || caughtErr) {
           const httpStatus = caughtErr ? mapToHttpStatus(caughtErr) : reply.statusCode;
+          const tokensIn = caughtErr ? undefined : canonicalResult?.usage.input_tokens;
+          const tokensOut = caughtErr ? undefined : canonicalResult?.usage.output_tokens;
+          // Phase 13 (v0.10.0 — COST-01/02): Anthropic surface uses the same
+          // computeCostCents helper because pricing is per-(input,output) tokens
+          // regardless of the wire protocol the client speaks. Stamp X-Cost-Cents
+          // via req.computedCostCents BEFORE the function returns.
+          const costCents = caughtErr
+            ? undefined
+            : computeCostCents({ entry, tokensIn, tokensOut }) ?? undefined;
+          if (costCents !== undefined) {
+            req.computedCostCents = costCents;
+          }
           safeRecord({
             protocol: 'anthropic',
             route: req.url.split('?')[0] ?? req.url,
@@ -701,8 +747,8 @@ export function registerMessagesRoute(
               : deriveStatusClass(reply.statusCode, false),
             httpStatus,
             durationMs: performance.now() - (req._t0 ?? performance.now()),
-            tokensIn: caughtErr ? undefined : canonicalResult?.usage.input_tokens,
-            tokensOut: caughtErr ? undefined : canonicalResult?.usage.output_tokens,
+            tokensIn,
+            tokensOut,
             errorCode: caughtErr ? mapErrorToCode(caughtErr) : undefined,
             errorMessage: caughtErr?.message,
             agentId: req.agentId,
@@ -716,6 +762,7 @@ export function registerMessagesRoute(
             // 08-REVIEW CR-01: persist Idempotency-Key for the outer-finally
             // path (non-stream success + thrown errors).
             idempotencyKey,
+            costCents,
             timestamp: new Date(),
           });
         }

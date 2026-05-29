@@ -22,6 +22,20 @@
       "when": 1779487200000,
       "tag": "0002_request_log_idempotency_key",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1779609600000,
+      "tag": "0003_request_log_cost_cents",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1779696000000,
+      "tag": "0004_cost_per_agent_daily",
+      "breakpoints": true
     }
   ]
 }

@@ -33,6 +33,7 @@ import {
   type OutcomeContext,
   type RecordRequestOutcome,
 } from '../../metrics/recordOutcome.js';
+import { computeCostCents } from '../../cost/computeCostCents.js';
 
 /**
  * OpenAI chat-completions request body. Required fields are zod-validated;
@@ -343,6 +344,40 @@ export function registerChatCompletionsRoute(
               const { body: cachedBody, upstreamMessageId } =
                 await opts.idempotency.awaitNonStreamResult(idempotencyKey, req.id);
               followerUpstreamMessageId = upstreamMessageId;
+              // Phase 13 (v0.10.0 — COST-01/02): the cached wire body carries
+              // the leader's `usage` block. Reconstruct a canonical-shape result
+              // so the outer-finally's safeRecord computes cost from real tokens
+              // rather than recording NULL. The wire body uses OpenAI's snake_case
+              // `prompt_tokens` / `completion_tokens` — translate them.
+              const cb = cachedBody as {
+                usage?: { prompt_tokens?: number; completion_tokens?: number };
+              };
+              if (cb.usage) {
+                canonicalResult = {
+                  id: '',
+                  type: 'message',
+                  role: 'assistant',
+                  content: [],
+                  model: entry.backend_model,
+                  stop_reason: null,
+                  stop_sequence: null,
+                  usage: {
+                    input_tokens: cb.usage.prompt_tokens ?? 0,
+                    output_tokens: cb.usage.completion_tokens ?? 0,
+                  },
+                };
+                // Stamp X-Cost-Cents header before reply.send() (Fastify onSend
+                // fires synchronously inside .send()).
+                const followerCost =
+                  computeCostCents({
+                    entry,
+                    tokensIn: canonicalResult.usage.input_tokens,
+                    tokensOut: canonicalResult.usage.output_tokens,
+                  }) ?? undefined;
+                if (followerCost !== undefined) {
+                  req.computedCostCents = followerCost;
+                }
+              }
               req.raw.socket?.off('close', onClose);
               return reply.send(cachedBody);
             }
@@ -392,6 +427,20 @@ export function registerChatCompletionsRoute(
                 : final?.error
                   ? deriveStatusClass(httpStatusFollow, false)
                   : deriveStatusClass(reply.statusCode, false);
+              // Phase 13 (v0.10.0 — COST-01): follower replays the same canonical
+              // events so its token counts are equivalent to the leader's. Recompute
+              // cost here rather than fetch the leader's cached value — the formula
+              // is local + cheap. The cost_per_agent_daily view SUM(cost_cents) over
+              // GROUP BY upstream_message_id thus reports (1 leader + N followers) ×
+              // per-request cost, which matches request_count semantics in the same
+              // view (N+1 served requests, N+1 cost rows).
+              const followerCost = final?.error
+                ? undefined
+                : computeCostCents({
+                    entry,
+                    tokensIn: final?.tokensIn,
+                    tokensOut: final?.tokensOut,
+                  }) ?? undefined;
               safeRecord({
                 protocol: 'openai',
                 route: req.url.split('?')[0] ?? req.url,
@@ -415,6 +464,7 @@ export function registerChatCompletionsRoute(
                 // 08-REVIEW CR-01: persist Idempotency-Key so dedup verification
                 // queries (smoke-test-cloud.sh + README) find the follower rows.
                 idempotencyKey,
+                costCents: followerCost,
                 timestamp: new Date(),
               });
             };
@@ -622,6 +672,19 @@ export function registerChatCompletionsRoute(
                 ? 'client_disconnect'
                 : undefined;
             const errorMessage = hasUpstreamError ? final!.error!.message : undefined;
+            // Phase 13 (v0.10.0 — COST-01): record cost on the streaming path
+            // too. The X-Cost-Cents header CANNOT be sent on streamed responses
+            // (SSE headers are flushed before the first chunk, long before tokens
+            // are known) — the request_log row is the only durable record of
+            // streamed-request cost. The dashboard view cost_per_agent_daily
+            // sums this faithfully across stream + non-stream alike.
+            const costCents = hasUpstreamError
+              ? undefined
+              : computeCostCents({
+                  entry,
+                  tokensIn: final?.tokensIn,
+                  tokensOut: final?.tokensOut,
+                }) ?? undefined;
             safeRecord({
               protocol: 'openai',
               route: req.url.split('?')[0] ?? req.url,
@@ -643,6 +706,7 @@ export function registerChatCompletionsRoute(
               // 08-REVIEW CR-01: persist Idempotency-Key so dedup verification
               // queries can group leader + follower rows on this column.
               idempotencyKey,
+              costCents,
               timestamp: new Date(),
             });
           };
@@ -749,6 +813,18 @@ export function registerChatCompletionsRoute(
         // breaker's `log.warn`; the route is unaffected.
         void opts.breaker.recordSuccess(entry.backend);
         req.raw.socket?.off('close', onClose);
+        // Phase 13 (v0.10.0 — COST-02): stamp req.computedCostCents BEFORE
+        // reply.send() — Fastify v5 triggers onSend synchronously inside
+        // .send(), before this function's outer finally runs.
+        const earlyCost =
+          computeCostCents({
+            entry,
+            tokensIn: canonicalResult.usage.input_tokens,
+            tokensOut: canonicalResult.usage.output_tokens,
+          }) ?? undefined;
+        if (earlyCost !== undefined) {
+          req.computedCostCents = earlyCost;
+        }
         const wireBody = canonicalToOpenAIResponse(canonicalResult, {
           displayModel: entry.name,
         });
@@ -826,6 +902,20 @@ export function registerChatCompletionsRoute(
           // Status / http_status from reply (set by reply.send for success or by
           // the centralized error handler for re-thrown errors).
           const httpStatus = caughtErr ? mapToHttpStatus(caughtErr) : reply.statusCode;
+          const tokensIn = caughtErr ? undefined : canonicalResult?.usage.input_tokens;
+          const tokensOut = caughtErr ? undefined : canonicalResult?.usage.output_tokens;
+          // Phase 13 (v0.10.0 — COST-01/02): compute cost_cents on the success
+          // path; stamp req.computedCostCents BEFORE the function returns so the
+          // onSend hook in app.ts (which fires AFTER this finally) can read it
+          // and emit the X-Cost-Cents header. For followers, tokens are unknown
+          // here (the cached body owns them) — costCents stays undefined for
+          // those rows; the leader's row carries the chargeable value.
+          const costCents = caughtErr
+            ? undefined
+            : computeCostCents({ entry, tokensIn, tokensOut }) ?? undefined;
+          if (costCents !== undefined) {
+            req.computedCostCents = costCents;
+          }
           safeRecord({
             protocol: 'openai',
             route: req.url.split('?')[0] ?? req.url,
@@ -836,8 +926,8 @@ export function registerChatCompletionsRoute(
               : deriveStatusClass(reply.statusCode, false),
             httpStatus,
             durationMs: performance.now() - (req._t0 ?? performance.now()),
-            tokensIn: caughtErr ? undefined : canonicalResult?.usage.input_tokens,
-            tokensOut: caughtErr ? undefined : canonicalResult?.usage.output_tokens,
+            tokensIn,
+            tokensOut,
             errorCode: caughtErr ? mapErrorToCode(caughtErr) : undefined,
             errorMessage: caughtErr?.message,
             agentId: req.agentId,
@@ -850,6 +940,7 @@ export function registerChatCompletionsRoute(
             // 08-REVIEW CR-01: persist Idempotency-Key for the outer-finally
             // path (non-stream success + thrown errors).
             idempotencyKey,
+            costCents,
             timestamp: new Date(),
           });
         }

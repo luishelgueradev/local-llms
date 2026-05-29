@@ -68,6 +68,7 @@ import {
   type CachedVector,
   type EmbeddingsCache,
 } from '../../embeddings/cache.js';
+import { computeCostCents } from '../../cost/computeCostCents.js';
 
 /**
  * OpenAI Embeddings request body. Pitfall E-1: `input` MUST be a non-empty
@@ -437,6 +438,19 @@ export function registerEmbeddingsRoute(
           usage: upstreamUsage,
         };
 
+        // Phase 13 (v0.10.0 — COST-02/04): stamp req.computedCostCents BEFORE
+        // reply.send() — Fastify v5 onSend fires synchronously inside .send().
+        // Outer finally still records the same cost to the request_log row.
+        const earlyCost =
+          computeCostCents({
+            entry,
+            tokensIn: result.usage?.prompt_tokens ?? 0,
+            tokensOut: 0,
+          }) ?? undefined;
+        if (earlyCost !== undefined) {
+          req.computedCostCents = earlyCost;
+        }
+
         // Plan 08-07 (ROUTE-12 / D-D5 / D-D6) — leader publishes the embeddings
         // response body so concurrent followers can replay it. Embedding
         // responses don't carry an Anthropic-style msg_<ulid>; we use the
@@ -478,6 +492,19 @@ export function registerEmbeddingsRoute(
         // safeRecord idempotency flag still protects against the (extremely
         // unlikely) double-fire if app.setErrorHandler also runs.
         const httpStatus = caughtErr ? mapToHttpStatus(caughtErr) : reply.statusCode;
+        const tokensIn = caughtErr ? undefined : result?.usage?.prompt_tokens ?? 0;
+        const tokensOut = caughtErr ? undefined : 0; // tokensOut: 0 (plan-verify grep gate)
+        // Phase 13 (v0.10.0 — COST-01/02/04): embeddings cost computed from
+        // upstream usage. For cloud-served embeddings the rate-card lives in
+        // entry.pricing; for local backends pricing is absent and the helper
+        // returns null → no header, no cost_cents column. Stamped on req before
+        // the function returns so onSend can emit X-Cost-Cents.
+        const costCents = caughtErr
+          ? undefined
+          : computeCostCents({ entry, tokensIn, tokensOut }) ?? undefined;
+        if (costCents !== undefined) {
+          req.computedCostCents = costCents;
+        }
         safeRecord({
           protocol: 'openai',
           route: req.url.split('?')[0] ?? req.url,
@@ -488,12 +515,12 @@ export function registerEmbeddingsRoute(
             : deriveStatusClass(reply.statusCode, false),
           httpStatus,
           durationMs: performance.now() - (req._t0 ?? performance.now()),
-          tokensIn: caughtErr ? undefined : result?.usage?.prompt_tokens ?? 0,
           // 07-RESEARCH Open Question 3 — emit `tokensOut: 0` (not NULL) so dashboards
           // aggregating SUM(tokens_out) over request_log include embedding rows without
           // a COALESCE. Error path leaves it undefined → NULL column (canonical pattern
           // shared with chat-completions.ts).
-          tokensOut: caughtErr ? undefined : 0, // tokensOut: 0 (plan-verify grep gate)
+          tokensIn,
+          tokensOut,
           errorCode: caughtErr ? mapErrorToCode(caughtErr) : undefined,
           errorMessage: caughtErr?.message,
           agentId: req.agentId,
@@ -503,6 +530,7 @@ export function registerEmbeddingsRoute(
           upstreamMessageId: followerUpstreamMessageId,
           // 08-REVIEW CR-01: persist Idempotency-Key for dedup verification.
           idempotencyKey,
+          costCents,
           timestamp: new Date(),
         });
       }

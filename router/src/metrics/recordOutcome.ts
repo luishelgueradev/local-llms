@@ -81,6 +81,16 @@ export interface OutcomeContext {
    * Undefined when the request did not carry the header (vast majority).
    */
   idempotencyKey?: string;
+  /**
+   * Phase 13 (v0.10.0 — COST-01): per-request cost in cents, as a NUMERIC(10,4)
+   * string (e.g. "0.0010"). Undefined when the route did NOT compute a cost —
+   * either the model has no pricing declared (local backends) or the request
+   * failed before tokens were known. The request_log row stores null in either
+   * absent-or-undefined case. The route computes via computeCostCents() before
+   * calling this helper, so the cost column stays consistent with the X-Cost-Cents
+   * response header (both derived from the same source).
+   */
+  costCents?: string;
   timestamp: Date;
 }
 
@@ -249,6 +259,13 @@ export function makeRecordRequestOutcome(deps: RecordRequestOutcomeDeps) {
       // for both leader and follower rows; null for the (vast) majority of
       // requests that don't carry the header.
       idempotency_key: ctx.idempotencyKey ?? null,
+      // Phase 13 (v0.10.0 — COST-01): cost in cents as NUMERIC(10,4) string;
+      // null when the model has no pricing or the request failed before tokens
+      // were known. The route computes this via computeCostCents() before
+      // calling safeRecord — the helper does NOT compute it here because it
+      // doesn't have the registry entry in scope and the route's onSend hook
+      // needs the same value to stamp X-Cost-Cents.
+      cost_cents: ctx.costCents ?? null,
     };
     bufferedWriter.push(row);
   };

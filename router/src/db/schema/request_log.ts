@@ -14,7 +14,7 @@
 //   for the "debug a runaway agent" use case (the literal use case in
 //   PROJECT.md), and status_class for error filtering.
 import { sql } from 'drizzle-orm';
-import { index, integer, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { index, integer, numeric, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
 
 export const requestLog = pgTable(
   'request_log',
@@ -44,6 +44,15 @@ export const requestLog = pgTable(
     // messages / embeddings — operators filter on this column when verifying
     // dedup (smoke-test-cloud.sh / smoke-test-router.sh / README "verify dedup").
     idempotency_key: text('idempotency_key'),
+    // Phase 13 (v0.10.0 — COST-01): per-request cost in cents. NUMERIC(10,4) so we
+    // can represent sub-cent costs (e.g. 100 tokens at $0.10/1M = 0.001 cents).
+    // Drizzle's numeric() maps to `string | null` in TypeScript — never `number` —
+    // to preserve the exact decimal representation across the SQL/JS boundary.
+    // NULL when entry.pricing is undefined (typically local backends); computed
+    // from (tokens_in × input_per_1m + tokens_out × output_per_1m) / 10_000 when
+    // pricing is declared. computeCostCents() in src/cost/computeCostCents.ts is
+    // the single source of the formula.
+    cost_cents: numeric('cost_cents', { precision: 10, scale: 4 }),
   },
   (t) => ({
     // Baseline btree indexes per D-D1. Tune if/when volume warrants

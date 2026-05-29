@@ -46,6 +46,7 @@ import {
   type OutcomeContext,
   type RecordRequestOutcome,
 } from '../../metrics/recordOutcome.js';
+import { computeCostCents } from '../../cost/computeCostCents.js';
 
 /**
  * Cohere-compatible rerank body. `query` MUST be non-empty; `documents` MUST be a
@@ -177,6 +178,18 @@ export function registerRerankRoute(app: FastifyInstance, opts: RegisterRerankOp
         void opts.breaker.recordSuccess(entry.backend);
         req.raw.socket?.off('close', onClose);
 
+        // Phase 13 (v0.10.0 — COST-02/04): stamp X-Cost-Cents header source
+        // BEFORE reply.send() (onSend fires synchronously inside .send()).
+        const earlyCost =
+          computeCostCents({
+            entry,
+            tokensIn: result.usage?.total_tokens ?? 0,
+            tokensOut: 0,
+          }) ?? undefined;
+        if (earlyCost !== undefined) {
+          req.computedCostCents = earlyCost;
+        }
+
         if (idempotencyKey && idempotencyRole === 'leader' && opts.idempotency) {
           try {
             await opts.idempotency.publishNonStream(idempotencyKey, wireBody, undefined);
@@ -202,6 +215,20 @@ export function registerRerankRoute(app: FastifyInstance, opts: RegisterRerankOp
         safeRelease();
 
         const httpStatus = caughtErr ? mapToHttpStatus(caughtErr) : reply.statusCode;
+        // Rerank: total_tokens covers BOTH the query and the documents — emit it as tokensIn.
+        // Mirror embeddings.ts pattern: tokensOut: 0 (not NULL) so SUM aggregations stay clean.
+        const tokensIn = caughtErr ? undefined : result?.usage?.total_tokens ?? 0;
+        const tokensOut = caughtErr ? undefined : 0;
+        // Phase 13 (v0.10.0 — COST-01/02/04): rerank cost computed from upstream
+        // total_tokens × input_per_1m. Local rerankers (no pricing) → null → no
+        // header + NULL column; cloud rerankers (when Ollama Cloud adds the
+        // capability + bills it) compute via the same helper.
+        const costCents = caughtErr
+          ? undefined
+          : computeCostCents({ entry, tokensIn, tokensOut }) ?? undefined;
+        if (costCents !== undefined) {
+          req.computedCostCents = costCents;
+        }
         safeRecord({
           protocol: 'openai',
           route: req.url.split('?')[0] ?? req.url,
@@ -212,16 +239,15 @@ export function registerRerankRoute(app: FastifyInstance, opts: RegisterRerankOp
             : deriveStatusClass(reply.statusCode, false),
           httpStatus,
           durationMs: performance.now() - (req._t0 ?? performance.now()),
-          // Rerank: total_tokens covers BOTH the query and the documents — emit it as tokensIn.
-          // Mirror embeddings.ts pattern: tokensOut: 0 (not NULL) so SUM aggregations stay clean.
-          tokensIn: caughtErr ? undefined : result?.usage?.total_tokens ?? 0,
-          tokensOut: caughtErr ? undefined : 0,
+          tokensIn,
+          tokensOut,
           errorCode: caughtErr ? mapErrorToCode(caughtErr) : undefined,
           errorMessage: caughtErr?.message,
           agentId: req.agentId,
           requestId: req.id,
           upstreamMessageId: followerUpstreamMessageId,
           idempotencyKey,
+          costCents,
           timestamp: new Date(),
         });
       }

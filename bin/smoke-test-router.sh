@@ -1921,11 +1921,119 @@ fi
 echo ""
 echo "[smoke-test-router] === Phase 12 section complete ==="
 
+# -----------------------------------------------------------------------------
+# Phase 13 — Cost observability + /v1/responses (COST-01..04, RESP-01..04)
+# -----------------------------------------------------------------------------
+# Live verification:
+#   1. /v1/responses happy path — Responses-shape body returned.
+#   2. /v1/responses stream:true rejected with structured envelope.
+#   3. /v1/responses capability gate — embeddings model → 400.
+#   4. X-Cost-Cents header present on local chat call (when pricing declared) OR
+#      absent (when no pricing). Smoke runs against the local model used elsewhere
+#      so the header is expected absent for the local path.
+#   5. request_log cost_cents column exists + nullable (DDL check).
+#   6. cost_per_agent_daily view exists + is queryable.
+echo ""
+echo "[smoke-test-router] === Phase 13 — Cost + /v1/responses (COST-01..04, RESP-01..04) ==="
+
+# 1. /v1/responses happy path against the local chat model.
+P13_RESP=$(curl -fsS -X POST "${ROUTER_URL}/v1/responses" \
+  -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+  -H "content-type: application/json" \
+  -H "X-Agent-Id: smoke-phase-13" \
+  -d "$(printf '{"model":"%s","input":"reply with the single word OK"}' "${MODEL}")" 2>/dev/null || echo "")
+P13_RESP_OBJ=$(echo "${P13_RESP}" | python3 -c 'import sys, json; print(json.load(sys.stdin).get("object", "MISSING"))' 2>/dev/null || echo "PARSE_ERR")
+if [[ "${P13_RESP_OBJ}" == "response" ]]; then
+  pass "Phase 13: POST /v1/responses → 200 + object=\"response\" (RESP-01)"
+else
+  fail "Phase 13: /v1/responses returned object=${P13_RESP_OBJ}; body head: $(echo "${P13_RESP}" | head -c 300)"
+fi
+
+# Output shape: output[0].type=message, content[0].type=output_text.
+P13_OUT_TYPE=$(echo "${P13_RESP}" | python3 -c 'import sys, json; d=json.load(sys.stdin); print(d["output"][0]["type"])' 2>/dev/null || echo "MISSING")
+if [[ "${P13_OUT_TYPE}" == "message" ]]; then
+  pass "Phase 13: /v1/responses output[0].type=\"message\" (RESP-01)"
+else
+  fail "Phase 13: /v1/responses output[0].type=${P13_OUT_TYPE}"
+fi
+
+P13_CONTENT_TYPE=$(echo "${P13_RESP}" | python3 -c 'import sys, json; d=json.load(sys.stdin); print(d["output"][0]["content"][0]["type"])' 2>/dev/null || echo "MISSING")
+if [[ "${P13_CONTENT_TYPE}" == "output_text" ]]; then
+  pass "Phase 13: /v1/responses output[0].content[0].type=\"output_text\" (RESP-01)"
+else
+  fail "Phase 13: /v1/responses content type=${P13_CONTENT_TYPE}"
+fi
+
+# 2. stream:true → 400 with responses_stream_unsupported code.
+P13_STREAM_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST "${ROUTER_URL}/v1/responses" \
+  -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+  -H "content-type: application/json" \
+  -d "$(printf '{"model":"%s","input":"x","stream":true}' "${MODEL}")")
+if [[ "${P13_STREAM_STATUS}" == "400" ]]; then
+  pass "Phase 13: /v1/responses stream:true → 400 (deferred to v0.11)"
+else
+  fail "Phase 13: /v1/responses stream:true returned ${P13_STREAM_STATUS} (expected 400)"
+fi
+
+# 3. Capability gate — embeddings-only model on /v1/responses → 400.
+P13_CAP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST "${ROUTER_URL}/v1/responses" \
+  -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+  -H "content-type: application/json" \
+  -d '{"model":"bge-m3-ollama","input":"x"}')
+if [[ "${P13_CAP_STATUS}" == "400" ]]; then
+  pass "Phase 13: /v1/responses capability gate — embeddings-only model returns 400 (RESP-04)"
+else
+  fail "Phase 13: /v1/responses capability gate returned ${P13_CAP_STATUS} (expected 400)"
+fi
+
+# 4. X-Cost-Cents header behavior — local model (no pricing) should NOT have it.
+P13_HEADERS=$(curl -sSi -X POST "${ROUTER_URL}/v1/chat/completions" \
+  -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+  -H "content-type: application/json" \
+  -d "$(printf '{"model":"%s","messages":[{"role":"user","content":"OK"}]}' "${MODEL}")" 2>/dev/null | head -50)
+if echo "${P13_HEADERS}" | grep -qi '^x-cost-cents:'; then
+  fail "Phase 13: local model emitted X-Cost-Cents header (expected absent for unpriced model)"
+else
+  pass "Phase 13: local model does NOT emit X-Cost-Cents header (COST-02 — header absent when pricing null)"
+fi
+
+# 5. request_log.cost_cents column exists (Postgres DDL check).
+if docker compose ps postgres 2>/dev/null | grep -q 'Up\|running'; then
+  P13_COL=$(docker compose exec -T postgres psql -U app -d router -tA \
+    -c "SELECT column_name, data_type FROM information_schema.columns WHERE table_name='request_log' AND column_name='cost_cents';" 2>/dev/null || echo "")
+  if echo "${P13_COL}" | grep -q 'cost_cents|numeric'; then
+    pass "Phase 13: request_log.cost_cents column exists (NUMERIC type — COST-01 migration applied)"
+  else
+    fail "Phase 13: request_log.cost_cents column NOT found — migration 0003 may not have run; query returned: ${P13_COL}"
+  fi
+
+  # 6. cost_per_agent_daily view exists + queryable.
+  P13_VIEW_ROWS=$(docker compose exec -T postgres psql -U app -d router -tA \
+    -c "SELECT 1 FROM information_schema.views WHERE table_name='cost_per_agent_daily';" 2>/dev/null || echo "")
+  if [[ "${P13_VIEW_ROWS}" == "1" ]]; then
+    pass "Phase 13: cost_per_agent_daily view exists (COST-03 migration 0004 applied)"
+  else
+    fail "Phase 13: cost_per_agent_daily view NOT found — migration 0004 may not have run"
+  fi
+  # Verify the view is actually queryable (catches malformed view DDL even if it
+  # exists in information_schema).
+  if docker compose exec -T postgres psql -U app -d router -c "SELECT * FROM cost_per_agent_daily LIMIT 1;" >/dev/null 2>&1; then
+    pass "Phase 13: cost_per_agent_daily view is queryable (COST-03)"
+  else
+    fail "Phase 13: cost_per_agent_daily view exists but SELECT failed — DDL malformed?"
+  fi
+else
+  skip "Phase 13: postgres container not up — skipping DDL + view checks"
+fi
+
+echo ""
+echo "[smoke-test-router] === Phase 13 section complete ==="
+
 # Final summary
 echo ""
 echo "[smoke-test-router] ================================================================"
 if [[ "${FAILURES}" -eq 0 ]]; then
-  echo "[smoke-test-router]  Phase 2/3/4/5/7/8/12 router verification: COMPLETE."
+  echo "[smoke-test-router]  Phase 2/3/4/5/7/8/12/13 router verification: COMPLETE."
   echo "[smoke-test-router]  Model used : ${MODEL}"
   echo "[smoke-test-router]  Router URL : ${ROUTER_URL}"
   echo "[smoke-test-router]  Skipped    : ${SKIPS:-0} (vision sections require llama3.2-vision pull + outbound HTTPS)"

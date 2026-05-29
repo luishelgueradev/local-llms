@@ -106,11 +106,19 @@ models:
   # because cloud doesn't consume local VRAM; the registry envelope superRefine
   # sums them (0+0=0 ≤ 16). Concurrency: 4 — cloud's own rate-limit and quota
   # gates are the real cap; the per-backend semaphore backstops bursts.
+  # Phase 13 (v0.10.0 — COST-01): pricing is USD per 1M tokens. Operator should
+  # update these whenever Ollama publishes formal per-model pricing — placeholder
+  # values here are deliberately conservative (lean toward the higher end seen
+  # in public docs of comparable hosted models) so cost dashboards err on the
+  # side of "this costs more than nothing" rather than silently reporting zero.
   - name: gpt-oss:120b-cloud
     backend: ollama-cloud
     backend_url: https://ollama.com/v1
     backend_model: gpt-oss:120b-cloud
     capabilities: [chat, tools, json_mode]
+    pricing:
+      input_per_1m: 0.50
+      output_per_1m: 1.50
     vram_budget_gb: 0
     concurrency: 4
     max_model_len: 65536
@@ -121,6 +129,9 @@ models:
     backend_url: https://ollama.com/v1
     backend_model: gpt-oss:20b-cloud
     capabilities: [chat, tools, json_mode]
+    pricing:
+      input_per_1m: 0.10
+      output_per_1m: 0.30
     vram_budget_gb: 0
     concurrency: 4
     max_model_len: 32768
@@ -184,6 +195,10 @@ models:
     backend_url: https://ollama.com/v1
     backend_model: gpt-oss:120b-cloud
     capabilities: [chat, tools, json_mode]
+    # Phase 13 (v0.10.0 — COST-01): alias mirrors the canonical gpt-oss:120b-cloud pricing.
+    pricing:
+      input_per_1m: 0.50
+      output_per_1m: 1.50
     vram_budget_gb: 0
     concurrency: 4
     max_model_len: 65536

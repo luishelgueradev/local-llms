@@ -18,6 +18,7 @@ import { registerMessagesRoute } from './routes/v1/messages.js';
 import { registerCountTokensRoute } from './routes/v1/count-tokens.js';
 import { registerEmbeddingsRoute } from './routes/v1/embeddings.js';
 import { registerRerankRoute } from './routes/v1/rerank.js';
+import { registerResponsesRoute } from './routes/v1/responses.js';
 import type { AdapterFactory } from './backends/adapter.js';
 import { registerModelsRoute } from './routes/v1/models.js';
 import {
@@ -326,14 +327,15 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
     }
 
     // D-D4 — coverage policy. Record /v1/chat/completions, /v1/messages,
-    // /v1/embeddings (Plan 07-04), and /v1/rerank (Phase 11, RERANK-04) outcomes
-    // (but NOT /v1/messages/count_tokens and NOT 401 BearerAuthError — D-D4
-    // forbids recording pre-auth failures).
+    // /v1/embeddings (Plan 07-04), /v1/rerank (Phase 11, RERANK-04), and
+    // /v1/responses (Phase 13, RESP-03) outcomes (but NOT /v1/messages/count_tokens
+    // and NOT 401 BearerAuthError — D-D4 forbids recording pre-auth failures).
     const isRecordedRoute =
       (route === '/v1/chat/completions' ||
         route === '/v1/messages' ||
         route === '/v1/embeddings' ||
-        route === '/v1/rerank') &&
+        route === '/v1/rerank' ||
+        route === '/v1/responses') &&
       status !== 401;
     if (isRecordedRoute && req.__recorded !== true) {
       req.__recorded = true;
@@ -649,6 +651,15 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
     if (backend) {
       void reply.header('X-Model-Backend', backend);
     }
+    // Phase 13 (v0.10.0 — COST-02): X-Cost-Cents response header. Routes stamp
+    // req.computedCostCents BEFORE return reply.send(...) when entry.pricing was
+    // declared AND tokens were known. Header is intentionally absent when the
+    // value is undefined (local backends, pre-token failures) — that's the
+    // COST-02 contract ("header ausente cuando cost_cents es NULL").
+    const cost = req.computedCostCents;
+    if (cost !== undefined) {
+      void reply.header('X-Cost-Cents', cost);
+    }
     return payload;
   });
 
@@ -748,6 +759,19 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
 
   // Phase 11 (v0.10.0 — RERANK-01..06) — POST /v1/rerank.
   registerRerankRoute(app, {
+    registry: opts.registry,
+    makeAdapter: opts.makeAdapter ?? makeAdapterWithCloudKey,
+    semaphores,
+    recordOutcome,
+    breaker,
+    breakerCooldownSec,
+    idempotency,
+  });
+
+  // Phase 13 (v0.10.0 — RESP-01..04) — POST /v1/responses (minimal, non-stream).
+  // Shares the full plumbing: auth, rate-limit, breaker, semaphore, idempotency,
+  // request_log, X-Model-Backend, X-Cost-Cents. Streaming deferred to v0.11.
+  registerResponsesRoute(app, {
     registry: opts.registry,
     makeAdapter: opts.makeAdapter ?? makeAdapterWithCloudKey,
     semaphores,

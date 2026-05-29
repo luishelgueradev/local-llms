@@ -49,6 +49,21 @@ declare module 'fastify' {
      * dependency from middleware/ to config/.
      */
     resolvedBackend?: string;
+    /**
+     * Phase 13 (v0.10.0 — COST-02) — per-request cost in cents as a
+     * NUMERIC(10,4) string (e.g. "0.0010"). Stamped by each route handler
+     * BEFORE `return reply.send(...)` so the onSend hook in app.ts can read
+     * it and stamp the `X-Cost-Cents` response header.
+     *
+     * Undefined when the model has no pricing declared (typical for local
+     * backends) or when the request failed before tokens were known — in both
+     * cases the header is intentionally absent (COST-02 contract).
+     *
+     * Typed as string (not number) for parity with the `cost_cents` request_log
+     * column: Drizzle's numeric() maps to `string | null` to preserve the exact
+     * decimal representation across the SQL/JS boundary.
+     */
+    computedCostCents?: string;
   }
 }
 
