@@ -1,695 +1,708 @@
-# Architecture Research
+# Architecture Research: v0.11.0 Integration Map
 
-**Domain:** Self-hosted multi-runtime LLM gateway (single-host, single-user, NVIDIA GPU)
-**Researched:** 2026-05-09
-**Confidence:** HIGH (Docker / Traefik / Compose patterns), MEDIUM-HIGH (router topology — convention but not "the one true way")
+**Domain:** LLM router — Retrieval-Ready Infrastructure extension
+**Researched:** 2026-05-29
+**Confidence:** HIGH (based on live code inspection + verified MCP SDK docs)
 
 ---
 
-## 1. System Overview — Topology Diagram
+## Existing Architecture Baseline (do not re-research, integrate with)
 
-### Mermaid view
-
-```mermaid
-flowchart TB
-  subgraph Internet["Internet / LAN"]
-    client["Client / Agent<br/>(curl, n8n, SDKs)"]
-    browser["Browser<br/>(human, Open WebUI)"]
-  end
-
-  subgraph edge_net["docker net: edge (external)"]
-    traefik["Traefik v3<br/>:80 / :443<br/>TLS termination<br/>Docker provider"]
-  end
-
-  subgraph app_net["docker net: app (internal: false)"]
-    router["Fastify Router<br/>:8080<br/>OpenAI + Anthropic API"]
-    webui["Open WebUI<br/>:8080"]
-  end
-
-  subgraph backend_net["docker net: backend (internal: true)"]
-    ollama["Ollama<br/>:11434<br/>GPU"]
-    llamacpp["llama.cpp-server<br/>:8081<br/>GPU"]
-    vllm["vLLM<br/>:8000<br/>GPU"]
-  end
-
-  subgraph data_net["docker net: data (internal: true)"]
-    postgres[("PostgreSQL 16<br/>:5432")]
-    redis[("Redis 7<br/>:6379")]
-  end
-
-  cloud["Ollama Cloud<br/>(external HTTPS)"]
-
-  client -->|HTTPS<br/>Bearer token| traefik
-  browser -->|HTTPS<br/>session cookie| traefik
-  traefik -->|HTTP| router
-  traefik -->|HTTP + WS| webui
-  router -->|HTTP| ollama
-  router -->|HTTP| llamacpp
-  router -->|HTTP| vllm
-  router -->|HTTPS<br/>API key| cloud
-  router -->|TCP| postgres
-  router -->|TCP| redis
-  webui -->|HTTP<br/>Bearer token| router
-  webui -->|TCP| postgres
-
-  style backend_net fill:#fff5f5,stroke:#c00
-  style data_net fill:#f0f5ff,stroke:#06c
-  style edge_net fill:#f5fff5,stroke:#0a0
-```
-
-### ASCII fallback
+The router is a single Fastify v5 process. Its current layer cake, from outermost to innermost:
 
 ```
-                         Internet / LAN
-                              │
+HTTP IN
+  ↓
+onRequest hooks (t0 stamp → bearer auth → rate-limit)
+  ↓
+preHandler hook (agentId extract + req._t0 measurement)
+  ↓
+Route handler (zod body parse → registry.resolve → capability gate)
+  ↓
+Resilience layer (breaker.check → semaphore.acquire → idempotency.acquire)
+  ↓
+BackendAdapter.chatCompletionsCanonical[Stream] / embeddings / rerank
+  ↓
+Translation layer (canonical ↔ OpenAI/Anthropic/Responses wire shapes)
+  ↓
+fastify-sse-v2 reply.sse(asyncIterable) OR reply.send(body)
+  ↓
+onSend hook (X-Cost-Cents stamp)
+  ↓
+finally block (safeRecord → bufferedWriter.push + Prometheus)
+HTTP OUT
+```
+
+Key existing files to preserve unchanged or extend minimally:
+
+- `src/backends/adapter.ts` — `BackendAdapter` interface (extend, never break)
+- `src/translation/canonical.ts` — canonical request/response/stream event types (extend, never remove)
+- `src/config/registry.ts` — `ModelEntrySchema` + `RegistryStore` (add fields, widened zod enum)
+- `src/app.ts` — `buildApp` + `BuildAppOpts` (add optional fields, never remove existing ones)
+- `src/db/schema/request_log.ts` — Drizzle schema (add columns via new migrations, never ALTER existing)
+- `src/routes/v1/responses.ts` — minimal non-stream surface from v0.10.0 (extend to streaming)
+
+---
+
+## v0.11.0 System Overview
+
+```
+                    ┌─────────────────────────────────────────────────────────┐
+                    │                    Fastify v5 app (single port)          │
+                    │                                                           │
+                    │  /v1/chat/completions   (existing, unchanged)             │
+                    │  /v1/messages           (existing, unchanged)             │
+                    │  /v1/embeddings         (existing, unchanged)             │
+                    │  /v1/rerank             (existing, unchanged)             │
+                    │  /v1/responses          (EXTEND: add streaming + tools)   │
+                    │  /mcp  (GET+POST+DELETE) ─── NEW: MCP host plugin        │
+                    │                                                           │
+  n8n / agents ────►  onRequest: bearer auth                                   │
+  Claude Desktop ──►  onRequest: rate-limit                                    │
+  MCP clients ─────►  preHandler: agentId + tenant/project IDs (EXTEND)       │
+                    │                                                           │
+                    │  ┌──────────────────────────────────────────────────┐    │
+                    │  │  Request pipeline (per route)                     │    │
+                    │  │  registry.resolve → capability gate               │    │
+                    │  │  [NEW] policy gate (allowlist, cloud, sensitive)  │    │
+                    │  │  [NEW] pre-completion hook (RetrieverProvider)    │    │
+                    │  │  [NEW] ContextProvider (session history inject)   │    │
+                    │  │  breaker → semaphore → idempotency                │    │
+                    │  │  BackendAdapter                                   │    │
+                    │  │  [NEW] MCP tool-call loop (if tools in response)  │    │
+                    │  │  Translation layer                                │    │
+                    │  │  reply.sse / reply.send                           │    │
+                    │  │  recordOutcome (+ tenant/agent IDs)               │    │
+                    │  └──────────────────────────────────────────────────┘    │
+                    │                                                           │
+                    │  ┌────────────────┐  ┌────────────────┐                  │
+                    │  │ MCP Client     │  │ SessionStore   │                  │
+                    │  │ registry       │  │ (Postgres)     │                  │
+                    │  │ (mcp.yaml or  │  └────────────────┘                  │
+                    │  │  models.yaml) │                                        │
+                    │  └──────┬────────┘                                        │
+                    └─────────┼───────────────────────────────────────────────┘
+                              │ outbound HTTP (StreamableHTTP)
                               ▼
-                  ┌───────────────────────┐
-                  │  Traefik (:80, :443)  │  edge net (external)
-                  │  TLS, Docker provider │
-                  └──────────┬────────────┘
-                             │ HTTP (cleartext, internal)
-              ┌──────────────┴────────────────┐
-              ▼                                ▼
-     ┌─────────────────┐              ┌─────────────────┐
-     │ Fastify router  │◄─────────────│  Open WebUI     │   app net
-     │ :8080           │   bearer     │  :8080 (+WS)    │
-     │ /v1/chat/...    │              │                 │
-     │ /v1/messages    │              │                 │
-     └────┬─────┬──────┘              └────────┬────────┘
-          │     │                              │
-          │     └─────────► Ollama Cloud       │
-          │                  (HTTPS)           │
-          ▼                                    ▼
-     ┌─────────────────────────────────────────────────┐
-     │            backend net (internal: true)         │
-     │  ┌──────────┐  ┌──────────────┐  ┌──────────┐  │
-     │  │ Ollama   │  │ llama.cpp    │  │ vLLM     │  │
-     │  │ :11434   │  │ -server:8081 │  │ :8000    │  │
-     │  │ GPU      │  │ GPU          │  │ GPU      │  │
-     │  └──────────┘  └──────────────┘  └──────────┘  │
-     └─────────────────────────────────────────────────┘
-          │ (router + webui only)
-          ▼
-     ┌─────────────────────────────────────────────────┐
-     │             data net (internal: true)           │
-     │   ┌─────────────────┐    ┌──────────────┐       │
-     │   │ PostgreSQL 16   │    │ Redis 7      │       │
-     │   │ :5432           │    │ :6379        │       │
-     │   └─────────────────┘    └──────────────┘       │
-     └─────────────────────────────────────────────────┘
+                    External MCP servers (Qdrant-MCP, filesystem-MCP, etc.)
 ```
-
-### Component Responsibilities
-
-| Component | Responsibility | Port (in container) | GPU? | Public? |
-|-----------|----------------|---------------------|------|---------|
-| **Traefik v3** | TLS termination, host-based routing, Docker label discovery, redirect HTTP→HTTPS | 80, 443, (8080 dashboard local-only) | No | Yes (only thing bound to host :80/:443) |
-| **Fastify router** | OpenAI + Anthropic API surface, model resolution, backend dispatch, SSE re-streaming, auth, request logging, usage metering, cache | 8080 | No | Behind Traefik only |
-| **Open WebUI** | Manual experimentation UI, chat history, RAG, model comparison | 8080 | No (image generation off) | Behind Traefik only |
-| **Ollama** | Local inference, easy model catalog, GGUF backend | 11434 | Yes | No (backend net only) |
-| **llama.cpp-server** | Fine-grained GGUF inference, custom flags, latest quants | 8081 (mapped from `--port`) | Yes | No |
-| **vLLM** | High-throughput HF model serving (safetensors, AWQ, GPTQ, FP8) | 8000 | Yes | No |
-| **PostgreSQL 16** | Request log, token usage, per-model stats, Open WebUI's own DB (separate database) | 5432 | No | No (data net only) |
-| **Redis 7** | Response cache (optional), rate-limit counters, hot router config cache | 6379 | No | No (data net only) |
-| **Ollama Cloud** | Fallback for models that don't fit in 16 GB VRAM | 443 (out only) | N/A | External (router calls out) |
 
 ---
 
-## 2. Network Design
+## Integration Points Per Feature
 
-### Recommended: four Docker networks, not one
+### 1. MCP Host (server) — Integration Point
 
-The single-network approach works but is sloppy. With four networks the firewall is the topology — you don't have to remember which token-auth check might be missing.
+**Verdict: Option C (Fastify plugin at /mcp) is the correct choice.**
 
-```yaml
-networks:
-  edge:
-    # Traefik <-> public
-    # Traefik <-> app services (router, webui)
-  app:
-    internal: false   # router needs egress to Ollama Cloud
-    # router <-> webui (so webui can call router /v1/...)
-  backend:
-    internal: true    # backends never need outbound internet
-    # router <-> ollama, llama.cpp, vllm
-    # webui  <-> ollama, llama.cpp, vllm   (only if you decide to wire it that way; recommended: NO, webui talks only to router)
-  data:
-    internal: true    # postgres, redis never need outbound internet
-    # router <-> postgres, redis
-    # webui  <-> postgres
+Rationale:
+- Option A (bare routes at /mcp/*) works but loses plugin encapsulation — you'd wire SSE, session management, and JSON-RPC dispatch by hand, which the `@modelcontextprotocol/sdk` `McpServer` + `NodeStreamableHTTPServerTransport` already handles correctly.
+- Option B (separate process/port) fragments the auth stack. Bearer token would need to be threaded to a second port, Traefik would need a second entrypoint, and Prometheus metrics would diverge. Rejected.
+- Option C uses `haroldadmin/fastify-mcp` (v3.0.0, released 2026-05-12) which wraps `@modelcontextprotocol/sdk`'s `NodeStreamableHTTPServerTransport` and mounts at a configurable path (`/mcp`). Same port, same process.
+
+**MCP Streamable HTTP transport protocol summary (verified from spec):**
+- `POST /mcp` — JSON-RPC messages (requests, notifications, responses). Returns `Content-Type: text/event-stream` for request-initiated SSE streams, or `application/json` for single-response operations.
+- `GET /mcp` — Opens a standalone SSE stream for server-initiated notifications. The client sends `Accept: text/event-stream`.
+- `DELETE /mcp` — Session termination (when stateful mode is used).
+- Session state is tracked via `Mcp-Session-Id` header (server-generated UUID on initialize, client must echo on all subsequent requests).
+
+**SSE conflict with fastify-sse-v2:** The MCP plugin handles its own SSE via `reply.raw.write()` inside the `NodeStreamableHTTPServerTransport`, NOT via `fastify-sse-v2`. The two plugins operate on different routes (`/mcp` vs `/v1/...`) so there is no routing conflict. The `FastifySSEPlugin` continues to power `/v1/chat/completions` and `/v1/messages` streaming. **No conflict confirmed.** (MEDIUM confidence — not verified with live test, but architecturally isolated by route prefix.)
+
+**Auth integration:** The MCP plugin does NOT share the existing bearer `onRequest` hook automatically. The hook is registered at the app level and applies to ALL routes, so if it runs before the MCP plugin routes, the bearer check fires first. This is correct behavior — the existing bearer guard at `onRequest` stage already covers `/mcp` routes. No auth duplication needed.
+
+**Observability integration:** The existing `preHandler` agentId hook, Prometheus `recordOutcome`, and `bufferedWriter` are NOT automatically wired to MCP tool invocations — those operate inside the MCP plugin's JSON-RPC handler, which is opaque to Fastify's route lifecycle. MCP tool invocations must emit their own pino log lines and optionally push to `bufferedWriter` from within the tool handler.
+
+**How existing routes are exposed as MCP tools:**
+Do NOT duplicate route handlers. Instead, use an internal adapter pattern: each MCP tool handler constructs the canonical request directly (bypassing HTTP), calls `adapter.chatCompletionsCanonical()` or `adapter.embeddings()` from the same `BackendAdapter` instances used by the HTTP routes. This keeps a single code path. The MCP tool call is essentially: MCP tool invocation → construct `CanonicalRequest` → call adapter → return text content to MCP client.
+
+```typescript
+// NEW: src/mcp/host/tools/chat.ts (sketch — not literal code)
+mcpServer.registerTool('chat', { inputSchema: z.object({ model: z.string(), messages: z.array(...) }) },
+  async ({ model, messages }) => {
+    const entry = registry.resolve(model);
+    const canonical = /* build from messages */;
+    const result = await adapter.chatCompletionsCanonical(canonical, AbortSignal.timeout(30_000));
+    return { content: [{ type: 'text', text: result.content.filter(b => b.type === 'text').map(b => b.text).join('') }] };
+  }
+);
 ```
 
-**Membership matrix:**
+**New files:**
+- `src/mcp/host/index.ts` — McpServer instance + tool registrations
+- `src/mcp/host/tools/chat.ts`, `embeddings.ts`, `rerank.ts`, `responses.ts` — one tool per surface
+- `src/mcp/host/plugin.ts` — Fastify plugin that registers `haroldadmin/fastify-mcp` and wires tools
 
-| Service | edge | app | backend | data |
-|---------|:----:|:---:|:-------:|:----:|
-| traefik | ✓    | ✓   |         |      |
-| router  |      | ✓   | ✓       | ✓    |
-| webui   |      | ✓   |         | ✓    |
-| ollama  |      |     | ✓       |      |
-| llama.cpp |    |     | ✓       |      |
-| vllm    |      |     | ✓       |      |
-| postgres |     |     |         | ✓    |
-| redis   |      |     |         | ✓    |
-
-**Why `internal: true` on backend and data:** prevents the backends from making outbound HTTP calls (no exfiltration if a model output drives a malicious tool call against `169.254.169.254` etc., no surprise telemetry from runtimes). The router stays on a non-internal network because it must reach Ollama Cloud.
-
-**Why Open WebUI does not get backend-net membership:** keep one funnel. WebUI talks to the router as if the router were OpenAI. This gives you logging/metering for human chats too, and means there's exactly one path to a backend.
-
-### GPU access
-
-Only the three inference backends need GPU. Use `deploy.resources.reservations.devices` (Compose v2 native form). Avoid `runtime: nvidia` — that's the pre-Compose-v2 path and is not honored by `docker compose up` consistently.
-
-```yaml
-# Per-backend block (apply identically to ollama, llama.cpp, vllm):
-deploy:
-  resources:
-    reservations:
-      devices:
-        - driver: nvidia
-          count: all          # or device_ids: ['0'] when you eventually multi-GPU
-          capabilities: [gpu]
-# vLLM specifically also needs:
-ipc: host          # vLLM uses shared memory between worker processes
-shm_size: 16gb     # bump shared memory; the default 64MB will OOM for any real model
-```
-
-Sources: [vLLM Docker docs](https://docs.vllm.ai/en/stable/deployment/docker/), [Inference.net 2026 guide](https://inference.net/content/vllm-docker-deployment/).
-
-### Service-to-service auth
-
-**Recommendation: belt and suspenders.**
-
-| Edge | Auth |
-|------|------|
-| Client → Traefik | TLS, app-level Bearer (router) or session cookie (WebUI) |
-| Traefik → router | Cleartext HTTP, no auth (loopback within compose, edge net is private) |
-| Traefik → webui | Cleartext HTTP, no auth |
-| WebUI → router | Bearer token (the same `ROUTER_TOKEN` that external clients use, stored in WebUI's "OpenAI-compatible connection" config) |
-| Router → Ollama | None (network isolation only) |
-| Router → llama.cpp | None |
-| Router → vLLM | Optional `--api-key` flag on vLLM with a shared secret (cheap, do it) |
-| Router → Postgres | Username + password (env) |
-| Router → Redis | `requirepass` (env) |
-| Router → Ollama Cloud | `Authorization: Bearer <OLLAMA_CLOUD_KEY>` |
-
-The internal-network-is-trusted model is acceptable for this single-user, single-host design. Adding mTLS between router and backends would not pay for its complexity here. Do add Postgres/Redis passwords anyway — they cost nothing and protect against a compromised router not being able to escalate to "I am now arbitrary SQL".
+**Modified files:**
+- `src/app.ts` — `app.register(mcpHostPlugin, { registry, makeAdapter, ... })` added to `buildApp`
+- `src/config/env.ts` — `MCP_ENABLED=true/false` env flag (default true) to let the operator disable the MCP surface if not needed
 
 ---
 
-## 3. Data Flow
+### 2. MCP Client (router as consumer) — Integration Point
 
-### 3.1 Request lifecycle — `POST /v1/chat/completions` (OpenAI, streaming)
+**Config lives in models.yaml (new top-level `mcp_servers:` section), NOT a separate file.**
 
-```
-1. Client sends:
-   POST https://llm.example.com/v1/chat/completions
-   Authorization: Bearer <ROUTER_TOKEN>
-   { "model": "llama-3.3-70b-q4", "messages": [...], "stream": true }
-
-2. Traefik
-   - Terminates TLS
-   - Matches Host(`llm.example.com`) router rule
-   - Forwards over HTTP to fastify-router:8080
-   - Does NOT buffer (set buffering off — see PITFALLS for SSE-on-Traefik flag)
-
-3. Fastify router (in order)
-   a. Auth middleware: verify Bearer == ROUTER_TOKEN
-   b. Rate-limit: INCR redis key `ratelimit:{token}:{minute}`, reject if over
-   c. Resolve model: look up "llama-3.3-70b-q4" in models table/yaml
-      → { backend: "llamacpp", upstream_url: "http://llama-cpp-server:8081", model_id: "llama-3.3-70b-q4.gguf" }
-   d. Translate: OpenAI request body → llama.cpp /v1/chat/completions body
-      (llama.cpp-server already speaks OpenAI; vLLM does too; Ollama needs minor reshape on /api/chat)
-   e. Open upstream POST with stream:true
-   f. Set response headers:
-        Content-Type: text/event-stream
-        Cache-Control: no-cache
-        X-Accel-Buffering: no   (disables proxy buffering; Traefik respects via passthrough)
-   g. Pipe upstream SSE chunks to client. For each `data: {...}` line, optionally
-      transform usage fields, then forward.
-   h. On `data: [DONE]`, finalize: insert request_log row (Postgres) with
-      tokens_in, tokens_out, latency, backend, status.
-   i. Close response.
-
-4. Client receives standard OpenAI SSE stream.
-```
-
-**Cancellation:** if the client disconnects, Fastify emits `request.raw.on('close', ...)`. The router must abort the upstream fetch (`AbortController`) to stop wasting GPU cycles on a dead client.
-
-### 3.2 Request lifecycle — `POST /v1/messages` (Anthropic, streaming)
-
-The Anthropic protocol is **not** OpenAI's. The router must translate both directions.
-
-```
-Anthropic event types in stream order:
-  message_start          → message envelope, empty content
-  content_block_start    → "I'm about to write text" / "I'm about to write tool_use"
-  content_block_delta*   → repeated; { delta: { type: 'text_delta', text: '...' } }
-                                    or { delta: { type: 'input_json_delta', partial_json: '...' } }
-  content_block_stop
-  message_delta          → stop_reason, stop_sequence, usage
-  message_stop
-```
-
-```
-1. Client sends:
-   POST https://llm.example.com/v1/messages
-   x-api-key: <ROUTER_TOKEN>          (Anthropic uses x-api-key, accept both)
-   anthropic-version: 2023-06-01
-   { "model": "claude-sonnet-on-vllm", "messages": [...], "stream": true,
-     "system": "...", "max_tokens": 4096 }
-
-2. Traefik → router (same as 3.1 step 2).
-
-3. Router
-   a. Auth: Bearer OR x-api-key, both check ROUTER_TOKEN.
-   b. Rate-limit (same).
-   c. Resolve model.
-   d. Translate Anthropic → backend protocol:
-       - "system" prompt → first message with role=system in OpenAI shape
-       - tools / tool_choice → OpenAI function/tool format
-   e. Open upstream stream (backend speaks OpenAI/Ollama-style SSE).
-   f. Translate stream chunks back to Anthropic SSE event types:
-       upstream `delta.content` → emit `content_block_delta` with `text_delta`
-       upstream `delta.tool_calls` → emit `content_block_delta` with `input_json_delta`
-       upstream finish_reason → emit `message_delta` + `message_stop`
-       Send `event: <name>\ndata: <json>\n\n` (Anthropic SSE includes the `event:` line; OpenAI does not).
-   g. Log + close (same).
-```
-
-This is the load-bearing translation layer. Ship it with strong unit tests that diff a recorded backend stream against the expected Anthropic event sequence.
-
-Sources: [Anthropic streaming docs](https://docs.anthropic.com/en/api/messages-streaming), [Streaming tool calls SSE parsing](https://dev.to/gabrielanhaia/streaming-tool-calls-parse-anthropic-sse-without-loading-the-whole-message-2on).
-
-### 3.3 Embeddings — `POST /v1/embeddings`
-
-Non-streaming. Router resolves model → backend, forwards body, returns response. Trivial relative to chat.
-
-### 3.4 What Redis is used for
-
-Recommendation — keep it small, keep it justified:
-
-| Key pattern | TTL | Purpose |
-|-------------|-----|---------|
-| `ratelimit:{token}:{minute}` | 90s | Token-bucket / fixed-window counter (`INCR` + `EXPIRE`) |
-| `model:{name}` | 60s | Cached resolved model record (avoid hitting Postgres on every request) |
-| `cache:embed:{sha256(input)}` | 7d | Optional: response cache for embeddings only (deterministic, cheap to verify) |
-| `inflight:{request_id}` | 10m | Track running streams for admin / cancel endpoint |
-
-**Do NOT cache chat completions.** They're effectively non-deterministic, multi-turn, and cache hits are rare in real agent traffic — the storage cost outweighs the wins.
-
-**Do NOT use Redis as a job queue in v1.** No background work justifies it. Add BullMQ later if/when async embedding indexing or batch jobs land.
-
-### 3.5 What Postgres stores
-
-Two logical databases on one Postgres instance:
-
-**Database 1: `router`** (owned by router)
-
-| Table | Purpose |
-|-------|---------|
-| `models` | Model registry — name, backend, upstream_url, model_id, capabilities (chat/embed/vision/tools), context_length, enabled. Source of truth for "what models exist". |
-| `request_log` | One row per request — id, ts, token, model, backend, protocol (openai/anthropic), stream, status, tokens_in, tokens_out, latency_ms, error. |
-| `usage_daily` | Pre-aggregated daily roll-up for dashboards (token totals per model). Materialised view OK. |
-| `api_keys` (future) | Reserved for when you outgrow single bearer token. |
-
-**Database 2: `openwebui`** (owned by Open WebUI; just a different DATABASE_URL)
-
-Open WebUI maintains its own schema — don't touch it. Sharing the *server* but isolating the *database* gives you one fewer container without coupling schemas.
-
-### 3.6 Shared model storage — be explicit about formats
-
-These three runtimes do **not** share the same files in general. Plan for two distinct stores.
-
-| Store | Mounted into | Contents | Format |
-|-------|--------------|----------|--------|
-| `gguf-models` (volume or bind) | Ollama, llama.cpp-server | `.gguf` files | GGUF (single file, embedded tokenizer + weights + metadata) |
-| `hf-cache` (volume) | vLLM | HuggingFace snapshot directories (`config.json`, `tokenizer.json`, `*.safetensors`, ...) | HF safetensors directory |
-
-**About sharing GGUF between Ollama and llama.cpp:** Ollama stores blobs as SHA256-named files under `~/.ollama/models/blobs/` plus `manifests/`. llama.cpp wants a path to a single `.gguf` file. You *can* point llama.cpp at an Ollama blob — sometimes it works, sometimes the blob is an older variant llama.cpp won't load. Recommended discipline:
-
-```
-volumes:
-  models-gguf:
-    # Top-level structure:
-    #   /models/gguf/<model-name>/<file>.gguf      ← source of truth, you own this
-    #   /models/ollama/                            ← Ollama's private dir (manifests + blobs)
-  models-hf:
-    # /models/hf/<org>--<repo>/snapshots/<commit>/  ← HF cache layout
-```
-
-In compose:
+Rationale: models.yaml is already the single source of truth for runtime configuration, has the hot-reload watcher, the Valkey-backed cache, and the zod parsing pipeline. Adding `mcp_servers:` as an optional top-level key is an additive schema change with zero impact on existing `models:` entries. A separate `mcp.yaml` would require a second watcher + hot-reload path + second Valkey cache key — unnecessary complexity.
 
 ```yaml
-ollama:
-  volumes:
-    - models-gguf:/models/gguf:ro          # browse only; Ollama's writable home is below
-    - ollama-home:/root/.ollama            # Ollama's manifests + blobs (named volume)
-  # To register a GGUF you've put in /models/gguf, use `ollama create` with a Modelfile.
-
-llama-cpp:
-  volumes:
-    - models-gguf:/models/gguf:ro
-  command: >
-    --model /models/gguf/llama-3.3-70b-q4/llama-3.3-70b-q4.gguf
-    --port 8081 --host 0.0.0.0 --n-gpu-layers 999 ...
-
-vllm:
-  volumes:
-    - models-hf:/root/.cache/huggingface
-  environment:
-    - HF_HOME=/root/.cache/huggingface
-  command: >
-    --model meta-llama/Llama-3.3-70B-Instruct
-    --quantization awq
-    --gpu-memory-utilization 0.92
+# models.yaml addition (sketch)
+mcp_servers:
+  - name: qdrant-retrieval
+    url: http://qdrant-mcp:8080/mcp
+    transport: http          # http | stdio
+    auth: bearer             # none | bearer
+    token_env: QDRANT_MCP_TOKEN
+    capabilities: [retrieval]
+    connect: lazy            # boot | first-use | lazy (per-request)
 ```
 
-**Rule of thumb:** if a model is GGUF, you can serve it via **either** Ollama or llama.cpp from the same file (subject to format-version compatibility). If a model is on HuggingFace as safetensors and you want vLLM throughput, accept that it lives in a separate cache. Do not try to make vLLM read GGUF (it has experimental GGUF support but the workflow is rough; not worth fighting).
+**Connection lifecycle — use lazy per-request for v0.11.0:**
+- `boot` would block startup and fail fast on unavailable MCP servers — too brittle for an optional capability.
+- `first-use` holds a persistent connection that needs reconnect logic.
+- `lazy` (recommended): create a new `Client` + `StreamableHTTPClientTransport` per request, connect, call tool, disconnect. For a router under light-to-moderate load with infrequent MCP calls this is correct. Connection pooling is a v0.12+ concern.
 
-Sources: [Ollama model storage layout](https://www.vaditaslim.com/blog/ai/ollama-model-storage), [vLLM safetensors vs GGUF](https://daily.dev/blog/running-llms-locally-ollama-llama-cpp-self-hosted-ai-developers/), [GGUF llama.cpp/Ollama compatibility](https://huggingface.co/docs/hub/gguf-llamacpp).
+**How the model sees MCP tools:**
+Tools from connected MCP servers are injected into the `tools[]` field of the `CanonicalRequest` BEFORE the adapter call. The `CanonicalToolSchema` already supports arbitrary `input_schema` — no canonical type change needed. The MCP client handler lists tools from the server (`client.listTools()`), converts each to `CanonicalTool`, merges with any user-provided tools from the request body, and injects the merged set into the canonical before forwarding to the backend.
+
+**Tool call resolution loop:**
+```
+CanonicalRequest (with injected MCP tools) → adapter → CanonicalResponse
+  if response.content has tool_use blocks:
+    for each tool_use block:
+      if tool.name matches an MCP server tool:
+        client.callTool(name, input) → result
+        append CanonicalMessage(role:user, content:tool_result) to messages
+    repeat adapter call with updated messages
+  until no tool_use blocks OR max_iterations reached
+```
+
+This loop lives in a new `src/mcp/client/toolLoop.ts` helper called from the route handler, between the capability gate and the adapter call. It is NOT inside the adapter — adapters remain stateless per-call.
+
+**New files:**
+- `src/mcp/client/index.ts` — `McpClientRegistry` (loads mcp_servers from registry, creates clients on demand)
+- `src/mcp/client/toolLoop.ts` — `runMcpToolLoop(canonical, adapter, mcpClients, signal)` → `CanonicalResponse`
+- `src/mcp/client/transport.ts` — thin wrapper around `@modelcontextprotocol/sdk`'s `Client` + `StreamableHTTPClientTransport`
+
+**Modified files:**
+- `src/config/registry.ts` — `RegistrySchema` gains optional `mcp_servers: z.array(McpServerEntrySchema).optional()`
+- `src/routes/v1/chat-completions.ts` — inject MCP tool loop call between capability gate and adapter (only when `mcpClients` present and request `tools` not explicitly `none`)
 
 ---
 
-## 4. Configuration Model
+### 3. /v1/responses Streaming + Tools — Integration Point
 
-### 4.1 Where the model registry lives
+**Use the same architecture as chat-completions streaming: canonical stream → re-emit as Responses SSE events.**
 
-**Recommendation: YAML file, mounted read-only, with optional Postgres mirror later.**
+The current non-stream `/v1/responses` calls `adapter.chatCompletionsCanonical()` via `responsesToCanonical()`. Streaming extension:
+1. Call `adapter.chatCompletionsCanonicalStream()` instead (same stream pipeline already used by `/v1/chat/completions`).
+2. Consume the `AsyncIterable<CanonicalStreamEvent>` and translate each event to Responses API SSE event format.
+3. Emit via `reply.sse()` from `fastify-sse-v2` — same plugin already registered in `buildApp`.
 
+**Responses API SSE event sequence (verified from OpenAI community guide, October 2025):**
 ```
-config/
-└── models.yaml      ← bind-mount into the router as /app/config/models.yaml
+response.created                (envelope opened)
+response.in_progress            (model processing)
+response.output_item.added      (new output item — message or tool_call)
+response.content_part.added     (text content started)
+response.output_text.delta      (streaming text chunks)
+response.output_text.done       (text block finalized)
+response.content_part.done      (content part done)
+response.output_item.done       (output item finalized)
+response.completed              (envelope closed, usage included)
 ```
 
+**Mapping from existing CanonicalStreamEvent to Responses events:**
+```
+message_start        → response.created + response.in_progress
+content_block_start  → response.output_item.added + response.content_part.added
+content_block_delta  → response.output_text.delta
+content_block_stop   → response.output_text.done + response.content_part.done + response.output_item.done
+message_delta        → (captured for usage, emit at end)
+message_stop         → response.completed (with usage from message_delta)
+```
+
+**Tool call events in Responses stream:**
+When a `content_block_start` with `content_block.type = 'tool_use'` arrives:
+- Emit `response.output_item.added` with `type: 'function_call'`
+- `content_block_delta` with `type: 'input_json_delta'` → emit `response.function_call_arguments.delta`
+- `content_block_stop` → emit `response.function_call_arguments.done` + `response.output_item.done`
+
+**Failure mode when backend doesn't support all Responses events:**
+Backends (Ollama, llama.cpp, vLLM) all speak the canonical stream format — the translator is the boundary. If the upstream stream terminates early or emits an error event, the translator catches it, emits `response.failed` with a structured error body, and closes the SSE stream. This mirrors how `canonicalToOpenAISse` currently handles abort + error cases. No new failure surface.
+
+**New file:**
+- `src/translation/responses-out.ts` — `canonicalToResponsesSse(events: AsyncIterable<CanonicalStreamEvent>): AsyncIterable<{event: string, data: string}>`
+
+**Modified file:**
+- `src/routes/v1/responses.ts` — add streaming branch: `if (body.stream === true)` → call stream path + `reply.sse(asyncIterable)` (remove the 400 stream-unsupported block from v0.10.0)
+
+---
+
+### 4. SessionStore — Integration Point
+
+**New Postgres tables via Drizzle migration 0005, writes are SYNC per turn (not async-buffered).**
+
+Schema:
+```typescript
+// src/db/schema/sessions.ts (NEW)
+export const sessions = pgTable('sessions', {
+  id: text('id').primaryKey(),               // client-supplied or ULID generated
+  agent_id: text('agent_id'),                // nullable — from X-Agent-Id
+  tenant_id: text('tenant_id'),              // nullable — from X-Tenant-Id (v0.11.0)
+  project_id: text('project_id'),            // nullable — from X-Project-Id
+  created_at: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updated_at: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  metadata: jsonb('metadata'),               // arbitrary client-supplied metadata
+});
+
+export const session_turns = pgTable('session_turns', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  session_id: text('session_id').notNull().references(() => sessions.id),
+  turn_index: integer('turn_index').notNull(),  // monotonic ordering
+  role: text('role').notNull(),                  // 'user' | 'assistant'
+  content: jsonb('content').notNull(),           // CanonicalMessage['content']
+  tokens: integer('tokens'),                     // nullable, populated by ContextProvider on load
+  summary: text('summary'),                      // nullable, set by SummaryProvider
+  created_at: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+```
+
+Rationale for NOT extending `request_log`: `request_log` is an audit log with fixed columns. Sessions are mutable state. Mixing them creates a schema that can't be independently retained, purged, or migrated.
+
+Rationale for SYNC writes per turn: session history must be committed BEFORE the response is sent — if the write fails, the session is inconsistent. Unlike `request_log` (observability, loss-ok), session turns are the truth. The existing buffered async pattern is explicitly wrong here.
+
+**Migration 0005:** `sessions` + `session_turns` tables + indexes on `(session_id, turn_index)`.
+
+**SessionStore invocation in request lifecycle:**
+```
+Route handler entry
+  → if X-Session-Id present: SessionStore.loadSession(id) → CanonicalMessage[]
+  → prepend to request.body.messages (before ContextProvider window trimming)
+  → [call backend]
+  → if response successful: SessionStore.appendTurn(sessionId, userMsg, assistantMsg)
+  → reply.send
+```
+
+Position: inside the route handler, AFTER registry.resolve + capability gate, BEFORE breaker/semaphore. SessionStore failures → fail-open (log warn, proceed without history) to avoid blocking completions on a database hiccup.
+
+**Interface definition:**
+```typescript
+// src/session/store.ts (NEW)
+export interface SessionStore {
+  loadSession(sessionId: string): Promise<CanonicalMessage[]>;
+  appendTurn(sessionId: string, user: CanonicalMessage, assistant: CanonicalMessage): Promise<void>;
+  deleteSession(sessionId: string): Promise<void>;
+}
+```
+
+**New files:**
+- `src/session/store.ts` — interface + `PostgresSessionStore` implementation
+- `src/session/windowManager.ts` — token-window trimming (used by ContextProvider)
+- `src/db/schema/sessions.ts` — Drizzle schema
+
+**Modified files:**
+- `src/routes/v1/chat-completions.ts` — add session load/append around adapter call
+- `src/routes/v1/messages.ts` — same
+- `src/app.ts` — `BuildAppOpts` gains optional `sessionStore?: SessionStore`
+
+---
+
+### 5. ContextProvider — Integration Point
+
+**Position: inside route handler, AFTER SessionStore.loadSession, BEFORE breaker/semaphore.**
+
+The ContextProvider's sole job is: given a request with potentially long message history, return a trimmed/windowed version that fits the model's context window. It is NOT responsible for retrieval, summarization, or semantic search.
+
+```typescript
+// src/context/provider.ts (NEW)
+export interface ContextProvider {
+  resolveContext(
+    messages: CanonicalMessage[],
+    opts: { modelEntry: ModelEntry; maxTokens?: number }
+  ): Promise<CanonicalMessage[]>;
+}
+```
+
+**Strategy selection:** Per-bearer default declared in `models.yaml` under the model entry. No per-request override in v0.11.0 (that is a policy engine concern, deferred). The model entry gains an optional `context_strategy: 'sliding_window' | 'summarize_oldest' | 'passthrough'` field — default `passthrough` (current behavior, zero change for existing routes).
+
+**Integration in route handler:**
+```
+SessionStore.loadSession → full history
+  → ContextProvider.resolveContext(full_history, { modelEntry, maxTokens })
+  → trimmed messages used as canonical.messages
+  → [breaker → semaphore → adapter]
+```
+
+If `context_strategy` is absent (model entry doesn't declare it), ContextProvider is a no-op (passthrough). This means existing routes are unaffected even after the ContextProvider is wired in.
+
+**Modified files:**
+- `src/config/registry.ts` — `ModelEntrySchema` gains `context_strategy: z.enum(['passthrough', 'sliding_window', 'summarize_oldest']).default('passthrough').optional()`
+- `src/routes/v1/chat-completions.ts` — ContextProvider resolve call inserted after session load
+- `src/routes/v1/messages.ts` — same
+- `src/app.ts` — `BuildAppOpts` gains optional `contextProvider?: ContextProvider`
+
+---
+
+### 6. RetrieverProvider + Pre-Completion Hook — Integration Point
+
+**Position: inside route handler, AFTER ContextProvider, BEFORE breaker/semaphore. Runs as a named hook in a hook chain.**
+
+The hook receives the (post-context-window) `CanonicalRequest`, returns an enriched `CanonicalRequest` (with retrieved documents injected as additional user message content). It does NOT call the backend. It does NOT orchestrate retrieval internally — it calls an external retriever (typically via the MCP client) and injects the result.
+
+```typescript
+// src/hooks/preCompletion.ts (NEW)
+export interface PreCompletionHook {
+  name: string;
+  execute(
+    canonical: CanonicalRequest,
+    opts: { modelEntry: ModelEntry; signal: AbortSignal }
+  ): Promise<CanonicalRequest>;
+  onError: 'fail-open' | 'fail-closed';  // per-hook config
+}
+```
+
+**Hook configuration:** Declared per-model in `models.yaml`:
 ```yaml
-# models.yaml
 models:
-  - name: llama-3.3-70b-q4
-    backend: llamacpp
-    upstream_url: http://llama-cpp-server:8081
-    model_id: /models/gguf/llama-3.3-70b-q4/llama-3.3-70b-q4.gguf
-    capabilities: [chat, tools]
-    context_length: 32768
-
-  - name: qwen2.5-coder-14b
-    backend: ollama
-    upstream_url: http://ollama:11434
-    model_id: qwen2.5-coder:14b
-    capabilities: [chat, tools]
-    context_length: 32768
-
-  - name: llama-3.3-70b-awq
-    backend: vllm
-    upstream_url: http://vllm:8000
-    model_id: meta-llama/Llama-3.3-70B-Instruct
-    capabilities: [chat, tools, vision]
-    context_length: 8192
-
-  - name: deepseek-r1-cloud
-    backend: ollama-cloud
-    upstream_url: https://ollama.com
-    model_id: deepseek-r1:671b
-    capabilities: [chat]
-    context_length: 65536
+  - name: chat-local
+    pre_completion_hooks:
+      - name: qdrant-retrieval
+        retriever_mcp_server: qdrant-retrieval   # references mcp_servers[].name
+        top_k: 5
+        on_error: fail-open
 ```
 
-**Why YAML in a file beats both env vars and DB:**
+**MCP tool-driven retrieval vs pre-completion hook — coexistence rule:** If the model has MCP tools injected AND a pre-completion hook configured, the hook fires FIRST (pre-backend), injecting documents. The MCP tool-call loop fires AFTER the first adapter response, if the model decides to call tools. This prevents double-retrieval: the hook is for server-decided context injection (RAG); the tool loop is for model-decided tool invocation. The hook's `name` prefix allows it to skip if the request already contains retrieved content (indicated by a custom header `X-Context-Injected: true` that the hook stamps on the request context).
 
-- **vs env vars:** lists of structured records in env vars are awful (`MODEL_1_NAME=...`, `MODEL_1_BACKEND=...`). Don't.
-- **vs DB:** simpler bootstrap, version-control-able, atomic edits via your normal git workflow, no migration when you add a column to "the models table". Postgres is for telemetry, not for config you touch by hand.
+**Error handling:**
+- `fail-open`: hook throws → log warn, proceed with original canonical, stamp `X-Hook-Error: <name>` on response
+- `fail-closed`: hook throws → 502 upstream error, abort request
 
-### 4.2 Hot-reload without redeploy
+**New files:**
+- `src/hooks/preCompletion.ts` — `PreCompletionHook` interface + `runHookChain()` function
+- `src/hooks/mcpRetrieverHook.ts` — concrete hook implementation using MCP client
 
-Simplest reliable approach: **`fs.watch` on `/app/config/models.yaml` and rebuild the in-memory index on change.**
+**Modified files:**
+- `src/config/registry.ts` — `ModelEntrySchema` gains `pre_completion_hooks: z.array(HookConfigSchema).optional()`
+- `src/routes/v1/chat-completions.ts` — hook chain inserted after ContextProvider, before breaker
 
-```ts
-// pseudo
-const registry = loadModels(CONFIG_PATH);
-fs.watch(CONFIG_PATH, debounce(() => {
-  const next = loadModelsSafe(CONFIG_PATH);  // validate first; reject on schema error
-  if (next.ok) registry.replace(next.value);
-}, 200));
+---
+
+### 7. SummaryProvider — Integration Point
+
+**Position: called BY ContextProvider when token window is exceeded. Not a standalone route hook.**
+
+```typescript
+// src/context/summary.ts (NEW)
+export interface SummaryProvider {
+  summarize(turns: CanonicalMessage[]): Promise<string>;
+}
+
+// Default implementation — noop
+export class NoopSummaryProvider implements SummaryProvider {
+  async summarize(_turns: CanonicalMessage[]): Promise<string> {
+    return '[summary omitted — no SummaryProvider configured]';
+  }
+}
 ```
 
-Add a `POST /admin/reload` endpoint as a manual fallback (auth: a separate admin token). This handles editor-saves-via-rename quirks where `fs.watch` events get weird.
+**When called:** ContextProvider with `context_strategy: 'summarize_oldest'` holds a reference to SummaryProvider. When the message window exceeds `max_tokens`, oldest turns are passed to `SummaryProvider.summarize()`, the result is stored in `session_turns.summary` column, and the turn is replaced with a synthetic `{role:'user', content:'[Summary: ...]'}` message. The model sees the summary, not the raw history.
 
-If/when you want add-without-edit-file flows, add a `models` table in Postgres and treat YAML as the seed. Don't do this yet — premature.
+**Explicit trigger via API param:** `X-Summarize-Session: true` header → ContextProvider runs summarization immediately on all turns older than N (configurable per model entry). This is a v0.11.0 stretch goal, not required for MVP.
 
-### 4.3 Where Traefik's dynamic config lives
+**Cron-based summarization:** Deferred to v0.12+. The seam is declared, the noop is the default.
 
-Traefik has two config layers:
+**New files:**
+- `src/context/summary.ts` — `SummaryProvider` interface + `NoopSummaryProvider`
+- `src/context/provider.ts` — `ContextProvider` implementation holds `SummaryProvider` as dependency
 
-| Layer | Location | Reload behaviour |
-|-------|----------|------------------|
-| Static (entrypoints, providers, certificatesResolvers) | `traefik.yml` (bind-mounted) or CLI flags | Container restart required |
-| Dynamic (routers, services, middlewares, TLS) | Either Docker labels OR file provider (`./traefik/dynamic/*.yml`) | Hot-reloaded automatically |
+---
 
-**Recommendation:**
+### 8. EmbeddingProvider Interface — Integration Point
 
-```
-traefik/
-├── traefik.yml              ← static config (read-only mount)
-└── dynamic/
-    ├── tls.yml              ← TLS options, cert resolver references
-    ├── middlewares.yml      ← shared middlewares (compress, security headers, rate-limit)
-    └── (rarely add files; prefer Docker labels for service routes)
-```
+This is a **formalization of existing code**, not a new capability.
 
-For routes that map to compose services, **use Docker labels on the service itself**. That keeps "this service is reachable at this URL" colocated with the service definition. Reserve the file provider for cross-cutting concerns (TLS options, shared middlewares) and for external endpoints not in the compose stack.
+The existing `BackendAdapter.embeddings()` method already implements the semantic of an EmbeddingProvider. The v0.11.0 task is to:
+1. Define a stable `EmbeddingProvider` interface in `src/embeddings/provider.ts` that matches the existing signature.
+2. Make `BackendAdapter` extend `EmbeddingProvider` (or declare conformance explicitly).
+3. Expose as an MCP tool via the MCP host plugin.
 
-Example labels on the router:
+No schema changes, no new routes, no new DB tables.
 
+**Modified files:**
+- `src/embeddings/provider.ts` — NEW file, interface declaration only
+- `src/backends/adapter.ts` — `BackendAdapter` gains `implements EmbeddingProvider` comment or explicit type intersection
+
+---
+
+### 9. Policy Primitives — Integration Point
+
+**Policy primitives are PURELY ADDITIVE. They add checks to the existing pipeline without restructuring it.**
+
+**Model allowlist per-bearer:**
 ```yaml
-fastify-router:
-  labels:
-    - traefik.enable=true
-    - traefik.http.routers.router.rule=Host(`llm.example.com`)
-    - traefik.http.routers.router.entrypoints=websecure
-    - traefik.http.routers.router.tls.certresolver=letsencrypt
-    - traefik.http.services.router.loadbalancer.server.port=8080
-    # critical for SSE
-    - traefik.http.services.router.loadbalancer.passhostheader=true
-  networks: [edge, app, backend, data]
+# New optional top-level section in models.yaml
+policies:
+  default:
+    allowed_models: ["*"]           # wildcard = all (default behavior)
+    cloud_allowed: true
+    sensitive_routing: local_only   # none | local_only | local_preferred
 ```
 
-Sources: [Traefik dynamic config](https://doc.traefik.io/traefik/reference/dynamic-configuration/file/), [Traefik Docker setup](https://doc.traefik.io/traefik/setup/docker/).
+For v0.11.0 with a single bearer token, policies are declared once in models.yaml under a `policies.default` key. The bearer hash is not in the key because there is only one bearer. This is architecturally preparatory for multi-tenant: the policy lookup by bearer hash is a v0.12+ drop-in, the schema supports it now.
+
+**Pipeline position:** Policy gate inserted AFTER registry.resolve, AFTER capability gate, BEFORE breaker/semaphore:
+```
+registry.resolve(model) → entry
+capability gate (existing)
+[NEW] policy gate: policyStore.check(entry, requestContext)
+  → if not allowed: 403 PolicyViolationError
+  → if cloud not allowed + entry.backend === 'ollama-cloud': 403
+  → if sensitive + entry.backend !== local: 400 SensitiveRoutingError
+breaker → semaphore → adapter
+```
+
+**Cloud restriction implementation:** `cloud_allowed: false` in policy → any request resolving to `backend: ollama-cloud` returns 403 with structured error. Simple boolean check against `entry.backend`.
+
+**Sensitive-workload routing:** Request includes header `X-Sensitive: true` → policy checks `policies.default.sensitive_routing`. If `local_only` and resolved backend is cloud → 400 with `sensitive_routing_violation` error code. If `local_preferred` and resolved backend is cloud → attempt re-resolve to local model first (if exists), fall through to cloud only if no local available.
+
+**Tenant/project/agent IDs:**
+- `X-Tenant-Id` header → validated regex `^[A-Za-z0-9._:-]{1,256}$` (same as X-Agent-Id) → `req.tenantId`
+- `X-Project-Id` header → same validation → `req.projectId`
+- Both stamped into: `request_log` (new columns in migration 0006), pino child log context, Prometheus metric labels on `router_request_total` and `router_request_duration_seconds`.
+
+**Migration 0005 (sessions + session_turns) and Migration 0006 (tenant_id + project_id on request_log)** ship in the same milestone but as separate SQL files per the existing journal pattern.
+
+**New files:**
+- `src/policy/store.ts` — `PolicyStore` interface + `YamlPolicyStore` reading from registry
+- `src/policy/errors.ts` — `PolicyViolationError`, `SensitiveRoutingError`
+- `src/middleware/tenantId.ts` — X-Tenant-Id + X-Project-Id extraction (mirrors `agentId.ts`)
+
+**Modified files:**
+- `src/config/registry.ts` — `RegistrySchema` gains optional `policies: PolicyConfigSchema`
+- `src/db/schema/request_log.ts` — add `tenant_id` + `project_id` columns (migration 0006)
+- `src/routes/v1/chat-completions.ts` — policy gate inserted
+- `src/routes/v1/messages.ts` — same
+- `src/routes/v1/embeddings.ts` — same
+- `src/routes/v1/rerank.ts` — same
+- `src/routes/v1/responses.ts` — same
+- `src/app.ts` — `BuildAppOpts` gains optional `policyStore?: PolicyStore`, `tenantIdPreHandler` added to hook chain
+- `src/metrics/registry.ts` — add `tenant_id` and `project_id` label to relevant counters
 
 ---
 
-## 5. Build Order — Vertical Slice First
-
-### MVP slice (the smallest thing that proves the architecture)
-
-> "An agent can curl my router and stream a token from a real local model."
+## Full Request Pipeline (v0.11.0 — chat-completions, showing all new hooks)
 
 ```
-Phase 1 — bare vertical slice:
-  - Ollama container with one small model pulled
-  - Fastify router with /v1/chat/completions only (OpenAI passthrough to Ollama)
-  - Bearer-token auth from .env
-  - Models registry: hardcoded array, then YAML file
-  - models.yaml mounted in
-  - SSE streaming working end-to-end via curl
+POST /v1/chat/completions
+  onRequest: t0 stamp
+  onRequest: bearer auth (EXISTING)
+  onRequest: rate-limit (EXISTING)
+  preHandler: agentId (EXISTING)
+  preHandler: tenantId + projectId (NEW — additive)
+  Route handler:
+    zod body parse (EXISTING)
+    registry.resolve(model) (EXISTING)
+    capability gate (EXISTING)
+    [NEW] policy gate (allowlist, cloud, sensitive)
+    [NEW] SessionStore.loadSession (if X-Session-Id present)
+    [NEW] ContextProvider.resolveContext (if context_strategy declared)
+    [NEW] pre-completion hook chain (if pre_completion_hooks declared)
+    [NEW] MCP tool injection (inject MCP server tools into canonical.tools)
+    breaker.check (EXISTING)
+    semaphore.acquire (EXISTING)
+    idempotency.acquire (EXISTING)
+    adapter.chatCompletionsCanonical[Stream] (EXISTING)
+    [NEW] MCP tool-call loop (if response contains tool_use blocks from MCP tools)
+    [NEW] SessionStore.appendTurn (if session active)
+    canonicalToOpenAIResponse / canonicalToOpenAISse (EXISTING)
+    reply.send / reply.sse (EXISTING)
+  onSend: X-Cost-Cents (EXISTING)
+  finally: recordOutcome + bufferedWriter (EXISTING, extended with tenant/project IDs)
 ```
-
-That's it. No Traefik. No Postgres. No Redis. No Open WebUI. No Anthropic. No vLLM. No llama.cpp. The router talks straight to Ollama on a single Compose network. **This is the gate**: if you can't get this working, none of the other components will save you.
-
-### Then expand outward, in this order:
-
-| Phase | Adds | Why now |
-|-------|------|---------|
-| 2 | llama.cpp-server backend + GGUF volume layout + backend selection by `model:` field | Validates multi-backend dispatch — the actual hard part of the router |
-| 3 | Anthropic `/v1/messages` translation layer | Protocol parity; do this before plumbing more infra so the translation tests live alongside a small, fast stack |
-| 4 | Postgres + request_log + usage_daily | Now that requests work, capture them. Splits cleanly: router writes one row at end-of-stream. |
-| 5 | Traefik in front + TLS + Bearer enforced over HTTPS | Makes the thing externally reachable as a "real" endpoint |
-| 6 | Open WebUI behind Traefik, configured to call router as OpenAI provider | Human UX, gives second client to dogfood the router |
-| 7 | Redis (rate limit + model cache) | Optimisation, not requirement |
-| 8 | vLLM backend | Heavy backend; comes after the rest of the system is observable so you can measure its wins honestly |
-| 9 | Ollama Cloud fallback | Trivially additive once registry supports a `backend: ollama-cloud` value |
-| 10 | Embeddings + vision modalities | Each is a new endpoint/translation but the framework is already in place |
-
-### What can be wired up later without re-architecting
-
-These are **safe to defer** because they slot into the existing seams:
-
-- Traefik (router currently exposed directly on host port; later move to `expose:` and add Traefik in front)
-- Redis (router degrades gracefully — rate-limit becomes in-process, no cache; flip a feature flag)
-- Open WebUI (independent service, just needs router URL + token)
-- Additional backends (registry-driven; new entry in `models.yaml`)
-- Postgres (initially `request_log` can be JSON lines on disk; migrate later when you actually want queries)
-
-### What you should NOT defer
-
-- **The model registry abstraction.** Even if v1 has one model, the resolution layer must exist so adding the second backend is "add a config row" not "rewrite the request handler."
-- **SSE plumbing.** Get streaming right on day one — retrofitting streaming after the fact is painful (buffering assumptions creep into every layer).
-- **AbortController / upstream cancel-on-disconnect.** If you build the proxy synchronously first and add cancellation later, you'll spend a weekend chasing GPU-memory leaks.
 
 ---
 
-## 6. Trade-offs and Alternatives
+## New vs Modified File Summary
 
-### Why Traefik over nginx / Caddy
-
-| | Traefik | nginx | Caddy |
-|---|---|---|---|
-| Docker label discovery | Native, instant | None (manual conf reload) | Via community plugin |
-| Auto Let's Encrypt | Built-in | Needs certbot | Built-in (zero config) |
-| Hot reload | Yes, no restart | Reload on file change | Yes |
-| SSE/WebSocket | First-class | First-class | First-class |
-| Idle memory | ~50 MB | ~10 MB | ~25 MB |
-| Raw RPS at saturation | Lowest of the three | Highest (~34% over Traefik) | Middle |
-
-**Pick Traefik** because: this stack is Compose-native, services come and go, and the "edit `nginx.conf`, reload, hope" loop is exactly the friction this project is meant to avoid. The RPS gap is irrelevant — your bottleneck is GPU inference at single-digit RPS, not the proxy.
-
-**Pick Caddy** if you'd rather have the simplest possible config and don't mind the Docker integration being a community plugin. Reasonable second choice.
-
-**Don't pick nginx** here. Nothing about this workload benefits from its strengths, and you'll fight the static config every time you add a backend.
-
-Source: [Traefik vs Caddy vs nginx 2026 comparison](https://ossalt.com/guides/traefik-vs-caddy-vs-nginx-reverse-proxy-self-hosting-2026).
-
-### Why Postgres over SQLite
-
-For a single-user single-host project, SQLite is genuinely fine for `request_log`. But:
-
-- Open WebUI can run on SQLite, but its multi-process nature makes Postgres the recommended option in their docs.
-- Concurrent writes from a streaming router (one row per request) plus Open WebUI's chat history can step on SQLite's writer-lock under load.
-- You already have a database container; running Postgres adds ~30 MB resident.
-- If you later run analytics ("how many tokens did Qwen do this week?"), Postgres' query layer is far better.
-
-**SQLite is acceptable** if you're allergic to a database server. The architecture doesn't preclude it — the only contract is "router + WebUI persist some state." Recommend Postgres anyway because the operational ceiling is much higher for negligible cost.
-
-### Why a Fastify router service vs pointing Open WebUI at backends directly
-
-You *could* configure Open WebUI with three "OpenAI-compatible" connections — one per backend — and skip the router for human use. Don't:
-
-1. **Two surfaces is two surfaces.** Agents need OpenAI + Anthropic with a stable URL and one bearer token. Once you have the router for that, putting WebUI through it is free.
-2. **One log.** Routing both human chats and agent chats through the same service means `request_log` tells you the whole story.
-3. **Cloud fallback / model resolution / Anthropic translation only exist in the router.** If WebUI bypasses it, those features only work for agents — confusing.
-4. **Token rotation.** One token to rotate, one place to enforce.
-
-The only argument for direct WebUI→backend is "fewer hops in the dev loop". That's a non-issue when the router runs locally on the same Docker network.
-
-### Whether to put Open WebUI behind the router or beside it
-
-**Beside** the router, both behind Traefik. Reasons:
-
-- WebUI is a stateful web app with WebSockets, sessions, RAG, file uploads. The router is a stateless API gateway. Mixing them under one prefix is awkward.
-- Different auth models: WebUI uses session cookies; router uses bearer tokens. You don't want WebUI's auth in the router's hot path.
-- Different SLAs and restart blast radius. Restarting the router during a router-only change shouldn't kill WebUI's WebSocket sessions.
-
-So:
+### NEW files (pure additions, no existing code touched)
 
 ```
-https://llm.example.com/        → Fastify router  (API)
-https://chat.example.com/       → Open WebUI      (human UI)
+src/mcp/
+  host/
+    index.ts          — McpServer instance + tool wire-up
+    plugin.ts         — Fastify plugin registration
+    tools/
+      chat.ts         — MCP tool: chat completions
+      embeddings.ts   — MCP tool: embeddings
+      rerank.ts       — MCP tool: rerank
+      responses.ts    — MCP tool: responses API
+  client/
+    index.ts          — McpClientRegistry (lazy connect)
+    toolLoop.ts       — runMcpToolLoop helper
+    transport.ts      — Client + StreamableHTTPClientTransport wrapper
+
+src/session/
+  store.ts            — SessionStore interface + PostgresSessionStore
+  windowManager.ts    — token-window trimming utility
+
+src/context/
+  provider.ts         — ContextProvider interface + implementation
+  summary.ts          — SummaryProvider interface + NoopSummaryProvider
+
+src/hooks/
+  preCompletion.ts    — PreCompletionHook interface + runHookChain
+  mcpRetrieverHook.ts — concrete MCP-based retriever hook
+
+src/policy/
+  store.ts            — PolicyStore interface + YamlPolicyStore
+  errors.ts           — PolicyViolationError, SensitiveRoutingError
+
+src/embeddings/
+  provider.ts         — EmbeddingProvider interface (formalization only)
+
+src/middleware/
+  tenantId.ts         — X-Tenant-Id + X-Project-Id preHandler
+
+src/translation/
+  responses-out.ts    — canonicalToResponsesSse translator
+
+src/db/schema/
+  sessions.ts         — Drizzle schema for sessions + session_turns
 ```
 
-(Or path-based: `llm.example.com/api/` vs `llm.example.com/`. Subdomain is cleaner; pick whichever your DNS situation prefers.)
+### MODIFIED files (extend, never break existing contract)
 
-WebUI configures the router as one of its OpenAI-compatible providers, with `https://llm.example.com` and the bearer token. Now WebUI requests flow exactly the same path as agent requests — same logs, same metering, same auth.
+```
+src/app.ts                           — new opts fields (all optional), new hooks, MCP plugin register
+src/backends/adapter.ts              — EmbeddingProvider conformance annotation (no sig change)
+src/config/registry.ts               — RegistrySchema: mcp_servers?, policies?, context_strategy?, pre_completion_hooks?
+src/config/env.ts                    — MCP_ENABLED flag
+src/db/schema/request_log.ts        — tenant_id + project_id columns (via migration 0006)
+src/metrics/registry.ts              — tenant_id, project_id labels
+src/middleware/agentId.ts            — no change (tenantId.ts is a separate hook)
+src/routes/v1/chat-completions.ts   — policy gate + session + context + hooks + MCP tools inserted
+src/routes/v1/messages.ts           — same insertions
+src/routes/v1/embeddings.ts         — policy gate only
+src/routes/v1/rerank.ts             — policy gate only
+src/routes/v1/responses.ts          — streaming branch added + policy gate
+```
 
----
+### NEW Drizzle migrations
 
-## Anti-Patterns
-
-### "One big network, everything reachable from everything"
-
-**What people do:** Default Compose network, 9 services on it, no `internal: true`.
-**Why it's wrong:** Backends become reachable from any compromised container; an Open WebUI plugin that decides to call `http://ollama:11434/api/...` is now bypassing the router and your logging.
-**Do this instead:** Four-network split above. The boundaries enforce themselves.
-
-### "Buffer the SSE stream just to log it"
-
-**What people do:** Collect the full upstream response into a string, then send it down at the end so you can log the whole thing.
-**Why it's wrong:** Defeats streaming. Token-by-token UX is now batch-at-end, completely backwards.
-**Do this instead:** Forward chunks immediately. Accumulate token *counts* (and optionally first-N-tokens for debugging) into a buffer that you flush to `request_log` at end-of-stream.
-
-### "Use Postgres as the model registry"
-
-**What people do:** Make `models` a Postgres table from day one with a CRUD admin UI.
-**Why it's wrong:** Adds migration ceremony to changes you make ten times in the first week. There's no concurrent writer problem to solve here. There's a "I want this in git" problem you're now ignoring.
-**Do this instead:** YAML file, hot-reload, `git diff` shows what changed. Promote to DB only if you genuinely outgrow it.
-
-### "Mount one big `models/` volume into all three runtimes"
-
-**What people do:** Single shared `/models` volume into Ollama, llama.cpp, and vLLM, expecting reuse.
-**Why it's wrong:** vLLM wants a HuggingFace snapshot directory; Ollama wants its own blob+manifest layout; llama.cpp wants a `.gguf` path. Cross-pollination causes mysterious load failures.
-**Do this instead:** Two volumes — `models-gguf` (Ollama + llama.cpp) and `models-hf` (vLLM). Document the layouts. Use one source-of-truth subtree under `models-gguf/` that you control by hand, plus Ollama's private writable area for what `ollama pull` produces.
-
-### "Trust the internal network completely"
-
-**What people do:** No password on Postgres, no `--api-key` on vLLM, the network is internal so why bother.
-**Why it's wrong:** A bug in the router that lets requests reach `127.0.0.1:5432` from inside the container is now a "drop database" bug instead of a "bad SQL" bug.
-**Do this instead:** Cheap defaults — Postgres password, Redis `requirepass`, vLLM `--api-key`. None of them cost effort once and they bound the blast radius of mistakes.
+```
+src/db/migrations/
+  0005_sessions.sql                  — CREATE TABLE sessions + session_turns
+  0006_request_log_tenant_project.sql — ALTER TABLE request_log ADD COLUMN tenant_id, project_id
+```
 
 ---
 
-## Integration Points
+## Build Order (with dependency rationale)
 
-### External Services
+**Phase 14: Policy Primitives + Tenant/Agent IDs**
+- Pure additive. No other v0.11.0 feature works correctly without tenant IDs in the log.
+- `tenantId.ts` preHandler, `PolicyStore` + policy gate, migration 0006, Prometheus label extensions.
+- No new dependencies introduced.
+- All existing tests continue to pass — policy gate defaults to allow-all with no config.
 
-| Service | Integration Pattern | Notes |
-|---------|---------------------|-------|
-| Ollama Cloud | HTTPS, `Authorization: Bearer`, OpenAI-compatible `/v1/chat/completions` | Router is the only caller; treat as just another `backend:` value in models.yaml |
-| Let's Encrypt | Traefik's `certificatesResolvers.letsencrypt.acme` (HTTP-01 or DNS-01) | DNS-01 if behind a NAT without inbound :80 reachable |
-| HuggingFace | vLLM pulls models on startup; needs `HF_TOKEN` env if any model is gated | Bake into vLLM container env; don't expose host-wide |
+**Phase 15: MCP Host (router as server)**
+- Depends on: Phase 14 (policy gate already in place for tool-exposure control by tenant).
+- New: MCP plugin + tool handlers calling existing adapters directly (no new adapter code).
+- Adds: `mcp_enabled` env flag, `/mcp` endpoint with bearer-auth inherited from app-level hook.
+- Test: MCP client (Claude Desktop or `@modelcontextprotocol/sdk` Client) can call chat/embeddings tools.
 
-### Internal Boundaries
+**Phase 16: /v1/responses Streaming + Tools**
+- Depends on: Phase 14 (policy gate), Phase 15 (for MCP-tool tool-call pattern reference).
+- New: `responses-out.ts` translator, streaming branch in `responses.ts`, tool-call handling.
+- Closes the v0.10.0 streaming debt. Uses the SAME `fastify-sse-v2` + canonical stream pattern as chat-completions.
 
-| Boundary | Communication | Notes |
-|----------|---------------|-------|
-| Router ↔ Backends | HTTP, JSON in, SSE/JSON out | Router is the only translator; backends speak whatever they natively speak |
-| Router ↔ Postgres | TCP, `pg` driver, connection pool size 10 | One pool, both `models` reads (cached in Redis) and `request_log` writes |
-| Router ↔ Redis | TCP, single client | Used for rate limit + model registry cache |
-| WebUI ↔ Router | HTTP + SSE, OpenAI protocol, Bearer | Treat WebUI as just another agent; same path, same auth |
-| WebUI ↔ Postgres | TCP | Different *database* on the same server (separation of schemas) |
-| Traefik ↔ Docker socket | UNIX socket bind-mount, **read-only** | `/var/run/docker.sock:/var/run/docker.sock:ro` |
+**Phase 17: SessionStore + ContextProvider + SummaryProvider**
+- Depends on: Phase 14 (tenant_id available for session attribution), Phase 16 (responses route done before adding session to it).
+- New: migration 0005, `store.ts`, `provider.ts`, `summary.ts`, `windowManager.ts`.
+- Insert session load/append into chat-completions + messages + responses routes.
+- `SummaryProvider` ships as noop-default.
+
+**Phase 18: MCP Client + RetrieverProvider + Pre-Completion Hook**
+- Depends on: Phase 15 (MCP host exists as reference), Phase 17 (session + context done, hooks have full canonical to work with).
+- New: `McpClientRegistry`, `toolLoop.ts`, `PreCompletionHook`, `mcpRetrieverHook.ts`.
+- Registry schema gains `mcp_servers:` + `pre_completion_hooks:`.
+- MCP tool injection + tool-call loop wired into chat-completions.
+
+**Phase 19: EmbeddingProvider Formalization + Observability Hardening**
+- Depends on: Phase 18 (all new surfaces exist and need metrics coverage).
+- Formalize `EmbeddingProvider` interface. Add MCP tool metrics, hook metrics, session metrics, policy metrics to Prometheus. Update Grafana dashboard. Smoke test all new surfaces end-to-end.
 
 ---
 
-## Scaling Considerations
+## Architecture Risks to Existing Flows
 
-This is single-host single-user; "scale" mostly means "don't melt the GPU" rather than serving more clients.
+### Risk 1: MCP plugin SSE conflicts with fastify-sse-v2
+**Assessment:** LOW risk. The MCP plugin uses `reply.raw.write()` on `/mcp` routes; `fastify-sse-v2` uses `reply.sse()` on `/v1/*` routes. Route prefixes are disjoint. Confirm with integration test: start MCP client + concurrent `/v1/chat/completions` stream, verify both complete correctly.
 
-| Scale | Architecture adjustment |
-|-------|--------------------------|
-| 1 user, ≤1 RPS | Default. Everything as designed. |
-| Bursty agents (10–50 concurrent streams) | vLLM (continuous batching) earns its keep here; Ollama serializes more aggressively. Move heavy chat models to vLLM. |
-| Multiple users (still 1 host) | Add `api_keys` table, per-key rate limit in Redis (`ratelimit:{key_id}:{minute}`), per-key usage rollups. |
-| GPU is saturated | Queue requests in router (return 429 with `Retry-After`); do NOT silently buffer. Your problem is hardware, not architecture. |
-| You want a second host | Out of scope per PROJECT.md. Different project. |
+### Risk 2: Pre-completion hook latency on critical path
+**Assessment:** HIGH operational risk. The hook is synchronous in the request pipeline. A slow retriever MCP server (e.g., Qdrant taking 2s) adds 2s to every request with that hook configured. Mitigation: per-hook timeout (default 5s), fail-open by default so a stuck retriever does not block completions. Clearly documented in PITFALLS.
 
-### First bottleneck
+### Risk 3: SessionStore sync writes blocking replies
+**Assessment:** MEDIUM risk. `await sessionStore.appendTurn()` is on the critical path BEFORE `reply.send()`. If Postgres is slow, it delays the response. Mitigation: per-call timeout (1000ms), fail-open on timeout — log warn, send reply anyway. The session turn is lost on timeout (acceptable: better to respond than to wait). This differs from the bufferedWriter (which is explicitly async) — session turns must be durable-before-response but with a bounded wait.
 
-GPU VRAM. A 70B at Q4 is ~40 GB; doesn't fit in 16 GB at all. Real ceiling is ~13B Q4–Q5 or 7B Q8 locally. Routing to Ollama Cloud is the architectural escape hatch; the router supports it from day one, so the "bottleneck" never breaks the API contract.
+### Risk 4: MCP tool-call loop infinite loop / runaway cost
+**Assessment:** HIGH architectural risk. A model that always emits tool_use blocks will loop forever. Mitigation: hard `MAX_MCP_TOOL_ITERATIONS = 5` cap in `toolLoop.ts`, fail with structured 500 on cap exceeded. Declated in env as `MCP_MAX_TOOL_ITERATIONS` (default 5).
 
-### Second bottleneck
+### Risk 5: CanonicalRequest.tools injection overwriting user-supplied tools
+**Assessment:** MEDIUM. If the client sends `tools: [...]` AND the model has MCP tools configured, the merge must preserve client tools as higher priority (client-declared tools are explicit intent). MCP tools are appended after client tools, not prepended. If a name collision exists, client tool wins. Documented in the tool merge function.
 
-Concurrent streams when running Ollama. Ollama processes requests largely serially per model. If multiple agents hammer the same model concurrently, switch that model's `backend:` to `vllm` (continuous batching) — no client-visible change.
+### Risk 6: Responses streaming route removing the 400 for stream:true
+**Assessment:** LOW. The v0.10.0 400 was explicitly documented as "deferred to v0.11+". Removing it is the intended change. Existing callers that relied on the 400 to detect "streaming not supported" need to be updated — but the only known caller is n8n, which already handles streaming via `/v1/chat/completions`.
+
+### Risk 7: migration 0005+0006 journal ordering
+**Assessment:** LOW if the existing journal pattern is followed exactly. The `_journal.json` must receive entries for 0005 and 0006 in the correct order. Breaking the journal ordering causes Drizzle's migrator to silently skip entries (known pitfall from v0.10.0 MEMORY.md). Always generate both the SQL and journal entries together as an indivisible unit.
+
+### Risk 8: MCP consumer lock-in to TS/Node transport assumption
+**Assessment:** LOW for v0.11.0, but worth noting. The MCP Streamable HTTP transport (POST/GET/DELETE on `/mcp`) is fully language-agnostic — any MCP client speaks it. stdio is NOT implemented (the router is a server, not a subprocess). If a future Python consumer wants to connect as a client, it uses the same `/mcp` HTTP endpoint. No lock-in.
+
+---
+
+## Anti-Patterns to Avoid
+
+### Anti-Pattern 1: Retrieval logic inside the router
+**What:** Implementing vector search, embedding generation for queries, or knowledge-graph traversal directly in the router's hook or context provider.
+**Why bad:** Violates the "Retrieval Interfaces, not Retrieval Logic" strategic frame. Makes the router responsible for knowledge correctness, schema evolution, and external service contracts it cannot own.
+**Instead:** The hook calls an external MCP server that owns the retrieval logic. The router provides context (query text, top_k, filters) and receives documents. It injects documents as message content and does nothing else.
+
+### Anti-Pattern 2: Persistent MCP client connections at boot
+**What:** Opening MCP client connections to all `mcp_servers` during `buildApp()` and holding them for the process lifetime.
+**Why bad:** Blocks boot on unavailable external servers, requires reconnect logic, holds TCP connections that may timeout silently.
+**Instead:** Lazy per-request connections for v0.11.0. A session-scoped connection pool is a v0.12+ optimization once the connection overhead is measured as a real bottleneck.
+
+### Anti-Pattern 3: SessionStore as async-buffered writes
+**What:** Using `bufferedWriter.push()` for session turns (fire-and-forget, no durability guarantee).
+**Why bad:** If the process crashes after a response is sent but before the buffer flushes, the session turn is lost. The next request in the session loads incomplete history, leading to confused model behavior.
+**Instead:** Sync `await db.insert(session_turns)` with a 1s timeout and fail-open. Durability is required; bounded latency is the constraint, not zero latency.
+
+### Anti-Pattern 4: Policy gate AFTER breaker
+**What:** Running the policy check after `breaker.check()` — i.e., counting a policy violation as a backend failure.
+**Why bad:** Circuit breaker trip counts should reflect backend health, not client policy violations. A misconfigured client that hits a policy wall will trip the breaker against a healthy backend.
+**Instead:** Policy gate runs before breaker, same as capability gate. Policy violation → 403, breaker not consulted, no failure recorded against the backend.
+
+### Anti-Pattern 5: Exposing backend-specific retriever params in RetrieverProvider
+**What:** Defining `RetrieverProvider.retrieve(query, { qdrantCollectionName, pineconeNamespace })`.
+**Why bad:** Leaks Qdrant/Pinecone-specific knowledge into the router's interface layer. If the retriever changes, the interface must change, breaking all callers.
+**Instead:** Hook payload uses generic fields: `{ query: string, top_k: number, filters?: Record<string, unknown>, hybrid?: boolean }`. The MCP server translates generic fields to backend-specific params. The router has zero awareness of what vector store is behind the MCP server.
 
 ---
 
 ## Sources
 
-- [Traefik dynamic configuration file](https://doc.traefik.io/traefik/reference/dynamic-configuration/file/)
-- [Traefik setup with Docker](https://doc.traefik.io/traefik/setup/docker/)
-- [Traefik vs Caddy vs nginx — 2026 self-hosting comparison (OSSAlt)](https://ossalt.com/guides/traefik-vs-caddy-vs-nginx-reverse-proxy-self-hosting-2026)
-- [vLLM official Docker docs](https://docs.vllm.ai/en/stable/deployment/docker/)
-- [vLLM Docker production guide 2026 (Inference.net)](https://inference.net/content/vllm-docker-deployment/)
-- [Anthropic Messages API streaming reference](https://docs.anthropic.com/en/api/messages-streaming)
-- [Streaming tool calls — parsing Anthropic SSE](https://dev.to/gabrielanhaia/streaming-tool-calls-parse-anthropic-sse-without-loading-the-whole-message-2on)
-- [Ollama OpenAI compatibility](https://docs.ollama.com/api/openai-compatibility)
-- [Ollama model storage layout](https://www.vaditaslim.com/blog/ai/ollama-model-storage)
-- [GGUF + llama.cpp HuggingFace docs](https://huggingface.co/docs/hub/gguf-llamacpp)
-- [Local LLM Inference 2026 (DEV)](https://dev.to/starmorph/local-llm-inference-in-2026-the-complete-guide-to-tools-hardware-open-weight-models-2iho)
-- [Open WebUI behind Traefik discussion](https://github.com/open-webui/open-webui/discussions/1309)
-- [Open WebUI reverse proxy setup](https://deepwiki.com/open-webui/open-webui/3.4-reverse-proxy-setup)
-- [Open WebUI multi-backend OpenAI-compatible config](https://docs.openwebui.com/getting-started/quick-start/connect-a-provider/starting-with-openai-compatible/)
-- [Docker Compose networking reference](https://docs.docker.com/reference/compose-file/networks/)
-- [LiteLLM router config (reference for "model registry as YAML" pattern)](https://docs.litellm.ai/docs/proxy/configs)
-- [Fastify SSE plugin](https://www.npmjs.com/package/@fastify/sse)
+- Live code inspection: `router/src/app.ts`, `router/src/backends/adapter.ts`, `router/src/routes/v1/responses.ts`, `router/src/translation/canonical.ts`, `router/src/db/schema/request_log.ts`, `router/src/config/registry.ts` — **HIGH confidence**
+- MCP Streamable HTTP transport spec: https://modelcontextprotocol.io/docs/concepts/transports — **HIGH confidence** (official spec, verified 2026-05-29)
+- `haroldadmin/fastify-mcp` v3.0.0 (2026-05-12): mounts at configurable path, same-port, Streamable HTTP + legacy HTTP+SSE support — **MEDIUM confidence** (GitHub README, not verified with local test)
+- `@modelcontextprotocol/sdk` `NodeStreamableHTTPServerTransport`: `handleRequest(req, opts?)`, stateful/stateless modes, POST+GET+DELETE on single endpoint — **HIGH confidence** (DeepWiki + official docs)
+- OpenAI Responses API SSE event sequence: `response.created → response.output_item.added → response.output_text.delta → response.completed` — **MEDIUM confidence** (community guide, consistent with official reference)
+- OpenAI Responses API tool call events: `function_call_arguments.delta/done` pattern — **MEDIUM confidence** (community guide)
+- Drizzle ORM schema pattern for sessions/turns: standard `pgTable` with `references()` FK — **HIGH confidence** (Drizzle official docs pattern)
+- Fastify v5 hook ordering (onRequest → preHandler → route handler → onSend): verified from live code in `app.ts` — **HIGH confidence**
 
 ---
-*Architecture research for: self-hosted multi-runtime LLM gateway*
-*Researched: 2026-05-09*
+*Architecture research for: local-llms v0.11.0 Retrieval-Ready Infrastructure*
+*Researched: 2026-05-29*
