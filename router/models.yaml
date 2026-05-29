@@ -48,7 +48,7 @@ models:
     backend: llamacpp
     backend_url: http://llamacpp:8080/v1
     backend_model: qwen2.5-7b-instruct-q4_K_M
-    capabilities: [chat, tools]
+    capabilities: [chat, tools, json_mode]
     vram_budget_gb: 6
     concurrency: 2
     max_model_len: 8192
@@ -69,7 +69,7 @@ models:
     backend: vllm
     backend_url: http://vllm:8000/v1
     backend_model: Qwen/Qwen2.5-7B-Instruct-AWQ
-    capabilities: [chat, tools]
+    capabilities: [chat, tools, json_mode]
     vram_budget_gb: 7.2
     concurrency: 2
     max_model_len: 8192
@@ -107,7 +107,7 @@ models:
     backend: ollama-cloud
     backend_url: https://ollama.com/v1
     backend_model: gpt-oss:120b-cloud
-    capabilities: [chat, tools]
+    capabilities: [chat, tools, json_mode]
     vram_budget_gb: 0
     concurrency: 4
     max_model_len: 65536
@@ -117,7 +117,7 @@ models:
     backend: ollama-cloud
     backend_url: https://ollama.com/v1
     backend_model: gpt-oss:20b-cloud
-    capabilities: [chat, tools]
+    capabilities: [chat, tools, json_mode]
     vram_budget_gb: 0
     concurrency: 4
     max_model_len: 32768
@@ -135,7 +135,7 @@ models:
     backend: ollama
     backend_url: http://ollama:11434/v1
     backend_model: qwen2.5:7b-instruct-q4_K_M
-    capabilities: [chat, tools]
+    capabilities: [chat, tools, json_mode]
     vram_budget_gb: 0
     concurrency: 2
     max_model_len: 8192
@@ -165,7 +165,7 @@ models:
     backend: ollama-cloud
     backend_url: https://ollama.com/v1
     backend_model: gpt-oss:120b-cloud
-    capabilities: [chat, tools]
+    capabilities: [chat, tools, json_mode]
     vram_budget_gb: 0
     concurrency: 4
     max_model_len: 65536

@@ -682,6 +682,8 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
     breaker,
     breakerCooldownSec,
     idempotency,
+    // Phase 10 (v0.10.0 — JSON-06): inject just the counter the route needs.
+    metrics: { jsonValidationTotal: opts.metrics.jsonValidationTotal },
   });
 
   // Plan 04-02 (ANTHR-02, ANTHR-03, ANTHR-04, ANTHR-05):

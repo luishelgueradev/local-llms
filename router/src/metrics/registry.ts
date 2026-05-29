@@ -66,6 +66,19 @@ export function makeMetricsRegistry() {
     registers: [register],
   });
 
+  // Phase 10 (v0.10.0 — JSON-06): observe structured-output validation outcomes.
+  // Labels:
+  //   result=ok      → first response validated cleanly
+  //   result=retry   → first response failed, repaired response succeeded
+  //   result=failed  → both attempts failed → 400 invalid_structured_output
+  // No model/backend labels — those are queryable via the request_log row.
+  const jsonValidationTotal = new Counter({
+    name: 'router_json_validation_total',
+    help: 'Outcomes of response_format JSON validation (ok | retry | failed)',
+    labelNames: ['result'] as const,
+    registers: [register],
+  });
+
   return {
     register,
     requestsTotal,
@@ -73,6 +86,7 @@ export function makeMetricsRegistry() {
     ttftSeconds,
     tokensTotal,
     logBufferDroppedTotal,
+    jsonValidationTotal,
   };
 }
 

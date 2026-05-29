@@ -28,6 +28,7 @@ import {
   InvalidAgentIdError,
   InvalidIdempotencyKeyError,
   InvalidImageUrlError,
+  InvalidStructuredOutputError,
   InvalidToolArgumentsError,
   RateLimitExceededError,
   RegistryUnknownModelError,
@@ -147,6 +148,10 @@ export function mapErrorToCode(err: unknown): string {
   // type='rate_limit_error' envelope.
   if (err instanceof RateLimitExceededError) return 'rate_limit_exceeded';
   if (err instanceof CapabilityNotSupportedError) return 'model_capability_mismatch';
+  // Phase 10 (v0.10.0 — JSON-06): post-retry structured-output validation failure
+  // gets its OWN bucket label so the metric `router_json_validation_total{result="failed"}`
+  // (recorded in the route handler) and the request_log error_code stay aligned.
+  if (err instanceof InvalidStructuredOutputError) return 'invalid_structured_output';
   if (
     err instanceof InvalidAgentIdError ||
     // Plan 08-07 (ROUTE-12 / D-D5): Idempotency-Key regex violation joins

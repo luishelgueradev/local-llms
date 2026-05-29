@@ -13,10 +13,16 @@ import {
   BreakerOpenError,
   CapabilityNotSupportedError,
   CloudMaxTokensExceededError,
+  InvalidStructuredOutputError,
   NO_ENVELOPE,
   mapToHttpStatus,
   toOpenAIErrorEnvelope,
 } from '../../errors/envelope.js';
+import {
+  buildRepairMessage,
+  validateJsonOutput,
+  type ResponseFormat,
+} from '../../translation/jsonValidation.js';
 import { CLOUD_MAX_TOKENS_CAP } from '../../config/constants.js';
 import type { CircuitBreaker } from '../../resilience/circuitBreaker.js';
 import type { IdempotencyMultiplexer } from '../../resilience/idempotency.js';
@@ -47,10 +53,33 @@ const ChatMessageSchema = z.object({
   tool_calls: z.array(z.unknown()).optional(),
 }).passthrough();
 
+// Phase 10 (v0.10.0 — JSON-01/02/05). `response_format` is explicitly typed so:
+//   - the capability gate can detect its presence pre-adapter (.passthrough() would still
+//     work but we'd lose IntelliSense + zod-level shape validation),
+//   - downstream we can branch on `type` without `as` casts,
+//   - mis-shaped `response_format` bodies are rejected at the route boundary with the
+//     same 400 + invalid_request envelope as any other schema violation.
+//
+// Unknown `type` values are rejected by the discriminated union → caller must pass
+// "text" | "json_object" | "json_schema" verbatim per OpenAI spec.
+const ResponseFormatSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('text') }),
+  z.object({ type: z.literal('json_object') }),
+  z.object({
+    type: z.literal('json_schema'),
+    json_schema: z.object({
+      name: z.string().optional(),
+      schema: z.record(z.string(), z.unknown()),
+      strict: z.boolean().optional(),
+    }),
+  }),
+]);
+
 export const ChatCompletionRequestSchema = z.object({
   model: z.string().min(1),
   messages: z.array(ChatMessageSchema).min(1),
   stream: z.boolean().optional(),
+  response_format: ResponseFormatSchema.optional(),
 }).passthrough();
 
 export type ChatCompletionRequest = z.infer<typeof ChatCompletionRequestSchema>;
@@ -93,6 +122,16 @@ export interface RegisterChatCompletionsOpts {
    * Valkey) the header is silently ignored.
    */
   idempotency?: IdempotencyMultiplexer;
+  /**
+   * Phase 10 (v0.10.0 — JSON-06) — observe structured-output validation outcomes.
+   * Only `jsonValidationTotal` is read by this route; the type is intentionally
+   * narrow so tests can inject a no-op without rebuilding the entire MetricsRegistry.
+   * When undefined (older test fixtures), validation still runs but the metric is
+   * not recorded.
+   */
+  metrics?: {
+    jsonValidationTotal: { inc(labels: { result: 'ok' | 'retry' | 'failed' }): void };
+  };
 }
 
 /**
@@ -162,6 +201,19 @@ export function registerChatCompletionsRoute(
       );
       if (hasImage && !entry.capabilities.includes('vision')) {
         throw new CapabilityNotSupportedError(entry.name, 'vision');
+      }
+
+      // Phase 10 (v0.10.0 — JSON-05): json_mode capability gate.
+      // Any request with `response_format` whose type is "json_object" or "json_schema"
+      // requires the model to declare `json_mode` in its registry capabilities — even
+      // for `stream: true` (the contract is "the assembled body MUST validate", so a
+      // model that can't reliably produce JSON should be rejected at the route boundary,
+      // not allowed to produce an unparseable stream the client then can't repair).
+      const wantsJson =
+        body.response_format !== undefined &&
+        (body.response_format.type === 'json_object' || body.response_format.type === 'json_schema');
+      if (wantsJson && !entry.capabilities.includes('json_mode')) {
+        throw new CapabilityNotSupportedError(entry.name, 'json_mode');
       }
 
       // ── AbortController: load-bearing for SC3 ──────────────────────────────
@@ -648,7 +700,48 @@ export function registerChatCompletionsRoute(
         // Plan 05-02 Task 3: capture canonicalResult on the OUTER scope so the
         // finally block can populate request_log.tokens_in / tokens_out for the
         // non-stream branch.
+        //
+        // Phase 10 (v0.10.0 — JSON-01..04): when response_format is json_object or
+        // json_schema, validate the assistant content after the adapter call. On
+        // failure, append a synthetic repair message to the canonical and retry
+        // exactly ONCE (single-shot). If the second response also fails to validate,
+        // throw InvalidStructuredOutputError → 400 + invalid_structured_output envelope.
+        //
+        // The repair loop happens INSIDE the try block, BEFORE breaker.recordSuccess —
+        // so a request that ultimately fails validation is recorded as a failure (and
+        // the breaker sees recordFailure via the catch path), not a success.
         canonicalResult = await adapter.chatCompletionsCanonical(canonical, controller.signal);
+
+        if (wantsJson) {
+          const rf = body.response_format as ResponseFormat;
+          const firstContent = extractAssistantText(canonicalResult);
+          const firstCheck = validateJsonOutput(firstContent, rf);
+          if (firstCheck.ok) {
+            opts.metrics?.jsonValidationTotal.inc({ result: 'ok' });
+          } else {
+            // Single-shot repair: append the failing assistant turn AND a user message
+            // with the repair instruction, then re-call the adapter exactly once.
+            const repairCanonical = {
+              ...canonical,
+              messages: [
+                ...canonical.messages,
+                { role: 'assistant' as const, content: [{ type: 'text' as const, text: firstContent }] },
+                { role: 'user' as const, content: [{ type: 'text' as const, text: buildRepairMessage(firstCheck.reason) }] },
+              ],
+            };
+            const repairResult = await adapter.chatCompletionsCanonical(repairCanonical, controller.signal);
+            const repairContent = extractAssistantText(repairResult);
+            const repairCheck = validateJsonOutput(repairContent, rf);
+            if (repairCheck.ok) {
+              opts.metrics?.jsonValidationTotal.inc({ result: 'retry' });
+              canonicalResult = repairResult;
+            } else {
+              opts.metrics?.jsonValidationTotal.inc({ result: 'failed' });
+              throw new InvalidStructuredOutputError(entry.name, repairCheck.reason);
+            }
+          }
+        }
+
         // Plan 08-04 — fire-and-forget breaker success signal. Not awaited so
         // it doesn't add tail latency to the response. If Valkey is slow / down,
         // the breaker's internal client-options (lazyConnect:false +
@@ -763,4 +856,18 @@ export function registerChatCompletionsRoute(
       }
     },
   );
+}
+
+/**
+ * Phase 10 (v0.10.0 — JSON-01..04) helper: concatenate all `text`-type content blocks
+ * from a CanonicalResponse into a single string. Used by the validation pass to feed
+ * `validateJsonOutput`; tool_use blocks are ignored (json_mode + tools is an unusual
+ * combination but the contract is "the textual reply must be JSON" — tool_calls are
+ * orthogonal data).
+ */
+function extractAssistantText(response: CanonicalResponse): string {
+  return response.content
+    .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
+    .map((b) => b.text)
+    .join('');
 }

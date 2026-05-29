@@ -28,7 +28,8 @@ export const ModelEntrySchema = z.object({
   backend_url: z.string().url(),
   backend_model: z.string().min(1),
   // Phase 3: capabilities + vram_budget_gb are now REQUIRED fields (Phase 2 accepted them without requiring them).
-  capabilities: z.array(z.enum(['chat', 'embeddings', 'vision', 'tools'])).min(1),
+  // Phase 10 (v0.10.0 — JSON-05): `json_mode` declared per model. Phase 11: `rerank`.
+  capabilities: z.array(z.enum(['chat', 'embeddings', 'vision', 'tools', 'json_mode', 'rerank'])).min(1),
   // Cloud entries (backend: ollama-cloud) use 0 because they consume no local VRAM;
   // the VRAM-envelope superRefine still sums them (0 contributes 0 to the envelope total).
   // Plan 08-02 relaxed this from .positive() to .nonnegative() for that reason.
@@ -37,6 +38,18 @@ export const ModelEntrySchema = z.object({
   concurrency: z.number().int().positive().optional(),
   max_model_len: z.number().int().positive().optional(),
   profile: z.string().optional(),
+  // Phase 12 (v0.10.0 — EMB-H02): embedding dimensions declared per model with capability `embeddings`.
+  // Enforced at response time — a mismatched dims response is rejected (500) rather than propagated to
+  // a downstream vector store. Required for `embeddings` capability; ignored otherwise.
+  dims: z.number().int().positive().optional(),
+  // Phase 13 (v0.10.0 — COST-01): per-1M-token pricing in USD cents. Optional; absent => cost_cents=0
+  // (treated as free — typical for local backends). When present, used to compute cost_cents per request.
+  pricing: z
+    .object({
+      input_per_1m: z.number().nonnegative(),
+      output_per_1m: z.number().nonnegative(),
+    })
+    .optional(),
 });
 
 /**

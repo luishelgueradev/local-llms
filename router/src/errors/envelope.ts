@@ -58,13 +58,35 @@ export class CapabilityNotSupportedError extends Error {
   readonly code = 'model_capability_mismatch';
   constructor(
     public readonly modelName: string,
-    public readonly missingCapability: 'vision' | 'tools' | 'embeddings',
+    public readonly missingCapability: 'vision' | 'tools' | 'embeddings' | 'json_mode' | 'rerank',
   ) {
     super(
       `Model "${modelName}" does not support capability "${missingCapability}". ` +
         `Pick a model with "${missingCapability}" in its capabilities list.`,
     );
     this.name = 'CapabilityNotSupportedError';
+  }
+}
+
+/**
+ * Phase 10 (v0.10.0 — JSON-04): thrown when `response_format: {type: "json_object"|"json_schema"}`
+ * is supplied AND the model's response fails JSON parse + schema validation AFTER the
+ * single retry-with-repair attempt (JSON-03). Maps to 400 + invalid_structured_output.
+ *
+ * The `details` field contains the AJV validation errors (or parse error message) of the
+ * FINAL attempt — the client receives an actionable failure rather than corrupt JSON.
+ */
+export class InvalidStructuredOutputError extends Error {
+  readonly code = 'invalid_structured_output';
+  constructor(
+    public readonly modelName: string,
+    public readonly details: string,
+  ) {
+    super(
+      `Model "${modelName}" failed to produce a response matching the requested response_format ` +
+        `after one repair attempt. Details: ${details}`,
+    );
+    this.name = 'InvalidStructuredOutputError';
   }
 }
 
@@ -274,6 +296,8 @@ export function mapToHttpStatus(err: unknown): number {
   if (err instanceof RegistryUnknownModelError) return 404;
   // Plan 04-02 D-C2: missing capability for the requested model — pre-adapter 400.
   if (err instanceof CapabilityNotSupportedError) return 400;
+  // Phase 10 (v0.10.0 — JSON-04): structured output validation failed after repair — 400.
+  if (err instanceof InvalidStructuredOutputError) return 400;
   // Plan 08-05 (CLOUD-04 / D-C1): cloud model max_tokens > 16384 — pre-adapter 400.
   if (err instanceof CloudMaxTokensExceededError) return 400;
   // Plan 05-02 D-D5 / ROUTE-09: X-Agent-Id regex violation — pre-route 400.
@@ -343,6 +367,17 @@ export function toOpenAIErrorEnvelope(err: unknown): EnvelopeOrSkip {
         type: 'invalid_request_error',
         code: 'model_capability_mismatch',
         param: 'model',
+      },
+    };
+  }
+  // Phase 10 (v0.10.0 — JSON-04): structured output validation failed → 400 with details.
+  if (err instanceof InvalidStructuredOutputError) {
+    return {
+      error: {
+        message: err.message,
+        type: 'invalid_request_error',
+        code: 'invalid_structured_output',
+        param: 'response_format',
       },
     };
   }
@@ -546,6 +581,12 @@ export function toAnthropicErrorEnvelope(err: unknown): AnthropicEnvelopeOrSkip 
     return { type: 'error', error: { type: 'not_found_error', message: err.message } };
   }
   if (err instanceof CapabilityNotSupportedError) {
+    return { type: 'error', error: { type: 'invalid_request_error', message: err.message } };
+  }
+  // Phase 10 (v0.10.0 — JSON-04): structured-output validation failure — Anthropic taxonomy
+  // collapses to invalid_request_error (parity with the OpenAI envelope which carries the
+  // specific `code` field).
+  if (err instanceof InvalidStructuredOutputError) {
     return { type: 'error', error: { type: 'invalid_request_error', message: err.message } };
   }
   // Plan 08-05 (CLOUD-04 / D-C1): cloud max_tokens cap exceeded — Anthropic
