@@ -2,9 +2,9 @@
 gsd_state_version: 1.0
 milestone: v0.11.0
 milestone_name: Retrieval-Ready Infrastructure
-status: roadmap_ready
-last_updated: "2026-05-29"
-last_activity: 2026-05-29
+status: v0.11.0 roadmap finalized · Phase 14 next
+last_updated: "2026-05-29T23:47:33.108Z"
+last_activity: 2026-05-29 — Roadmap created
 progress:
   total_phases: 6
   completed_phases: 0
@@ -77,6 +77,7 @@ Milestone v0.9.0:  ██████████ 100% — SHIPPED 2026-05-28 (a
 ## Accumulated Context
 
 ### Active Decisions
+
 - Migration numbering: Phase 14 gets next sequential number after 0004 (existing) — must read `_journal.json` as first task of Phase 14 plan
 - MCP session GC: 30-min interval + SIGTERM handler 5s timeout + Fastify `onClose` hook
 - SessionStore writes: SYNC + 1s timeout + fail-open (different from async-buffered request_log)
@@ -84,8 +85,10 @@ Milestone v0.9.0:  ██████████ 100% — SHIPPED 2026-05-28 (a
 - MCP tools/list cache key: `mcp:tools:{server_alias}` consistent with existing `model-registry:*` pattern
 
 ### Deferred (carries forward from v0.10.0)
+
 - Phase 7 Plan 07-06 Task 3 — vLLM cold-start UAT on RTX 5060 Ti (user decision: Ollama-only profile)
 - RERANK-06 dedicated live smoke — deferred (model needs to be pulled first)
 
 ### Active Todos
+
 - `/gsd:plan-phase 14` — Phase 14 planning next
