@@ -171,11 +171,27 @@ describe('POST /v1/responses — happy paths (RESP-01)', () => {
     expect(body.output[0].role).toBe('assistant');
     expect(body.output[0].content[0].type).toBe('output_text');
     expect(body.output[0].content[0].text).toBe('hello from fake');
-    expect(body.usage).toEqual({
-      input_tokens: 12,
-      output_tokens: 6,
-      total_tokens: 18,
-    });
+    // SDK-compat hardening (post-bug-fix): content blocks MUST carry annotations:[]
+    // because openai-node iterates `content[].annotations.map(...)` on parse.
+    expect(body.output[0].content[0].annotations).toEqual([]);
+    // Required-or-nullable fields the SDK deserializer expects on every response.
+    expect(body.status).toBe('completed');
+    expect(typeof body.created_at).toBe('number');
+    expect(body.error).toBeNull();
+    expect(body.incomplete_details).toBeNull();
+    expect(body.tools).toEqual([]);
+    expect(body.tool_choice).toBe('auto');
+    expect(body.parallel_tool_calls).toBe(true);
+    // Flat-text shortcut the SDK exposes as response.output_text; LangChain reads it.
+    expect(body.output_text).toBe('hello from fake');
+    // Usage: assert the three core counts; the *_tokens_details sub-objects are
+    // present for SDK projection compatibility but their internals (cached_tokens,
+    // reasoning_tokens) are 0 in this fake-adapter path.
+    expect(body.usage.input_tokens).toBe(12);
+    expect(body.usage.output_tokens).toBe(6);
+    expect(body.usage.total_tokens).toBe(18);
+    expect(body.usage.input_tokens_details).toBeDefined();
+    expect(body.usage.output_tokens_details).toBeDefined();
 
     // Adapter received a canonical with backend_model + a single user message.
     expect(fakeCalls).toHaveLength(1);
@@ -192,6 +208,32 @@ describe('POST /v1/responses — happy paths (RESP-01)', () => {
     expect(pushed[0].http_status).toBe(200);
     expect(pushed[0].tokens_in).toBe(12);
     expect(pushed[0].tokens_out).toBe(6);
+  });
+
+  it('SDK-compat regression: emulates openai-node response parser .map() calls (n8n bug-2026-05-29)', async () => {
+    // Original bug: n8n with `responsesApiEnabled: true` raised
+    // "Cannot read properties of undefined (reading 'map')" because the openai-node
+    // SDK iterates `content[].annotations.map(...)` and `tools.map(...)` during
+    // response parsing. This test runs the exact same `.map()` calls the SDK does
+    // against our wire body — if any are undefined we crash here too, catching the
+    // regression at the integration boundary instead of in production.
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/responses',
+      headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
+      payload: { model: LOCAL_CHAT, input: 'hola' },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as {
+      output: Array<{ content: Array<{ annotations: unknown[] }> }>;
+      tools: unknown[];
+      output_text: string;
+    };
+    // The exact .map() calls the openai-node SDK does:
+    expect(() => body.output.map((o) => o.content.map((c) => c.annotations.map((_a) => _a)))).not.toThrow();
+    expect(() => body.tools.map((t) => t)).not.toThrow();
+    // Flat-text shortcut is populated (LangChain reads this off the wire).
+    expect(body.output_text).toBe('hello from fake');
   });
 
   it('array input + instructions → instructions fold into system; messages preserved', async () => {

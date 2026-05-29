@@ -180,41 +180,105 @@ function responsesToCanonical(
  * Text-only output (no tool calls) for v0.10.0; tool support is in scope for a
  * later iteration when the Responses-API tool-calling contract stabilizes
  * across SDK versions.
+ *
+ * Wire-shape fields included beyond the minimal {id, object, output, usage}
+ * advertised in the Phase 13 spec — these are the openai-node SDK's
+ * required-or-nullable fields that the SDK's response parser ITERATES (e.g.
+ * `content[].annotations.map(...)` blows up with "Cannot read properties of
+ * undefined (reading 'map')" when `annotations` is missing):
+ *
+ *   - content[].annotations: []     — SDK maps over this to extract citations;
+ *                                     `[]` is the spec value for "no citations"
+ *   - output_text                   — flat-string shortcut the SDK exposes as
+ *                                     `response.output_text`; some consumers
+ *                                     (LangChain `lmChatOpenAi` with
+ *                                     `responsesApiEnabled: true`) read this
+ *                                     directly off the wire instead of
+ *                                     recomputing from content blocks
+ *   - status                        — "completed" | "in_progress" | "failed"
+ *   - created_at                    — unix seconds; SDK expects a number
+ *   - error: null                   — required field; null when no error
+ *   - incomplete_details: null      — required field; null when complete
+ *   - tools: []                     — SDK iterates this for function-call
+ *                                     translation; `[]` means "no tools"
+ *   - tool_choice: "auto"           — required field; "auto" is the default
+ *   - parallel_tool_calls: true     — required boolean
+ *   - reasoning, text, truncation, instructions, max_output_tokens,
+ *     metadata, previous_response_id, temperature, top_p, user — all
+ *     required-or-nullable per the spec; some SDKs deserialize the response
+ *     into a strict class and choke on missing fields
+ *   - output[].id, output[].status  — per-output-item identifier and lifecycle;
+ *     SDK uses these to correlate streaming events but they're also expected
+ *     in the non-stream shape
+ *   - usage.{input,output}_tokens_details — the SDK projects these into
+ *     `response.usage.input_tokens_details.cached_tokens` etc.; missing
+ *     fields cause property-access errors in `output_tokens_details.reasoning_tokens`
+ *
+ * Echoing fields from the inbound request (model, instructions, temperature,
+ * max_output_tokens, etc.) is part of the spec — the response is the "current
+ * state of the response object" and callers may inspect echoed knobs.
  */
 function canonicalToResponses(
   result: CanonicalResponse,
   displayModel: string,
-): {
-  id: string;
-  object: 'response';
-  model: string;
-  output: Array<{
-    type: 'message';
-    role: 'assistant';
-    content: Array<{ type: 'output_text'; text: string }>;
-  }>;
-  usage: { input_tokens: number; output_tokens: number; total_tokens: number };
-} {
+  echo: {
+    instructions?: string;
+    temperature?: number;
+    max_output_tokens?: number;
+    user?: string;
+  } = {},
+): Record<string, unknown> {
   const text = result.content
     .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
     .map((b) => b.text)
     .join('');
+  const responseId = result.id || `resp_${Date.now()}`;
+  const outputId = result.id ? result.id.replace(/^msg_/, 'msg_') : `msg_${Date.now()}`;
   return {
-    id: result.id || `resp_${Date.now()}`,
+    id: responseId,
     object: 'response',
+    created_at: Math.floor(Date.now() / 1000),
+    status: 'completed',
+    error: null,
+    incomplete_details: null,
+    instructions: echo.instructions ?? null,
+    max_output_tokens: echo.max_output_tokens ?? null,
     model: displayModel,
     output: [
       {
         type: 'message',
+        id: outputId,
+        status: 'completed',
         role: 'assistant',
-        content: [{ type: 'output_text', text }],
+        content: [
+          {
+            type: 'output_text',
+            text,
+            annotations: [],
+          },
+        ],
       },
     ],
+    parallel_tool_calls: true,
+    previous_response_id: null,
+    reasoning: { effort: null, summary: null },
+    store: false,
+    temperature: echo.temperature ?? null,
+    text: { format: { type: 'text' } },
+    tool_choice: 'auto',
+    tools: [],
+    top_p: null,
+    truncation: 'disabled',
     usage: {
       input_tokens: result.usage.input_tokens,
+      input_tokens_details: { cached_tokens: 0 },
       output_tokens: result.usage.output_tokens,
+      output_tokens_details: { reasoning_tokens: 0 },
       total_tokens: result.usage.input_tokens + result.usage.output_tokens,
     },
+    user: echo.user ?? null,
+    metadata: {},
+    output_text: text,
   };
 }
 
@@ -372,7 +436,14 @@ export function registerResponsesRoute(
           req.computedCostCents = earlyCost;
         }
 
-        const wireBody = canonicalToResponses(canonicalResult, entry.name);
+        const wireBody = canonicalToResponses(canonicalResult, entry.name, {
+          instructions: body.instructions,
+          temperature: body.temperature,
+          max_output_tokens: body.max_output_tokens,
+          user: typeof (body as { user?: unknown }).user === 'string'
+            ? ((body as { user?: string }).user)
+            : undefined,
+        });
 
         if (idempotencyKey && idempotencyRole === 'leader' && opts.idempotency) {
           try {
