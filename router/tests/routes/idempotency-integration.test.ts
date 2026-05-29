@@ -349,6 +349,9 @@ function makeFakeAdapter(): {
       }
       return stubEmbeddingResponse();
     },
+    async rerank(_query: string, _documents: string[], model: string) {
+      return { model, results: [], usage: { total_tokens: 0 } };
+    },
   };
   return {
     adapter,

@@ -77,6 +77,9 @@ function makeFakeAdapter(responseTexts: string[]): BackendAdapter & { calls: num
     async embeddings(): Promise<never> {
       throw new Error('embeddings not used');
     },
+    async rerank(): Promise<never> {
+      throw new Error('rerank not used');
+    },
   };
   return self;
 }

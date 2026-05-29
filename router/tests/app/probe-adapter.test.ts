@@ -82,6 +82,9 @@ class FakeAdapterA implements BackendAdapter {
   embeddings(): never {
     throw new Error('not used');
   }
+  rerank(): never {
+    throw new Error('not used');
+  }
 }
 
 class FakeAdapterB implements BackendAdapter {
@@ -96,6 +99,9 @@ class FakeAdapterB implements BackendAdapter {
     return { ok: true, latencyMs: 2 };
   }
   embeddings(): never {
+    throw new Error('not used');
+  }
+  rerank(): never {
     throw new Error('not used');
   }
 }

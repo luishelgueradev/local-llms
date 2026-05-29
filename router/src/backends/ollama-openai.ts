@@ -270,6 +270,74 @@ export class OllamaOpenAIAdapter implements BackendAdapter {
       { signal },
     );
   }
+
+  /**
+   * Phase 11 (v0.10.0 — RERANK-02). Cross-encoder rerank via Ollama's native
+   * `/api/rerank` endpoint. Ollama added rerank support for cross-encoder models
+   * like bge-reranker-v2-m3 — request body is `{model, query, documents, top_n?}`
+   * and the response is `{results: [{index, relevance_score}, ...]}`.
+   *
+   * The adapter derives the native base URL from `backend_url` by trimming `/v1` —
+   * mirrors the canonicalHasImage native path that already exists in this file for
+   * Ollama's vision support.
+   *
+   * The route handler enforces the capability gate upstream; the adapter assumes
+   * the model declared `rerank` in capabilities. Connection errors are surfaced
+   * as `APIConnectionError` so the centralized error handler maps them to the
+   * 502/504 family — same plumbing as the chat-completions and embeddings paths.
+   */
+  async rerank(
+    query: string,
+    documents: string[],
+    model: string,
+    signal: AbortSignal,
+    opts?: { top_n?: number; return_documents?: boolean },
+  ): Promise<{
+    model: string;
+    results: Array<{ index: number; relevance_score: number; document?: { text: string } }>;
+    usage: { total_tokens: number };
+  }> {
+    const nativeBase = this.client.baseURL.replace(/\/v1\/?$/, '');
+    const url = `${nativeBase}/api/rerank`;
+    const reqBody = {
+      model,
+      query,
+      documents,
+      ...(opts?.top_n !== undefined ? { top_n: opts.top_n } : {}),
+    };
+
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(reqBody),
+        signal,
+      });
+    } catch (err) {
+      throw new APIConnectionError({ cause: err instanceof Error ? err : new Error(String(err)) });
+    }
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '');
+      throw new APIConnectionError({
+        cause: new Error(`Ollama /api/rerank returned ${res.status}: ${detail.slice(0, 200)}`),
+      });
+    }
+    const parsed = (await res.json()) as {
+      model?: string;
+      results?: Array<{ index: number; relevance_score: number; document?: { text: string } }>;
+      usage?: { total_tokens?: number };
+    };
+    return {
+      model: parsed.model ?? model,
+      results: (parsed.results ?? []).map((r) => ({
+        index: r.index,
+        relevance_score: r.relevance_score,
+        ...(opts?.return_documents && r.document ? { document: r.document } : {}),
+      })),
+      usage: { total_tokens: parsed.usage?.total_tokens ?? 0 },
+    };
+  }
 }
 
 /** Convenience factory: build an OllamaOpenAIAdapter from a ModelEntry. */

@@ -91,6 +91,10 @@ function makeFakeAdapter(): BackendAdapter {
         usage: { prompt_tokens: 3, total_tokens: 3 },
       };
     },
+    // Phase 11 (v0.10.0 — RERANK-02): not exercised by this suite.
+    async rerank(_query: string, _documents: string[], model: string) {
+      return { model, results: [], usage: { total_tokens: 0 } };
+    },
   };
 }
 

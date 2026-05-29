@@ -1,0 +1,230 @@
+/**
+ * rerank.ts — Phase 11 (v0.10.0 — RERANK-01..06) — POST /v1/rerank.
+ *
+ * Wire surface: Cohere/Jina-compatible rerank API (non-streaming). Cross-encoder
+ * scoring of N candidate documents against a single query. Mirrors embeddings.ts
+ * end-to-end — same auth + breaker + semaphore + idempotency + request_log plumbing
+ * — only the adapter call and the wire shape differ.
+ *
+ * Pipeline:
+ *   zod-validated body → registry.resolve(model) → capability gate
+ *   ('rerank' in entry.capabilities) → breaker.check → idempotency.acquire →
+ *   semaphore acquire → adapter.rerank → top_n post-filter → response back.
+ *
+ * Body shape:
+ *   { model, query: string, documents: string[], top_n?: number, return_documents?: boolean }
+ *
+ * Response shape:
+ *   { model, results: [{ index, relevance_score, document? }], usage: { total_tokens } }
+ *
+ * `top_n` post-filter: the route enforces the cap AFTER the adapter returns; this
+ * lets adapters that don't natively support top_n still satisfy the contract.
+ * `return_documents`: when true, each result includes the original document text;
+ * default false to keep the response compact (Cohere parity).
+ *
+ * Bearer auth: gated automatically by makeBearerHook (/v1/rerank is NOT in PUBLIC_PATHS).
+ * Centralized error handler (app.ts) maps thrown errors to the OpenAI envelope.
+ */
+import type { FastifyInstance } from 'fastify';
+import type { ZodTypeProvider } from '@bram-dc/fastify-type-provider-zod';
+import { z } from 'zod/v4';
+import type { RegistryStore } from '../../config/registry.js';
+import type { AdapterFactory, BackendAdapter } from '../../backends/adapter.js';
+import type { BackendSemaphore } from '../../concurrency/semaphore.js';
+import { BackendSaturatedError } from '../../concurrency/semaphore.js';
+import {
+  BreakerOpenError,
+  CapabilityNotSupportedError,
+  mapToHttpStatus,
+} from '../../errors/envelope.js';
+import type { CircuitBreaker } from '../../resilience/circuitBreaker.js';
+import type { IdempotencyMultiplexer } from '../../resilience/idempotency.js';
+import { extractIdempotencyKey } from '../../middleware/idempotencyKey.js';
+import {
+  deriveStatusClass,
+  mapErrorToCode,
+  type OutcomeContext,
+  type RecordRequestOutcome,
+} from '../../metrics/recordOutcome.js';
+
+/**
+ * Cohere-compatible rerank body. `query` MUST be non-empty; `documents` MUST be a
+ * non-empty array of non-empty strings (mirrors the embeddings Pitfall E-1 rationale).
+ * `top_n` is OPTIONAL and bounded to [1, documents.length] post-filter.
+ * `return_documents` defaults to false — Cohere parity.
+ */
+export const RerankRequestSchema = z
+  .object({
+    model: z.string().min(1),
+    query: z.string().min(1),
+    documents: z.array(z.string().min(1)).min(1),
+    top_n: z.number().int().positive().optional(),
+    return_documents: z.boolean().optional(),
+  })
+  .passthrough();
+
+export type RerankRequest = z.infer<typeof RerankRequestSchema>;
+
+export interface RegisterRerankOpts {
+  registry: RegistryStore;
+  makeAdapter: AdapterFactory;
+  semaphores: { get(backend: string): BackendSemaphore };
+  recordOutcome: RecordRequestOutcome;
+  breaker: CircuitBreaker;
+  breakerCooldownSec: number;
+  idempotency?: IdempotencyMultiplexer;
+}
+
+export function registerRerankRoute(app: FastifyInstance, opts: RegisterRerankOpts): void {
+  const typed = app.withTypeProvider<ZodTypeProvider>();
+
+  typed.post(
+    '/v1/rerank',
+    { schema: { body: RerankRequestSchema } },
+    async (req, reply) => {
+      const body = req.body;
+      const entry = opts.registry.resolve(body.model);
+      req.resolvedBackend = entry.backend;
+
+      const adapter: BackendAdapter = opts.makeAdapter(entry);
+
+      const controller = new AbortController();
+      const onClose = (): void => {
+        controller.abort(new Error('client-disconnect'));
+      };
+      const sock = req.raw.socket;
+      if (sock) {
+        sock.once('close', onClose);
+      } else {
+        req.log.warn(
+          { url: req.url },
+          'rerank: req.raw.socket undefined — abort propagation may not fire (HTTP/2 or inject?)',
+        );
+      }
+
+      let released = false;
+      let release: () => void = () => {};
+      const safeRelease = (): void => {
+        if (released) return;
+        released = true;
+        release();
+      };
+
+      let recorded = false;
+      const safeRecord = (ctx: OutcomeContext): void => {
+        if (recorded) return;
+        recorded = true;
+        req.__recorded = true;
+        opts.recordOutcome(ctx);
+      };
+
+      let caughtErr: Error | undefined;
+      let result: Awaited<ReturnType<BackendAdapter['rerank']>> | undefined;
+
+      const idempotencyKey = extractIdempotencyKey(req.headers);
+      let idempotencyRole: 'leader' | 'follower' | undefined;
+      let followerUpstreamMessageId: string | undefined;
+
+      try {
+        // RERANK-05 — capability gate. Mirror of embeddings.ts at the same position.
+        if (!entry.capabilities.includes('rerank')) {
+          throw new CapabilityNotSupportedError(entry.name, 'rerank');
+        }
+
+        const breakerResult = await opts.breaker.check(entry.backend);
+        if (breakerResult.state === 'open') {
+          void reply.header('Retry-After', String(opts.breakerCooldownSec));
+          throw new BreakerOpenError(entry.backend, opts.breakerCooldownSec);
+        }
+
+        if (idempotencyKey && opts.idempotency) {
+          const acq = await opts.idempotency.acquire(idempotencyKey, req.id);
+          idempotencyRole = acq.role;
+          if (acq.role === 'follower') {
+            const { body: cachedBody, upstreamMessageId } =
+              await opts.idempotency.awaitNonStreamResult(idempotencyKey, req.id);
+            followerUpstreamMessageId = upstreamMessageId;
+            req.raw.socket?.off('close', onClose);
+            return reply.send(cachedBody);
+          }
+        }
+
+        const semaphore = opts.semaphores.get(entry.backend);
+        release = await semaphore.acquire(controller.signal);
+        released = false;
+
+        result = await adapter.rerank(
+          body.query,
+          body.documents,
+          entry.backend_model,
+          controller.signal,
+          { ...(body.top_n !== undefined ? { top_n: body.top_n } : {}), return_documents: body.return_documents ?? false },
+        );
+
+        // RERANK-01 — top_n post-filter. Adapter MAY return all documents (the upstream
+        // Cohere semantics: top_n is a hint, not a constraint). Enforce the cap here
+        // so the wire contract is uniform across adapters.
+        const sorted = [...result.results].sort((a, b) => b.relevance_score - a.relevance_score);
+        const capped =
+          body.top_n !== undefined ? sorted.slice(0, body.top_n) : sorted;
+
+        const wireBody = {
+          model: entry.name, // RERANK-04 — surface the registry name, not the upstream backend_model
+          results: capped,
+          usage: result.usage,
+        };
+
+        void opts.breaker.recordSuccess(entry.backend);
+        req.raw.socket?.off('close', onClose);
+
+        if (idempotencyKey && idempotencyRole === 'leader' && opts.idempotency) {
+          try {
+            await opts.idempotency.publishNonStream(idempotencyKey, wireBody, undefined);
+          } catch (err) {
+            req.log.warn(
+              { err, idempotencyKey },
+              'idempotency: publishNonStream failed (leader response still returned)',
+            );
+          }
+        }
+        return reply.send(wireBody);
+      } catch (err) {
+        if (err instanceof BackendSaturatedError) {
+          void reply.header('Retry-After', String(Math.ceil(err.waitedMs / 1000)));
+        }
+        if (!(err instanceof BreakerOpenError)) {
+          void opts.breaker.recordFailure(entry.backend, err);
+        }
+        req.raw.socket?.off('close', onClose);
+        caughtErr = err instanceof Error ? err : new Error(String(err));
+        throw err;
+      } finally {
+        safeRelease();
+
+        const httpStatus = caughtErr ? mapToHttpStatus(caughtErr) : reply.statusCode;
+        safeRecord({
+          protocol: 'openai',
+          route: req.url.split('?')[0] ?? req.url,
+          backend: entry.backend,
+          model: entry.name,
+          statusClass: caughtErr
+            ? deriveStatusClass(httpStatus, false)
+            : deriveStatusClass(reply.statusCode, false),
+          httpStatus,
+          durationMs: performance.now() - (req._t0 ?? performance.now()),
+          // Rerank: total_tokens covers BOTH the query and the documents — emit it as tokensIn.
+          // Mirror embeddings.ts pattern: tokensOut: 0 (not NULL) so SUM aggregations stay clean.
+          tokensIn: caughtErr ? undefined : result?.usage?.total_tokens ?? 0,
+          tokensOut: caughtErr ? undefined : 0,
+          errorCode: caughtErr ? mapErrorToCode(caughtErr) : undefined,
+          errorMessage: caughtErr?.message,
+          agentId: req.agentId,
+          requestId: req.id,
+          upstreamMessageId: followerUpstreamMessageId,
+          idempotencyKey,
+          timestamp: new Date(),
+        });
+      }
+    },
+  );
+}

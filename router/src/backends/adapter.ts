@@ -106,6 +106,35 @@ export interface BackendAdapter {
     model: string;
     usage: { prompt_tokens: number; total_tokens: number };
   }>;
+
+  /**
+   * Phase 11 (v0.10.0 — RERANK-01/02). Cross-encoder rerank: given a query and a list
+   * of candidate documents, return per-document relevance scores. The adapter signature
+   * mirrors the Cohere/Jina rerank API which has become the de facto wire shape.
+   *
+   * Adapters that don't support rerank (most local backends in v0.9.0) MUST throw
+   * `CapabilityNotSupportedError(model, 'rerank')` so the route's capability gate is
+   * defended in depth — the registry-level gate already catches misuse upstream.
+   *
+   * The route layer enforces auth + capability gate + breaker + semaphore + request_log;
+   * adapters concern themselves with the upstream call only.
+   *
+   * `top_n` is an upstream hint: when present, the adapter MAY forward it so backends
+   * with native top_n support can short-circuit; when absent the adapter returns all
+   * documents scored. The route ultimately handles the post-filter so adapter behavior
+   * is allowed to vary safely.
+   */
+  rerank(
+    query: string,
+    documents: string[],
+    model: string,
+    signal: AbortSignal,
+    opts?: { top_n?: number; return_documents?: boolean },
+  ): Promise<{
+    model: string;
+    results: Array<{ index: number; relevance_score: number; document?: { text: string } }>;
+    usage: { total_tokens: number };
+  }>;
 }
 
 /**

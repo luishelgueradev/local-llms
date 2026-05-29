@@ -344,6 +344,10 @@ describe('POST /v1/messages stream=true — abort propagation (Pitfall 8 + SC3 m
       ): Promise<never> {
         throw new Error('not used in stream test');
       }
+      // Phase 11 (v0.10.0 — RERANK-02): not exercised here.
+      async rerank(): Promise<never> {
+        throw new Error('not used in stream test');
+      }
       async chatCompletionsCanonicalStream(
         _req: CanonicalRequest,
         signal: AbortSignal,
@@ -462,6 +466,10 @@ describe('POST /v1/messages stream=true — adapter receives inputTokensHint (Is
         _model: string,
         _signal: AbortSignal,
       ): Promise<never> {
+        throw new Error('not used');
+      }
+      // Phase 11 (v0.10.0 — RERANK-02): not exercised here.
+      async rerank(): Promise<never> {
         throw new Error('not used');
       }
       async chatCompletionsCanonicalStream(
@@ -737,6 +745,10 @@ describe('CR-02 — stream pre-stream error records exactly one row (05-VERIFICA
       ): Promise<never> {
         throw new Error('not used in stream test');
       },
+      // Phase 11 (v0.10.0 — RERANK-02): not exercised here.
+      async rerank(): Promise<never> {
+        throw new Error('not used');
+      },
       async chatCompletionsCanonicalStream(
         _req: CanonicalRequest,
         _signal: AbortSignal,
@@ -875,6 +887,10 @@ describe('CR-03 — mid-stream upstream error records server_error (05-VERIFICAT
         _signal: AbortSignal,
       ): Promise<never> {
         throw new Error('not used in stream test');
+      },
+      // Phase 11 (v0.10.0 — RERANK-02): not exercised here.
+      async rerank(): Promise<never> {
+        throw new Error('not used');
       },
       async chatCompletionsCanonicalStream(
         _req: CanonicalRequest,

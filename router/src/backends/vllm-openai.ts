@@ -1,5 +1,6 @@
 import OpenAI from 'openai';
 import type { BackendAdapter } from './adapter.js';
+import { CapabilityNotSupportedError } from '../errors/envelope.js';
 import type {
   CanonicalRequest,
   CanonicalResponse,
@@ -170,6 +171,22 @@ export class VLLMOpenAIAdapter implements BackendAdapter {
       },
       { signal },
     );
+  }
+
+  /**
+   * Phase 11 (v0.10.0 — RERANK-02). vLLM does NOT serve cross-encoder rerank
+   * via this OpenAI-compat adapter — defense-in-depth back-up to the route-level
+   * capability gate (registry should never let a `[rerank]` model declare
+   * backend: vllm or vllm-embed in v0.10.0).
+   */
+  async rerank(
+    _query: string,
+    _documents: string[],
+    _model: string,
+    _signal: AbortSignal,
+    _opts?: { top_n?: number; return_documents?: boolean },
+  ): Promise<never> {
+    throw new CapabilityNotSupportedError('vllm', 'rerank');
   }
 }
 

@@ -37,6 +37,7 @@
 // "happy path" — guards layer on top of it without modification.
 import OpenAI from 'openai';
 import type { BackendAdapter } from './adapter.js';
+import { CapabilityNotSupportedError } from '../errors/envelope.js';
 import type {
   CanonicalRequest,
   CanonicalResponse,
@@ -190,6 +191,22 @@ export class OllamaCloudAdapter implements BackendAdapter {
       },
       { signal },
     );
+  }
+
+  /**
+   * Phase 11 (v0.10.0 — RERANK-02). Ollama Cloud's catalog as of 2026-05 does NOT
+   * include cross-encoder rerank models — defense-in-depth back-up to the route-level
+   * capability gate (the registry should never let a `[rerank]` model declare
+   * backend: ollama-cloud until cloud lists a reranker model).
+   */
+  async rerank(
+    _query: string,
+    _documents: string[],
+    _model: string,
+    _signal: AbortSignal,
+    _opts?: { top_n?: number; return_documents?: boolean },
+  ): Promise<never> {
+    throw new CapabilityNotSupportedError('ollama-cloud', 'rerank');
   }
 }
 

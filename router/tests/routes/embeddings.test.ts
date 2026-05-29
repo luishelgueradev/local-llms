@@ -88,6 +88,9 @@ function makeFakeAdapter(): {
         usage: { prompt_tokens: 3, total_tokens: 3 },
       };
     },
+    async rerank(_query, _documents, model) {
+      return { model, results: [], usage: { total_tokens: 0 } };
+    },
   };
   return { adapter, calls };
 }

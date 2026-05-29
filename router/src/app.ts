@@ -17,6 +17,7 @@ import { registerChatCompletionsRoute } from './routes/v1/chat-completions.js';
 import { registerMessagesRoute } from './routes/v1/messages.js';
 import { registerCountTokensRoute } from './routes/v1/count-tokens.js';
 import { registerEmbeddingsRoute } from './routes/v1/embeddings.js';
+import { registerRerankRoute } from './routes/v1/rerank.js';
 import type { AdapterFactory } from './backends/adapter.js';
 import { registerModelsRoute } from './routes/v1/models.js';
 import {
@@ -322,13 +323,15 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
       void reply.header('Retry-After', '60');
     }
 
-    // D-D4 — coverage policy. Record /v1/chat/completions, /v1/messages, and
-    // /v1/embeddings (Plan 07-04) outcomes (but NOT /v1/messages/count_tokens
-    // and NOT 401 BearerAuthError — D-D4 forbids recording pre-auth failures).
+    // D-D4 — coverage policy. Record /v1/chat/completions, /v1/messages,
+    // /v1/embeddings (Plan 07-04), and /v1/rerank (Phase 11, RERANK-04) outcomes
+    // (but NOT /v1/messages/count_tokens and NOT 401 BearerAuthError — D-D4
+    // forbids recording pre-auth failures).
     const isRecordedRoute =
       (route === '/v1/chat/completions' ||
         route === '/v1/messages' ||
-        route === '/v1/embeddings') &&
+        route === '/v1/embeddings' ||
+        route === '/v1/rerank') &&
       status !== 401;
     if (isRecordedRoute && req.__recorded !== true) {
       req.__recorded = true;
@@ -711,6 +714,17 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
   //    Capability gate enforces entry.capabilities.includes('embeddings')
   //    BEFORE the adapter call (T-07-11 mitigation, route-side layer).
   registerEmbeddingsRoute(app, {
+    registry: opts.registry,
+    makeAdapter: opts.makeAdapter ?? makeAdapterWithCloudKey,
+    semaphores,
+    recordOutcome,
+    breaker,
+    breakerCooldownSec,
+    idempotency,
+  });
+
+  // Phase 11 (v0.10.0 — RERANK-01..06) — POST /v1/rerank.
+  registerRerankRoute(app, {
     registry: opts.registry,
     makeAdapter: opts.makeAdapter ?? makeAdapterWithCloudKey,
     semaphores,

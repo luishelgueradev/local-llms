@@ -201,6 +201,10 @@ function makeFakeAdapter(
     async embeddings() {
       throw new Error('embeddings not used in this suite');
     },
+    // Phase 11 (v0.10.0 — RERANK-02): not exercised here.
+    async rerank(_query: string, _documents: string[], model: string) {
+      return { model, results: [], usage: { total_tokens: 0 } };
+    },
   };
   return { adapter, calls };
 }
@@ -484,6 +488,10 @@ describe('Circuit breaker integration — Plan 08-04 (CLOUD-03)', () => {
       async embeddings() {
         throw new Error('not used');
       },
+    // Phase 11 (v0.10.0 — RERANK-02): not exercised here.
+    async rerank(_query: string, _documents: string[], model: string) {
+      return { model, results: [], usage: { total_tokens: 0 } };
+    },
     };
     const registry = makeRegistryStore(loadRegistryFromString(YAML));
     app = await buildApp({

@@ -139,6 +139,21 @@ export class LlamacppOpenAIAdapter implements BackendAdapter {
     // so TypeScript catches missing-param bugs at call sites.
     throw new CapabilityNotSupportedError('llamacpp', 'embeddings');
   }
+
+  /**
+   * Phase 11 (v0.10.0 — RERANK-02). llama.cpp-server does NOT expose a rerank
+   * endpoint — defense-in-depth back-up to the route-level capability gate
+   * (the registry should never let a `[rerank]` model declare backend: llamacpp).
+   */
+  async rerank(
+    _query: string,
+    _documents: string[],
+    _model: string,
+    _signal: AbortSignal,
+    _opts?: { top_n?: number; return_documents?: boolean },
+  ): Promise<never> {
+    throw new CapabilityNotSupportedError('llamacpp', 'rerank');
+  }
 }
 
 /** Convenience factory: build a LlamacppOpenAIAdapter from a ModelEntry. */

@@ -151,6 +151,20 @@ models:
     max_model_len: 8192
     profile: ollama
 
+  # Phase 11 (v0.10.0 — RERANK-03). Cross-encoder reranker. Ollama serves
+  # bge-reranker-v2-m3 via native /api/rerank (the OllamaOpenAIAdapter.rerank
+  # method trims /v1 and calls the native endpoint). vram_budget_gb=0 because
+  # the model is loaded on-demand by Ollama (small footprint ~600MB, shares
+  # VRAM with the chat workhorse via Ollama's swap policy).
+  - name: bge-reranker-local
+    backend: ollama
+    backend_url: http://ollama:11434/v1
+    backend_model: bge-reranker-v2-m3
+    capabilities: [rerank]
+    vram_budget_gb: 0
+    concurrency: 4
+    profile: ollama
+
   - name: embed-local
     backend: ollama
     backend_url: http://ollama:11434/v1
