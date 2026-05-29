@@ -41,6 +41,7 @@ models:
     backend_url: ${UPSTREAM_BASE}
     backend_model: bge-m3
     capabilities: [embeddings]
+    dims: 1024
     vram_budget_gb: 2
   - name: ${CHAT_MODEL}
     backend: vllm
@@ -81,11 +82,21 @@ function makeFakeAdapter(): {
     },
     async embeddings(input, model, _signal, opts) {
       calls.push({ input, model, opts });
+      // Phase 12 (v0.10.0): fake returns one vector per input item so batch requests
+      // line up with the route's miss-index → vector reassembly. Pre-Phase-12 the
+      // fake always returned exactly one item regardless of input — the single-input
+      // tests passed (lucky), but batch ones now go through the cache + miss-collect
+      // path and require N vectors for N misses.
+      const items = Array.isArray(input) ? input : [input];
       return {
         object: 'list',
-        data: [{ object: 'embedding', index: 0, embedding: new Array(1024).fill(0.42) }],
+        data: items.map((_, i) => ({
+          object: 'embedding' as const,
+          index: i,
+          embedding: new Array(1024).fill(0.42),
+        })),
         model,
-        usage: { prompt_tokens: 3, total_tokens: 3 },
+        usage: { prompt_tokens: 3 * items.length, total_tokens: 3 * items.length },
       };
     },
     async rerank(_query, _documents, model) {
@@ -368,5 +379,386 @@ describe('POST /v1/embeddings — schema passthrough (07-REVIEW CR-01 + WR-05)',
     expect(fakeCalls[0].opts?.encoding_format).toBeUndefined();
     expect(fakeCalls[0].opts?.dimensions).toBeUndefined();
     expect(fakeCalls[0].opts?.user).toBeUndefined();
+  });
+});
+
+// ─── Phase 12 (v0.10.0 — EMB-H01..06) ──────────────────────────────────────────
+//
+// Cache + dims enforcement integration coverage. These tests build their OWN app
+// instance with a hand-rolled in-memory EmbeddingsCache + (where needed) a custom
+// adapter that returns mismatched-dim vectors. This keeps the Phase 7 suite above
+// unchanged + isolates the new behavior into a dedicated fixture.
+
+import { registerEmbeddingsRoute } from '../../src/routes/v1/embeddings.js';
+import type { EmbeddingsCache, CachedVector } from '../../src/embeddings/cache.js';
+import Fastify, { type FastifyInstance as FI } from 'fastify';
+import { FastifySSEPlugin } from 'fastify-sse-v2';
+import {
+  serializerCompiler,
+  validatorCompiler,
+} from '@bram-dc/fastify-type-provider-zod';
+import { makeBearerHook } from '../../src/auth/bearer.js';
+import { makeRecordRequestOutcome } from '../../src/metrics/recordOutcome.js';
+
+interface MakeP12AppOpts {
+  cache?: EmbeddingsCache;
+  adapter?: BackendAdapter;
+  yaml?: string;
+}
+
+/**
+ * Phase 12 fixture builder. Mounts ONLY /v1/embeddings on a fresh Fastify
+ * instance so we can wire arbitrary cache + adapter combinations without
+ * dragging the full buildApp() liveness/breaker/idempotency surface — those
+ * are already exercised by the Phase 7/8 tests above.
+ */
+async function makeP12App(opts: MakeP12AppOpts = {}): Promise<{
+  app: FI;
+  pushed: RequestLogInsert[];
+  calls: FakeAdapterCall[];
+  metrics: ReturnType<typeof makeMetricsRegistry>;
+}> {
+  const pushed: RequestLogInsert[] = [];
+  const calls: FakeAdapterCall[] = [];
+  const registry = makeRegistryStore(loadRegistryFromString(opts.yaml ?? YAML));
+  const metrics = makeMetricsRegistry();
+  const bufferedWriter = {
+    push: (r: RequestLogInsert) => pushed.push(r),
+    drain: async () => {},
+    get size() {
+      return 0;
+    },
+  };
+  const recordOutcome = makeRecordRequestOutcome({ metrics, bufferedWriter });
+
+  const adapter: BackendAdapter =
+    opts.adapter ??
+    (() => {
+      const { adapter: a, calls: c } = makeFakeAdapter();
+      calls.push(...[]); // keep reference scope; we'll re-assign below
+      // Re-bind calls array via mutation: pull whatever the fake records into our outer calls.
+      a.embeddings = async (input, model, _signal, embOpts) => {
+        const items = Array.isArray(input) ? input : [input];
+        c.push({ input, model, opts: embOpts });
+        calls.push({ input, model, opts: embOpts });
+        return {
+          object: 'list',
+          data: items.map((_, i) => ({
+            object: 'embedding' as const,
+            index: i,
+            embedding: new Array(1024).fill(0.42),
+          })),
+          model,
+          usage: { prompt_tokens: 3 * items.length, total_tokens: 3 * items.length },
+        };
+      };
+      return a;
+    })();
+
+  const app = Fastify({ logger: false });
+  app.setValidatorCompiler(validatorCompiler);
+  app.setSerializerCompiler(serializerCompiler);
+  await app.register(FastifySSEPlugin);
+  app.addHook('onRequest', makeBearerHook(TOKEN));
+
+  registerEmbeddingsRoute(app, {
+    registry,
+    makeAdapter: () => adapter,
+    semaphores: {
+      get: () =>
+        ({ acquire: async () => () => {}, stats: () => ({ inFlight: 0, queued: 0 }) }) as never,
+    },
+    recordOutcome,
+    breaker: {
+      check: async () => ({ state: 'closed' as const }),
+      recordFailure: async () => {},
+      recordSuccess: async () => {},
+      reset: async () => {},
+    },
+    breakerCooldownSec: 60,
+    cache: opts.cache,
+    metrics: {
+      embeddingsCacheTotal: metrics.embeddingsCacheTotal,
+      embeddingsBatchSize: metrics.embeddingsBatchSize,
+      embeddingsDimsTotal: metrics.embeddingsDimsTotal,
+    },
+  });
+
+  return { app, pushed, calls, metrics };
+}
+
+/**
+ * In-memory EmbeddingsCache that mirrors the contract the route consumes.
+ * Tracks call counts so we can assert hit vs miss numerically.
+ */
+function makeInMemoryCache(): EmbeddingsCache & {
+  store: Map<string, CachedVector>;
+  getCalls: number;
+  setCalls: number;
+  injectGetError?: Error;
+  injectSetError?: Error;
+} {
+  const state = {
+    store: new Map<string, CachedVector>(),
+    getCalls: 0,
+    setCalls: 0,
+    injectGetError: undefined as Error | undefined,
+    injectSetError: undefined as Error | undefined,
+  };
+  return {
+    ...state,
+    async get(key: string) {
+      this.getCalls++;
+      if (this.injectGetError) throw this.injectGetError;
+      return this.store.get(key) ?? null;
+    },
+    async set(key: string, value: CachedVector) {
+      this.setCalls++;
+      if (this.injectSetError) throw this.injectSetError;
+      this.store.set(key, value);
+    },
+  };
+}
+
+describe('POST /v1/embeddings — Phase 12 cache (EMB-H01)', () => {
+  it('second identical request is served from cache; adapter called once', async () => {
+    const cache = makeInMemoryCache();
+    const { app, calls, metrics, pushed } = await makeP12App({ cache });
+    try {
+      const r1 = await app.inject({
+        method: 'POST',
+        url: '/v1/embeddings',
+        headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
+        payload: { model: EMBED_MODEL, input: 'hola' },
+      });
+      expect(r1.statusCode).toBe(200);
+      const r2 = await app.inject({
+        method: 'POST',
+        url: '/v1/embeddings',
+        headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
+        payload: { model: EMBED_MODEL, input: 'hola' },
+      });
+      expect(r2.statusCode).toBe(200);
+
+      // Adapter invoked only for the first (miss) request.
+      expect(calls.length).toBe(1);
+      // Cache observed exactly one miss + one hit on the counter.
+      const text = await metrics.register.metrics();
+      expect(text).toMatch(/router_embeddings_cache_total\{result="miss"\}\s+1/);
+      expect(text).toMatch(/router_embeddings_cache_total\{result="hit"\}\s+1/);
+
+      // Second response is byte-identical to the first vector.
+      expect(r2.json().data[0].embedding).toEqual(r1.json().data[0].embedding);
+
+      // request_log: second request shows tokens_in=0 (no upstream call).
+      expect(pushed.length).toBe(2);
+      expect(pushed[1].tokens_in).toBe(0);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('batch with partial cache: only misses go to the adapter, order preserved', async () => {
+    const cache = makeInMemoryCache();
+    const { app, calls, metrics } = await makeP12App({ cache });
+    try {
+      // Warm two of the three keys.
+      await app.inject({
+        method: 'POST',
+        url: '/v1/embeddings',
+        headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
+        payload: { model: EMBED_MODEL, input: 'a' },
+      });
+      await app.inject({
+        method: 'POST',
+        url: '/v1/embeddings',
+        headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
+        payload: { model: EMBED_MODEL, input: 'b' },
+      });
+      const callsBefore = calls.length;
+
+      const r = await app.inject({
+        method: 'POST',
+        url: '/v1/embeddings',
+        headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
+        payload: { model: EMBED_MODEL, input: ['a', 'c', 'b'] },
+      });
+      expect(r.statusCode).toBe(200);
+      // Only one new adapter call (for 'c'), and it received just that input.
+      expect(calls.length - callsBefore).toBe(1);
+      const lastCall = calls[calls.length - 1];
+      expect(lastCall.input).toEqual(['c']);
+
+      const body = r.json();
+      expect(body.data).toHaveLength(3);
+      expect(body.data[0].index).toBe(0);
+      expect(body.data[1].index).toBe(1);
+      expect(body.data[2].index).toBe(2);
+
+      const text = await metrics.register.metrics();
+      // 2 hits + 1 miss from the batch (warming counted 2 misses earlier → 3 misses total).
+      expect(text).toMatch(/router_embeddings_cache_total\{result="hit"\}\s+2/);
+      expect(text).toMatch(/router_embeddings_cache_total\{result="miss"\}\s+3/);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe('POST /v1/embeddings — Phase 12 cache bypass + fail-open (EMB-H04)', () => {
+  it('encoding_format=base64 bypasses cache; bypass metric increments', async () => {
+    const cache = makeInMemoryCache();
+    const { app, calls, metrics } = await makeP12App({ cache });
+    try {
+      // base64 fake returns a string per item — wrap the adapter to honor that.
+      const r = await app.inject({
+        method: 'POST',
+        url: '/v1/embeddings',
+        headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
+        payload: { model: EMBED_MODEL, input: 'hola', encoding_format: 'base64' },
+      });
+      expect(r.statusCode).toBe(200);
+      expect(calls.length).toBe(1);
+      expect(cache.store.size).toBe(0); // nothing cached
+      const text = await metrics.register.metrics();
+      expect(text).toMatch(/router_embeddings_cache_total\{result="bypass"\}\s+1/);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('Valkey error on get → fail-open: upstream called, no metric increment', async () => {
+    const cache = makeInMemoryCache();
+    cache.injectGetError = new Error('ECONNREFUSED');
+    const { app, calls, metrics } = await makeP12App({ cache });
+    try {
+      const r = await app.inject({
+        method: 'POST',
+        url: '/v1/embeddings',
+        headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
+        payload: { model: EMBED_MODEL, input: 'hola' },
+      });
+      expect(r.statusCode).toBe(200);
+      expect(calls.length).toBe(1); // upstream still called
+      const text = await metrics.register.metrics();
+      // EMB-H04 contract: metric stays a faithful representation of REAL cache outcomes.
+      // No hit / no miss / no bypass increment when Valkey errors.
+      expect(text).not.toMatch(/router_embeddings_cache_total\{result="hit"\}\s+[1-9]/);
+      expect(text).not.toMatch(/router_embeddings_cache_total\{result="miss"\}\s+[1-9]/);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('Valkey error on set → fail-open: response succeeds anyway', async () => {
+    const cache = makeInMemoryCache();
+    cache.injectSetError = new Error('OOM');
+    const { app, calls } = await makeP12App({ cache });
+    try {
+      const r = await app.inject({
+        method: 'POST',
+        url: '/v1/embeddings',
+        headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
+        payload: { model: EMBED_MODEL, input: 'hola' },
+      });
+      expect(r.statusCode).toBe(200);
+      expect(calls.length).toBe(1);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('no cache wired → batch_size still observed, no cache_total events', async () => {
+    const { app, metrics } = await makeP12App({}); // cache: undefined
+    try {
+      const r = await app.inject({
+        method: 'POST',
+        url: '/v1/embeddings',
+        headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
+        payload: { model: EMBED_MODEL, input: ['a', 'b', 'c'] },
+      });
+      expect(r.statusCode).toBe(200);
+      const text = await metrics.register.metrics();
+      // batch_size histogram observed; cache_total totally absent or all-zero.
+      expect(text).toMatch(/router_embeddings_batch_size_count\s+1/);
+      expect(text).not.toMatch(/router_embeddings_cache_total\{result=".*?"\}\s+[1-9]/);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe('POST /v1/embeddings — Phase 12 dims enforcement (EMB-H02)', () => {
+  it('rejects vector with wrong dims → 500 + structured envelope; vector not propagated', async () => {
+    // Bespoke adapter that returns a 768-dim vector for a model declared as 1024.
+    const wrongDimAdapter: BackendAdapter = {
+      async chatCompletionsCanonical() {
+        throw new Error('not used');
+      },
+      async chatCompletionsCanonicalStream() {
+        throw new Error('not used');
+      },
+      async probeLiveness() {
+        return { ok: true, latencyMs: 0 };
+      },
+      async embeddings(input, model) {
+        const items = Array.isArray(input) ? input : [input];
+        return {
+          object: 'list',
+          data: items.map((_, i) => ({
+            object: 'embedding' as const,
+            index: i,
+            embedding: new Array(768).fill(0.01),
+          })),
+          model,
+          usage: { prompt_tokens: items.length, total_tokens: items.length },
+        };
+      },
+      async rerank() {
+        return { model: '', results: [], usage: { total_tokens: 0 } };
+      },
+    };
+    const { app, pushed } = await makeP12App({ adapter: wrongDimAdapter });
+    try {
+      const r = await app.inject({
+        method: 'POST',
+        url: '/v1/embeddings',
+        headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
+        payload: { model: EMBED_MODEL, input: 'hola' },
+      });
+      // No setErrorHandler in the slim P12 app — Fastify default returns 500 on uncaught.
+      expect(r.statusCode).toBe(500);
+      // request_log row records the error path with the dims-mismatch code.
+      expect(pushed.length).toBe(1);
+      expect(pushed[0].status_class).toBe('server_error');
+      expect(pushed[0].http_status).toBe(500);
+      // mapErrorToCode falls through to 'internal_error' for EmbeddingsDimsMismatchError
+      // because it's not in the D-D2 taxonomy table; that's acceptable for a 500-class
+      // upstream-misconfiguration error. The structured log line is the operator signal.
+      expect(pushed[0].error_message).toContain('1024');
+      expect(pushed[0].error_message).toContain('768');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('records router_embeddings_dims_total on successful response', async () => {
+    const { app, metrics } = await makeP12App({});
+    try {
+      const r = await app.inject({
+        method: 'POST',
+        url: '/v1/embeddings',
+        headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
+        payload: { model: EMBED_MODEL, input: ['a', 'b'] },
+      });
+      expect(r.statusCode).toBe(200);
+      const text = await metrics.register.metrics();
+      // Incremented by inputs.length (2 here) for the (model, dims) pair.
+      expect(text).toMatch(
+        /router_embeddings_dims_total\{model="bge-m3-ollama",dims="1024"\}\s+2/,
+      );
+    } finally {
+      await app.close();
+    }
   });
 });

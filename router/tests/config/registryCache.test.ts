@@ -43,6 +43,7 @@ models:
     backend_url: http://ollama:11434/v1
     backend_model: embed
     capabilities: [embeddings]
+    dims: 1024
     vram_budget_gb: 2
 `;
 

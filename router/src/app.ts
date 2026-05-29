@@ -44,6 +44,7 @@ import {
 import { agentIdPreHandler as defaultAgentIdPreHandler } from './middleware/agentId.js';
 import { makeRateLimitPreHandler } from './middleware/rateLimit.js';
 import { closeValkey, type ValkeyClient } from './clients/valkey.js';
+import { makeEmbeddingsCache } from './embeddings/cache.js';
 import { makeCircuitBreaker, type CircuitBreaker } from './resilience/circuitBreaker.js';
 import {
   makeIdempotencyMultiplexer,
@@ -180,6 +181,7 @@ export interface BuildAppOpts {
     | 'CIRCUIT_WINDOW_MS'
     | 'CIRCUIT_COOLDOWN_MS'
     | 'ROUTER_RATE_LIMIT_RPM'
+    | 'ROUTER_EMBED_CACHE_TTL_SEC'
   >;
   /**
    * Plan 08-04 — test injection seam for the breaker's clock. Tests can pass
@@ -707,12 +709,27 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
   // GET /v1/models — bearer-gated; lists all registry models (Plan 03-02, OAI-03).
   registerModelsRoute(app, opts.registry);
 
+  // Phase 12 (v0.10.0 — EMB-H01..04) — Valkey-backed per-input cache for
+  // /v1/embeddings. Gated on opts.valkey AND opts.env (which carries the TTL).
+  // When either is absent, embeddingsCache is undefined and the route falls
+  // back to Phase 7 behavior (every item hits the adapter; dims still enforced).
+  // Fail-open semantics live inside the route — see embeddings.ts header.
+  const embeddingsCache =
+    opts.valkey && opts.env
+      ? makeEmbeddingsCache({
+          valkey: opts.valkey,
+          ttlSec: opts.env.ROUTER_EMBED_CACHE_TTL_SEC,
+          log: app.log as Logger,
+        })
+      : undefined;
+
   // Plan 07-04 (OAI-02, EMBED-01):
   //  - POST /v1/embeddings — OpenAI-compat embedding endpoint dispatching to
   //    Ollama (bge-m3) or vLLM-embed (BAAI/bge-m3) via the factory.
   //    Non-streaming; reuses semaphores + recordOutcome from Phase 3 + Phase 5.
   //    Capability gate enforces entry.capabilities.includes('embeddings')
   //    BEFORE the adapter call (T-07-11 mitigation, route-side layer).
+  // Phase 12 (v0.10.0): cache + 3 new metrics threaded in via opts.
   registerEmbeddingsRoute(app, {
     registry: opts.registry,
     makeAdapter: opts.makeAdapter ?? makeAdapterWithCloudKey,
@@ -721,6 +738,12 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
     breaker,
     breakerCooldownSec,
     idempotency,
+    cache: embeddingsCache,
+    metrics: {
+      embeddingsCacheTotal: opts.metrics.embeddingsCacheTotal,
+      embeddingsBatchSize: opts.metrics.embeddingsBatchSize,
+      embeddingsDimsTotal: opts.metrics.embeddingsDimsTotal,
+    },
   });
 
   // Phase 11 (v0.10.0 — RERANK-01..06) — POST /v1/rerank.

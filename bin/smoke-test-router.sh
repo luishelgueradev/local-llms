@@ -1813,11 +1813,119 @@ fi
 echo ""
 echo "[smoke-test-router] === Phase 8 section complete ==="
 
+# -----------------------------------------------------------------------------
+# Phase 12 — Embeddings hardening: cache + dims + Prometheus metrics (EMB-H01..06)
+# -----------------------------------------------------------------------------
+# Live verification:
+#   1. cache miss/hit — two identical /v1/embeddings calls; second one increments
+#      router_embeddings_cache_total{result="hit"} by +1.
+#   2. metrics present — cache_total, batch_size, dims_total all visible in /metrics.
+#   3. dims_total — model+dims labels populated correctly (bge-m3 → 1024).
+#
+# Skipped if bge-m3 is not loaded (preflight already covered the model in Phase 7).
+echo ""
+echo "[smoke-test-router] === Phase 12 — Embeddings cache + dims + metrics (EMB-H01..06) ==="
+
+# Use a deterministic input string so two runs of the smoke against a persistent
+# Valkey produce predictable hit-on-second-call behavior. Unique per script
+# invocation so previous smoke runs don't pre-warm the cache and turn the first
+# call into a hit.
+P12_UNIQUE="phase-12-smoke-$(date +%s%N)"
+
+P12_REQ_BODY=$(printf '{"model":"%s","input":"%s"}' "bge-m3-ollama" "${P12_UNIQUE}")
+
+# 1. Scrape baseline metrics.
+P12_METRICS_BEFORE=$(curl -fsS "${ROUTER_URL}/metrics" 2>/dev/null || echo "")
+P12_HITS_BEFORE=$(echo "${P12_METRICS_BEFORE}" | grep -E '^router_embeddings_cache_total\{result="hit"\} ' | awk '{print $2}' | head -1)
+P12_HITS_BEFORE=${P12_HITS_BEFORE:-0}
+P12_MISSES_BEFORE=$(echo "${P12_METRICS_BEFORE}" | grep -E '^router_embeddings_cache_total\{result="miss"\} ' | awk '{print $2}' | head -1)
+P12_MISSES_BEFORE=${P12_MISSES_BEFORE:-0}
+
+# 2. First call — should MISS (unique input).
+P12_R1=$(curl -fsS -X POST "${ROUTER_URL}/v1/embeddings" \
+  -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+  -H "content-type: application/json" \
+  -d "${P12_REQ_BODY}" 2>/dev/null || echo "")
+P12_R1_DIM=$(echo "${P12_R1}" | python3 -c 'import sys, json; d=json.load(sys.stdin); print(len(d["data"][0]["embedding"]))' 2>/dev/null || echo "")
+
+if [[ "${P12_R1_DIM}" == "1024" ]]; then
+  pass "Phase 12: first /v1/embeddings call → 1024-dim response (dims enforcement honored)"
+else
+  fail "Phase 12: first call returned dim=${P12_R1_DIM} (expected 1024); body head: $(echo "${P12_R1}" | head -c 200)"
+fi
+
+# 3. Second call — same body, should HIT.
+P12_R2=$(curl -fsS -X POST "${ROUTER_URL}/v1/embeddings" \
+  -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+  -H "content-type: application/json" \
+  -d "${P12_REQ_BODY}" 2>/dev/null || echo "")
+P12_R2_DIM=$(echo "${P12_R2}" | python3 -c 'import sys, json; d=json.load(sys.stdin); print(len(d["data"][0]["embedding"]))' 2>/dev/null || echo "")
+
+if [[ "${P12_R2_DIM}" == "1024" ]]; then
+  pass "Phase 12: second /v1/embeddings call → 1024-dim response (cache replay)"
+else
+  fail "Phase 12: second call returned dim=${P12_R2_DIM} (expected 1024); body head: $(echo "${P12_R2}" | head -c 200)"
+fi
+
+# Vector content byte-identical between the two calls (cache returned the same
+# bytes the upstream first produced).
+P12_R1_HEAD=$(echo "${P12_R1}" | python3 -c 'import sys, json; print(json.load(sys.stdin)["data"][0]["embedding"][:5])' 2>/dev/null || echo "")
+P12_R2_HEAD=$(echo "${P12_R2}" | python3 -c 'import sys, json; print(json.load(sys.stdin)["data"][0]["embedding"][:5])' 2>/dev/null || echo "")
+if [[ -n "${P12_R1_HEAD}" && "${P12_R1_HEAD}" == "${P12_R2_HEAD}" ]]; then
+  pass "Phase 12: cache replay vector byte-identical to upstream's first response"
+else
+  fail "Phase 12: cache replay produced different vector head; r1=${P12_R1_HEAD} vs r2=${P12_R2_HEAD}"
+fi
+
+# 4. Scrape metrics again. cache_total{hit} should have incremented by >=1.
+sleep 1  # give buffered writer + metric register a moment to settle
+P12_METRICS_AFTER=$(curl -fsS "${ROUTER_URL}/metrics" 2>/dev/null || echo "")
+P12_HITS_AFTER=$(echo "${P12_METRICS_AFTER}" | grep -E '^router_embeddings_cache_total\{result="hit"\} ' | awk '{print $2}' | head -1)
+P12_HITS_AFTER=${P12_HITS_AFTER:-0}
+P12_MISSES_AFTER=$(echo "${P12_METRICS_AFTER}" | grep -E '^router_embeddings_cache_total\{result="miss"\} ' | awk '{print $2}' | head -1)
+P12_MISSES_AFTER=${P12_MISSES_AFTER:-0}
+
+# Use python for float arithmetic (counters are float-formatted in prom-text).
+P12_HIT_DELTA=$(python3 -c "print(int(float('${P12_HITS_AFTER}') - float('${P12_HITS_BEFORE}')))")
+P12_MISS_DELTA=$(python3 -c "print(int(float('${P12_MISSES_AFTER}') - float('${P12_MISSES_BEFORE}')))")
+
+if [[ "${P12_HIT_DELTA}" -ge 1 ]]; then
+  pass "Phase 12: router_embeddings_cache_total{result=\"hit\"} incremented by ${P12_HIT_DELTA} (>=1)"
+else
+  fail "Phase 12: cache hit metric did NOT increment (before=${P12_HITS_BEFORE}, after=${P12_HITS_AFTER}); the second call should have been a cache hit"
+fi
+
+if [[ "${P12_MISS_DELTA}" -ge 1 ]]; then
+  pass "Phase 12: router_embeddings_cache_total{result=\"miss\"} incremented by ${P12_MISS_DELTA} (>=1)"
+else
+  fail "Phase 12: cache miss metric did NOT increment (before=${P12_MISSES_BEFORE}, after=${P12_MISSES_AFTER}); the first call should have been a cache miss"
+fi
+
+# 5. All three Phase 12 metrics visible in /metrics output.
+if echo "${P12_METRICS_AFTER}" | grep -qE '^router_embeddings_cache_total'; then
+  pass "Phase 12: router_embeddings_cache_total visible in /metrics (EMB-H03)"
+else
+  fail "Phase 12: router_embeddings_cache_total NOT in /metrics"
+fi
+if echo "${P12_METRICS_AFTER}" | grep -qE '^router_embeddings_batch_size_bucket'; then
+  pass "Phase 12: router_embeddings_batch_size_bucket visible in /metrics (EMB-H03)"
+else
+  fail "Phase 12: router_embeddings_batch_size_bucket NOT in /metrics"
+fi
+if echo "${P12_METRICS_AFTER}" | grep -qE '^router_embeddings_dims_total\{model="bge-m3-ollama",dims="1024"\}'; then
+  pass "Phase 12: router_embeddings_dims_total{model=bge-m3-ollama,dims=1024} visible in /metrics (EMB-H03)"
+else
+  fail "Phase 12: dims_total{bge-m3-ollama,1024} NOT in /metrics — check that an embeddings call ran for this model"
+fi
+
+echo ""
+echo "[smoke-test-router] === Phase 12 section complete ==="
+
 # Final summary
 echo ""
 echo "[smoke-test-router] ================================================================"
 if [[ "${FAILURES}" -eq 0 ]]; then
-  echo "[smoke-test-router]  Phase 2/3/4/5/7/8 router verification: COMPLETE."
+  echo "[smoke-test-router]  Phase 2/3/4/5/7/8/12 router verification: COMPLETE."
   echo "[smoke-test-router]  Model used : ${MODEL}"
   echo "[smoke-test-router]  Router URL : ${ROUTER_URL}"
   echo "[smoke-test-router]  Skipped    : ${SKIPS:-0} (vision sections require llama3.2-vision pull + outbound HTTPS)"

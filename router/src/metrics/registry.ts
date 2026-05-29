@@ -79,6 +79,47 @@ export function makeMetricsRegistry() {
     registers: [register],
   });
 
+  // Phase 12 (v0.10.0 — EMB-H03): observe /v1/embeddings cache outcomes per input item.
+  // Labels:
+  //   result=hit     → input found in Valkey cache; adapter NOT called for this item
+  //   result=miss    → input not in cache; adapter called + result populated
+  //   result=bypass  → cache intentionally skipped (e.g. encoding_format=base64 not cached)
+  // Valkey errors are fail-open and do NOT increment this metric (EMB-H04) — they emit
+  // a warn-log instead and behave as if cache were absent. No model/backend label — cache
+  // hit rate per model is queryable by joining /v1/embeddings request_log rows with
+  // dims_total below (model+dims labels), keeping cardinality bounded on the counter.
+  const embeddingsCacheTotal = new Counter({
+    name: 'router_embeddings_cache_total',
+    help: 'Per-input-item outcome of the /v1/embeddings Valkey cache (hit | miss | bypass)',
+    labelNames: ['result'] as const,
+    registers: [register],
+  });
+
+  // Phase 12 (v0.10.0 — EMB-H03): observe batch sizes on /v1/embeddings.
+  // Useful for capacity planning — a creep from 1-item requests to 50-item batches changes
+  // the latency profile of the embed backend significantly. Buckets chosen for typical
+  // RAG ingestion patterns (single-doc ad-hoc → small batch → large batch).
+  const embeddingsBatchSize = new Histogram({
+    name: 'router_embeddings_batch_size',
+    help: 'Number of input items per /v1/embeddings request',
+    buckets: [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024],
+    registers: [register],
+  });
+
+  // Phase 12 (v0.10.0 — EMB-H03): per-(model,dims) request counter. Incremented once per
+  // request that successfully resolves a vector (dims label is the value stamped in
+  // models.yaml; mismatch responses surface as EmbeddingsDimsMismatchError and are NOT
+  // recorded here). Useful for spotting a model swap that changed dims silently: a new
+  // (model, dims) row appearing in the metric is the signal.
+  // Cardinality discipline: dims is an integer with a small known set per model;
+  // multi-model dims will produce ~ (models × 1) rows — well-bounded.
+  const embeddingsDimsTotal = new Counter({
+    name: 'router_embeddings_dims_total',
+    help: 'Per-model embedding dimensions observed (incremented once per successful response)',
+    labelNames: ['model', 'dims'] as const,
+    registers: [register],
+  });
+
   return {
     register,
     requestsTotal,
@@ -87,6 +128,9 @@ export function makeMetricsRegistry() {
     tokensTotal,
     logBufferDroppedTotal,
     jsonValidationTotal,
+    embeddingsCacheTotal,
+    embeddingsBatchSize,
+    embeddingsDimsTotal,
   };
 }
 

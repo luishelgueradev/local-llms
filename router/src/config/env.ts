@@ -61,6 +61,13 @@ const EnvSchema = z.object({
   // a zero or negative limit would either disable the limit entirely (zero)
   // or be meaningless (negative); both are operator-error cases.
   ROUTER_RATE_LIMIT_RPM: z.coerce.number().int().min(1).default(600),
+  // Phase 12 (v0.10.0 — EMB-H01): Valkey TTL (seconds) for the /v1/embeddings cache.
+  // Default 86400 (24h) — embeddings are deterministic per model+input so a long
+  // TTL is safe; the key shape (backend|backend_model|encoding_format|dimensions|input)
+  // invalidates on any of those dimensions changing, including a models.yaml swap of
+  // the alias's backend_model (EMB-H05). Operators wanting smaller TTL (e.g. while
+  // iterating on a model) override via env. Min 1s; 0 would defeat the cache.
+  ROUTER_EMBED_CACHE_TTL_SEC: z.coerce.number().int().min(1).default(86400),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

@@ -91,6 +91,35 @@ export class InvalidStructuredOutputError extends Error {
 }
 
 /**
+ * Phase 12 (v0.10.0 — EMB-H02): thrown by /v1/embeddings when the upstream
+ * adapter returns a vector whose length does not match the `dims` declared
+ * for the model in `models.yaml`. The router refuses to propagate the broken
+ * vector to a downstream vector store — a silent dims drift would invalidate
+ * the entire index. Surfaces as 500 (server_error bucket — this is an upstream
+ * misconfiguration, not a client error). The structured log line is the
+ * operator signal to investigate model swap / quantization changes.
+ *
+ * The error message includes BOTH the expected and observed dims so the
+ * operator can correlate against models.yaml in one glance.
+ */
+export class EmbeddingsDimsMismatchError extends Error {
+  readonly code: 'embeddings_dims_mismatch' = 'embeddings_dims_mismatch';
+  constructor(
+    public readonly modelName: string,
+    public readonly expected: number,
+    public readonly actual: number,
+  ) {
+    super(
+      `Model "${modelName}" returned an embedding of ${actual} dimensions, ` +
+        `but models.yaml declares dims=${expected}. The router refused to propagate ` +
+        `the mismatched vector — verify the upstream model version / quantization or ` +
+        `update the dims field in models.yaml.`,
+    );
+    this.name = 'EmbeddingsDimsMismatchError';
+  }
+}
+
+/**
  * Plan 08-04 (CLOUD-03 / D-B1..D-B4): thrown when a request is rejected
  * because the per-backend circuit breaker is open (or another probe is
  * in flight while the breaker is half-open).
@@ -318,6 +347,9 @@ export function mapToHttpStatus(err: unknown): number {
   if (err instanceof RateLimitExceededError) return 429;
   // Plan 08-04 (CLOUD-03) — per-backend circuit breaker is open → 503 Service Unavailable.
   if (err instanceof BreakerOpenError) return 503;
+  // Phase 12 (v0.10.0 — EMB-H02): dims mismatch is a server-side guarantee violation;
+  // map to 500 so it's surfaced as server_error in dashboards (clients can't fix it).
+  if (err instanceof EmbeddingsDimsMismatchError) return 500;
   // APIConnectionTimeoutError extends APIConnectionError — check FIRST for 504, before the 502 below
   if (err instanceof APIConnectionTimeoutError) return 504;
   if (err instanceof APIConnectionError) return 502;
@@ -487,6 +519,19 @@ export function toOpenAIErrorEnvelope(err: unknown): EnvelopeOrSkip {
         message: err.message,
         type: 'api_error',
         code: 'backend_circuit_open',
+        param: null,
+      },
+    };
+  }
+  // Phase 12 (v0.10.0 — EMB-H02): dims mismatch is an api_error (the upstream
+  // returned a vector the router refuses to propagate). param=null because the
+  // failure is server-side, not tied to a client-supplied field.
+  if (err instanceof EmbeddingsDimsMismatchError) {
+    return {
+      error: {
+        message: err.message,
+        type: 'api_error',
+        code: 'embeddings_dims_mismatch',
         param: null,
       },
     };

@@ -207,6 +207,7 @@ const TEST_ENV = {
   CIRCUIT_WINDOW_MS: 30_000,
   CIRCUIT_COOLDOWN_MS: 60_000,
   ROUTER_RATE_LIMIT_RPM: 5, // low for fast tests
+  ROUTER_EMBED_CACHE_TTL_SEC: 60,
 };
 
 let app: FastifyInstance;

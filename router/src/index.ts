@@ -175,6 +175,9 @@ async function main(): Promise<void> {
       CIRCUIT_WINDOW_MS: env.CIRCUIT_WINDOW_MS,
       CIRCUIT_COOLDOWN_MS: env.CIRCUIT_COOLDOWN_MS,
       ROUTER_RATE_LIMIT_RPM: env.ROUTER_RATE_LIMIT_RPM,
+      // Phase 12 (v0.10.0 — EMB-H01): TTL for the embeddings cache. buildApp wires
+      // makeEmbeddingsCache only when both opts.valkey AND opts.env are present.
+      ROUTER_EMBED_CACHE_TTL_SEC: env.ROUTER_EMBED_CACHE_TTL_SEC,
     },
   });
 

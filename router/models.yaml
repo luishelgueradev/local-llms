@@ -76,11 +76,13 @@ models:
     profile: vllm
 
   # Phase 7 (Plan 07-03) — bge-m3 embeddings served by Ollama (1024-dim, multilingual).
+  # Phase 12 (EMB-H02): dims declared so the route can refuse mismatched vectors.
   - name: bge-m3-ollama
     backend: ollama
     backend_url: http://ollama:11434/v1
     backend_model: bge-m3
     capabilities: [embeddings]
+    dims: 1024
     vram_budget_gb: 2.5
     concurrency: 4
     max_model_len: 8192
@@ -93,6 +95,7 @@ models:
     backend_url: http://vllm-embed:8000/v1
     backend_model: BAAI/bge-m3
     capabilities: [embeddings]
+    dims: 1024
     vram_budget_gb: 2.5
     concurrency: 4
     max_model_len: 8192
@@ -170,6 +173,7 @@ models:
     backend_url: http://ollama:11434/v1
     backend_model: bge-m3
     capabilities: [embeddings]
+    dims: 1024
     vram_budget_gb: 0
     concurrency: 4
     max_model_len: 8192

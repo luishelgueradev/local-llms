@@ -50,6 +50,7 @@ models:
     backend_url: ${OLLAMA_BASE}
     backend_model: bge-m3
     capabilities: [embeddings]
+    dims: 1024
     vram_budget_gb: 2
   - name: ${CLOUD_MODEL}
     backend: ollama-cloud
@@ -83,12 +84,21 @@ function makeFakeAdapter(): BackendAdapter {
     async probeLiveness() {
       return { ok: true, latencyMs: 0 };
     },
-    async embeddings(_input, model) {
+    async embeddings(input, model) {
+      // Phase 12 (v0.10.0 — EMB-H02): dims is now required for embeddings models
+      // (registry.ts.superRefine) AND enforced at response time. Fake returns 1024-dim
+      // vectors (matches the bge-m3-ollama dims declared in the YAML fixture above).
+      // One vector per input item so batch requests don't trip the count-mismatch gate.
+      const items = Array.isArray(input) ? input : [input];
       return {
         object: 'list',
-        data: [{ object: 'embedding', index: 0, embedding: new Array(8).fill(0.42) }],
+        data: items.map((_, i) => ({
+          object: 'embedding' as const,
+          index: i,
+          embedding: new Array(1024).fill(0.42),
+        })),
         model,
-        usage: { prompt_tokens: 3, total_tokens: 3 },
+        usage: { prompt_tokens: 3 * items.length, total_tokens: 3 * items.length },
       };
     },
     // Phase 11 (v0.10.0 — RERANK-02): not exercised by this suite.

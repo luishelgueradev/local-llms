@@ -136,6 +136,7 @@ models:
     backend_url: http://vllm-embed:8000/v1
     backend_model: BAAI/bge-m3
     capabilities: [embeddings]
+    dims: 1024
     vram_budget_gb: 2.5
     `);
     expect(reg.models[0]?.backend).toBe('vllm-embed');

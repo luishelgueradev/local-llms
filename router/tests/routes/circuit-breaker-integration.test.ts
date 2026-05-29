@@ -220,6 +220,7 @@ const CIRCUIT_ENV = {
   // but the typed Pick requires the key — supply a generous default so the
   // tests don't accidentally trip the limiter under burst-load patterns.
   ROUTER_RATE_LIMIT_RPM: 600,
+  ROUTER_EMBED_CACHE_TTL_SEC: 60,
 };
 
 let app: FastifyInstance;

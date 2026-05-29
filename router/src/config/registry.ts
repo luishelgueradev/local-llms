@@ -125,6 +125,21 @@ export const RegistrySchema = z.object({
       });
     }
   }
+
+  // Phase 12 (v0.10.0 — EMB-H02): any model with the `embeddings` capability MUST
+  // declare its output `dims`. This is the contract that lets the embeddings route
+  // enforce a vector-shape gate (refuse 500 + structured log on mismatch) instead
+  // of silently propagating a wrong-dim vector into a downstream vector store. The
+  // gate is an additive validation — non-embeddings models are unaffected.
+  for (const m of reg.models) {
+    if (m.capabilities.includes('embeddings') && m.dims === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['models'],
+        message: `Config error: model "${m.name}" declares capability "embeddings" but is missing the required \`dims: <number>\` field. Add the integer output dimensions (e.g. bge-m3 is 1024) so the router can refuse vectors of unexpected size.`,
+      });
+    }
+  }
 });
 
 export type ModelEntry = z.infer<typeof ModelEntrySchema>;

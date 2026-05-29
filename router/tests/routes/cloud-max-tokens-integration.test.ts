@@ -81,6 +81,7 @@ models:
     backend_url: ${CLOUD_BASE}
     backend_model: ${CLOUD_EMBED_MODEL}
     capabilities: [embeddings]
+    dims: 1024
     vram_budget_gb: 0
 backends:
   ollama:
@@ -121,13 +122,21 @@ function makeSpyAdapter(counts: SpyCounts): BackendAdapter {
     async probeLiveness() {
       return { ok: true, latencyMs: 0 };
     },
-    async embeddings() {
+    async embeddings(input) {
       counts.embeddings++;
+      // Phase 12 (v0.10.0 — EMB-H02): registry now declares dims: 1024 for embeddings
+      // models, enforced at response time. Return 1024-dim vector(s) — one per input
+      // item so batch requests don't trip the count-mismatch defense.
+      const items = Array.isArray(input) ? input : [input];
       return {
         object: 'list',
-        data: [{ object: 'embedding', embedding: [0.1, 0.2], index: 0 }],
+        data: items.map((_, i) => ({
+          object: 'embedding' as const,
+          embedding: new Array(1024).fill(0.1),
+          index: i,
+        })),
         model: 'stub',
-        usage: { prompt_tokens: 1, total_tokens: 1 },
+        usage: { prompt_tokens: items.length, total_tokens: items.length },
       } as never;
     },
     async rerank() {

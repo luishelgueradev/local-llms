@@ -52,6 +52,7 @@ models:
     backend_url: ${LOCAL_BASE}
     backend_model: ${EMBED_MODEL}
     capabilities: [embeddings]
+    dims: 1024
     vram_budget_gb: 1
 backends:
   ollama:
@@ -73,9 +74,12 @@ function stubCanonicalResponse(model: string): CanonicalResponse {
 }
 
 function stubEmbeddingResponse(): CreateEmbeddingResponse {
+  // Phase 12 (v0.10.0 — EMB-H02): YAML fixture now declares dims: 1024 for the
+  // embeddings entry, enforced at response time. Return a 1024-dim vector so the
+  // route doesn't 500-out on dims mismatch.
   return {
     object: 'list',
-    data: [{ object: 'embedding', embedding: [0.1, 0.2, 0.3], index: 0 }],
+    data: [{ object: 'embedding', embedding: new Array(1024).fill(0.1), index: 0 }],
     model: EMBED_MODEL,
     usage: { prompt_tokens: 3, total_tokens: 3 },
   };
@@ -378,6 +382,7 @@ const TEST_ENV = {
   CIRCUIT_WINDOW_MS: 30_000,
   CIRCUIT_COOLDOWN_MS: 60_000,
   ROUTER_RATE_LIMIT_RPM: 10_000, // keep rate-limit quiet
+  ROUTER_EMBED_CACHE_TTL_SEC: 60,
 };
 
 let app: FastifyInstance;
