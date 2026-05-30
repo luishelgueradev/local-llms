@@ -361,6 +361,34 @@ Lista completa de env vars con docs: `.env.example` (16 KB).
 
 ---
 
+## Policy & multi-tenant context (v0.11.0)
+
+Phase 14 adds two operator-level policy controls in `router/models.yaml` and three caller-supplied
+context headers — all additive, all defaulting to allow-all (zero-config = unchanged behavior).
+
+**Policy stanza** (`policies.default.model_allowlist` + per-entry `policy.cloud_allowed`): restrict
+which models are routable and/or deny cloud dispatch per entry. Violations return HTTP 403 with a
+structured envelope `{ code: "model_not_in_allowlist" | "cloud_not_allowed", model, type: "policy_violation" }`.
+The gate fires **after** the capability check and **before** the circuit breaker — policy violations
+are never counted as backend failures. See [DEPLOY.md §"Policy primitives"](DEPLOY.md#policy-primitives-phase-14--v0110) for the full stanza shape and 403 envelope.
+
+**Scoped-ID headers** (`X-Tenant-ID`, `X-Project-ID`, `X-Workload-Class`): optional caller-supplied
+context stamped into `request_log` (columns `tenant_id`, `project_id`, `workload_class` added by
+migration 0005) and pino structured logs. `X-Tenant-ID` / `X-Project-ID` use the same
+`/^[A-Za-z0-9._:-]{1,128}$/` regex as `X-Agent-Id` (invalid = 400); `X-Workload-Class` silently
+nulls on invalid input (opaque metadata). See [DEPLOY.md §"Scoped-ID request headers"](DEPLOY.md#scoped-id-request-headers) for the full regex table.
+
+**Cardinality discipline:** `X-Tenant-ID` / `X-Project-ID` / `X-Agent-Id` are **never** added as
+Prometheus label dimensions — high-cardinality IDs in `/metrics` would explode time-series count.
+A CI guard (`check-prometheus-cardinality` vitest script) fails the build if any `_id` label is
+added to `src/metrics/registry.ts`. Use `request_log` queries for per-tenant analytics. See
+[DEPLOY.md §"Cardinality CI guard"](DEPLOY.md#cardinality-ci-guard-check-prometheus-cardinality).
+
+The commented affordance lives in `router/models.yaml` at the top of the file — every policy
+option is shown as a YAML comment so operators can uncomment and adapt.
+
+---
+
 ## Operacion
 
 | Tarea | Comando |
