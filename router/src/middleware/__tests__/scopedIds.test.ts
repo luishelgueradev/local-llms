@@ -217,4 +217,39 @@ describe('scopedIdsPreHandler (Phase 14 — POL-03/04)', () => {
     expect(combined).toContain('"workload_class":"batch"');
     expect(combined).toContain('"agent_id":"test-agent"');
   });
+
+  // -------------------------------------------------------------------------
+  // Test 7: 14-09-REVIEW CR-01 regression gate — pino .child() carries scoped
+  // IDs even when X-Agent-Id is absent (the common case in v0.11.0). Before
+  // the fix, agentIdPreHandler early-returned on absent X-Agent-Id and the
+  // .child() enrichment never ran, silently dropping tenant_id/project_id/
+  // workload_class from pino logs — a D-20 contract violation.
+  // -------------------------------------------------------------------------
+  it('7. CR-01 regression: pino .child() still binds scoped IDs when X-Agent-Id is absent', async () => {
+    collectedLogLines.length = 0;
+    app = await buildTestApp({ captureLog: true });
+
+    await app.inject({
+      method: 'GET',
+      url: '/test-route',
+      headers: {
+        'x-tenant-id': 'acme',
+        'x-project-id': 'agents',
+        'x-workload-class': 'batch',
+        // x-agent-id deliberately omitted — common case for n8n / direct curl.
+      },
+    });
+
+    const combined = collectedLogLines.join('');
+    expect(combined.length).toBeGreaterThan(0);
+
+    // Scoped IDs must still reach pino .child() bindings (D-20).
+    expect(combined).toContain('"tenant_id":"acme"');
+    expect(combined).toContain('"project_id":"agents"');
+    expect(combined).toContain('"workload_class":"batch"');
+
+    // agent_id is omitted because pino .child() drops undefined-valued keys
+    // (Assumption A2). Asserting absence is the precise contract.
+    expect(combined).not.toContain('"agent_id":');
+  });
 });

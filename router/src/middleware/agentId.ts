@@ -81,29 +81,37 @@ export async function agentIdPreHandler(
   // measures only the request-processing portion (not the auth gate).
   req._t0 = performance.now();
 
+  // D-D5: parse X-Agent-Id if present. Absent header is the common case in
+  // v0.11.0 (n8n, Unsloth Studio, ad-hoc curl) — that path must NOT short-circuit
+  // before pino enrichment, otherwise tenant/project/workload IDs never reach
+  // the structured logs (14-09-REVIEW CR-01 / D-20 contract).
   const raw = req.headers['x-agent-id'];
-  if (raw === undefined) {
-    // D-D5: absent → agentId stays undefined → request_log.agent_id NULL.
-    return;
+  let value: string | undefined;
+  if (raw !== undefined) {
+    // RFC 9110 §5.3 — duplicates may join with commas OR appear as an array
+    // (Fastify normalizes duplicates to an array). First value wins.
+    const candidate = Array.isArray(raw) ? raw[0] : raw;
+
+    if (typeof candidate !== 'string' || !AGENT_ID_RE.test(candidate)) {
+      // D-D5: regex violation → 400 + invalid_agent_id. The centralized
+      // app.setErrorHandler routes to the matching wire envelope (OpenAI for
+      // /v1/chat/completions; Anthropic for /v1/messages).
+      throw new InvalidAgentIdError(typeof candidate === 'string' ? candidate : '');
+    }
+
+    value = candidate;
+    req.agentId = value;
   }
 
-  // RFC 9110 §5.3 — duplicates may join with commas OR appear as an array
-  // (Fastify normalizes duplicates to an array). First value wins.
-  const value = Array.isArray(raw) ? raw[0] : raw;
-
-  if (typeof value !== 'string' || !AGENT_ID_RE.test(value)) {
-    // D-D5: regex violation → 400 + invalid_agent_id. The centralized
-    // app.setErrorHandler routes to the matching wire envelope (OpenAI for
-    // /v1/chat/completions; Anthropic for /v1/messages).
-    throw new InvalidAgentIdError(typeof value === 'string' ? value : '');
-  }
-
-  req.agentId = value;
-  // Decorate the pino child logger so every subsequent log line carries agent_id
-  // PLUS the scoped IDs stamped by scopedIdsPreHandler (which runs before this
-  // hook — app.ts registration order guarantee). Reading defensively with
-  // req.tenantId etc. — if scopedIdsPreHandler did not run, these are undefined,
-  // and pino's .child() silently omits undefined-valued keys (Assumption A2).
+  // Decorate the pino child logger so every subsequent log line carries
+  // (when present) agent_id PLUS the scoped IDs stamped by scopedIdsPreHandler
+  // (which runs before this hook — app.ts registration order guarantee).
+  // pino's .child() silently omits undefined-valued keys (Assumption A2), so
+  // omitting X-Agent-Id is graceful: agent_id is left out of the child fields
+  // but tenant_id / project_id / workload_class still flow through. This is
+  // the v0.11.0 fix for 14-09-REVIEW CR-01 — when X-Agent-Id is absent (the
+  // common case), the previous early-return skipped enrichment entirely and
+  // pino lines silently dropped scoped IDs, violating D-20.
   //
   // Phase 14 (v0.11.0 — POL-03/04 / D-20): tenant_id, project_id, workload_class
   // added here rather than in scopedIds.ts to preserve the Pitfall-9 invariant.
