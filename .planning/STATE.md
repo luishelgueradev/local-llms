@@ -38,14 +38,14 @@ Last activity: 2026-05-30 — Phase 14 complete
 
 ```
 Milestone v0.11.0: █▓░░░░░░░░ 17% — Phase 14/6 shipped (POL-01..06)
-  Phase 14: ░░░░░░░░░░ Policy Primitives + Tenant/Project ID Foundation (POL-01..06)
+  Phase 14: ██████████ Policy Primitives + Tenant/Project ID Foundation (POL-01..06) — SHIPPED 2026-05-30
   Phase 15: ░░░░░░░░░░ MCP Host (MCPS-01..06)
   Phase 16: ░░░░░░░░░░ /v1/responses Streaming + Tool Calls (RESS-01..05)
   Phase 17: ░░░░░░░░░░ SessionStore + ContextProvider + SummaryProvider (SESS-01..06 + CTXP-01..04 + SUMP-01..03)
   Phase 18: ░░░░░░░░░░ MCP Client + RetrieverProvider + Pre-Completion Hook (MCPC-01..06 + RETR-01..06)
   Phase 19: ░░░░░░░░░░ EmbeddingProvider Formalization + Observability Hardening (EMBP-01..02 + OBSV-01..04)
 
-Overall v0.11.0:  ░░░░░░░░░░  0/48 requirements
+Overall v0.11.0:  █▓░░░░░░░░  6/48 requirements (POL-01..06)
 
 Milestone v0.10.0: ██████████ 100% — SHIPPED 2026-05-29 (archived)
 Milestone v0.9.0:  ██████████ 100% — SHIPPED 2026-05-28 (archived)
