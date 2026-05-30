@@ -120,6 +120,15 @@ export interface BuildAppOpts {
    */
   agentIdPreHandler?: preHandlerAsyncHookHandler;
   /**
+   * Phase 14 (v0.11.0 — POL-05 / D-09 / P8-01 BLOCK) — Test seam for the
+   * circuit breaker. Production path uses the breaker constructed from
+   * opts.valkey + opts.env. Tests inject a spied wrapper to assert POL-05
+   * (breaker counter unchanged after a policy 403 — `recordFailure` must be
+   * called 0 times when applyPolicyGate throws before the breaker.check call).
+   * When omitted, the existing breaker construction logic is used unchanged.
+   */
+  breaker?: CircuitBreaker;
+  /**
    * Plan 05-04 (DATA-04) — optional usage_daily scheduler. When supplied,
    * its start() runs after buildApp wires the routes and its stop() runs
    * in the onClose hook BEFORE the bufferedWriter drain (the drain races
@@ -539,8 +548,13 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
   // Production wiring (index.ts) always passes a real Valkey client + the
   // CIRCUIT_* env subset, so the no-op path is exclusively a test-fixture
   // concern.
+  // Phase 14 (v0.11.0 — POL-05 / P8-01 BLOCK): opts.breaker is the test injection
+  // seam added to BuildAppOpts. When present, it overrides the valkey/env construction
+  // (test spy asserts breaker counter unchanged after policy 403). Production path
+  // (opts.breaker absent) uses the existing valkey+env construction unchanged.
   const breaker: CircuitBreaker =
-    opts.valkey && opts.env
+    opts.breaker ??
+    (opts.valkey && opts.env
       ? makeCircuitBreaker({
           valkey: opts.valkey,
           log: app.log as Logger,
@@ -558,7 +572,7 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
           reset: async () => {
             /* no-op */
           },
-        };
+        });
 
   // Pre-compute the Retry-After value (seconds, rounded up from ms) so the
   // routes can stamp it without re-reading env.
