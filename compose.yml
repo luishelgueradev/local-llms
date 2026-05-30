@@ -1030,7 +1030,7 @@ services:
       test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health || exit 1"]
       interval: 15s
       timeout: 3s
-      start_period: 30s    # OWUI 0.9 cold-boot can take 15-25s on first DB init (06-RESEARCH §Pattern 5)
+      start_period: 90s    # OWUI 0.9 cold-boot: docs claim 15-25s on first DB init, but WSL2/Docker Desktop hosts measured >30s consistently (smoke gate cascading `compose --profile up -d --wait` failures). 90s gives 3x headroom; start_period only delays failure-counting, no boot-time cost. (06-RESEARCH §Pattern 5; bumped Phase 14 smoke gate)
       retries: 5
     depends_on:
       postgres:
