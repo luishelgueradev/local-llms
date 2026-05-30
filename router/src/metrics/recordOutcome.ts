@@ -71,6 +71,11 @@ export interface OutcomeContext {
   errorCode?: string;
   errorMessage?: string;
   agentId?: string;
+  // Phase 14 (v0.11.0 — POL-03/POL-04): scoped IDs stamped by scopedIdsPreHandler.
+  // Mirrors the agentId? pattern — undefined when header absent or invalid.
+  tenantId?: string;
+  projectId?: string;
+  workloadClass?: string;
   requestId: string;
   upstreamMessageId?: string;
   /**
@@ -253,6 +258,11 @@ export function makeRecordRequestOutcome(deps: RecordRequestOutcomeDeps) {
       error_message:
         ctx.errorMessage !== undefined ? truncateAndRedact(ctx.errorMessage) : null,
       agent_id: ctx.agentId ?? null,
+      // Phase 14 (v0.11.0 — POL-03/POL-04): scoped-ID columns. ?? null mirrors
+      // agent_id pattern — undefined (absent/invalid header) becomes NULL in the row.
+      tenant_id: ctx.tenantId ?? null,
+      project_id: ctx.projectId ?? null,
+      workload_class: ctx.workloadClass ?? null,
       request_id: ctx.requestId,
       upstream_message_id: ctx.upstreamMessageId ?? null,
       // 08-REVIEW CR-01: Idempotency-Key column (Plan 08-07 / D-D5). Populated
