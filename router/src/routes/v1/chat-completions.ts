@@ -18,6 +18,7 @@ import {
   mapToHttpStatus,
   toOpenAIErrorEnvelope,
 } from '../../errors/envelope.js';
+import { applyPolicyGate } from '../../policy/gate.js';
 import {
   buildRepairMessage,
   validateJsonOutput,
@@ -216,6 +217,12 @@ export function registerChatCompletionsRoute(
       if (wantsJson && !entry.capabilities.includes('json_mode')) {
         throw new CapabilityNotSupportedError(entry.name, 'json_mode');
       }
+
+      // Phase 14 (v0.11.0 — POL-01 / POL-02 / P8-01 BLOCK): policy gate fires
+      // AFTER capability gate, BEFORE the breaker check, so a policy 403 never
+      // mutates the breaker counter (P8-01). Snapshot fetched here — registry.get()
+      // is the existing seam; hot-reload swaps the snapshot atomically.
+      applyPolicyGate(opts.registry.get().policies, entry, body.model);
 
       // ── AbortController: load-bearing for SC3 ──────────────────────────────
       // The signal is forwarded to undici by the openai SDK, which closes the

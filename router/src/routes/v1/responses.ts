@@ -63,6 +63,7 @@ import {
   CapabilityNotSupportedError,
   mapToHttpStatus,
 } from '../../errors/envelope.js';
+import { applyPolicyGate } from '../../policy/gate.js';
 import type { CircuitBreaker } from '../../resilience/circuitBreaker.js';
 import type { IdempotencyMultiplexer } from '../../resilience/idempotency.js';
 import { extractIdempotencyKey } from '../../middleware/idempotencyKey.js';
@@ -360,6 +361,12 @@ export function registerResponsesRoute(
         if (!entry.capabilities.includes('chat')) {
           throw new CapabilityNotSupportedError(entry.name, 'chat' as never);
         }
+
+        // Phase 14 (v0.11.0 — POL-01 / POL-02 / P8-01 BLOCK): policy gate fires
+        // AFTER capability gate, BEFORE the breaker check, so a policy 403 never
+        // mutates the breaker counter (P8-01). Snapshot fetched here — registry.get()
+        // is the existing seam; hot-reload swaps the snapshot atomically.
+        applyPolicyGate(opts.registry.get().policies, entry, body.model);
 
         const breakerResult = await opts.breaker.check(entry.backend);
         if (breakerResult.state === 'open') {
