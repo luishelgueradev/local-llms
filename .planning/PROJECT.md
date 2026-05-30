@@ -105,6 +105,12 @@ Consumed in production by the user's agents (n8n in a remote VPS over Cloudflare
 - ✓ Embeddings hardening (Phase 12, EMB-H01..06): Valkey cache key=`hash(backend|backend_model|encoding_format|dimensions|input)` TTL configurable via `ROUTER_EMBED_CACHE_TTL_SEC` + registry-required `dims` enforcement + 3 new metrics + fail-open on Valkey
 - ✓ Cost observability + `/v1/responses` (Phase 13, COST-01..04 + RESP-01..04): `cost_cents NUMERIC(10,4)` column (migration 0003) + `X-Cost-Cents` header on success + `cost_per_agent_daily` view (migration 0004) + new `POST /v1/responses` minimal non-stream endpoint sharing all plumbing with chat-completions
 
+### Validated (v0.11.0 — partial, 2026-05-30)
+
+<!-- Phases delivered. Continued accumulation as v0.11.0 advances. -->
+
+- ✓ **Policy primitives (Phase 14, POL-01..06):** top-level `policies.default.model_allowlist` (POL-01) + per-entry `policy.cloud_allowed: false` (POL-02) + `X-Workload-Class` opaque metadata (POL-03) + `X-Tenant-ID`/`X-Project-ID`/`X-Workload-Class` scoped IDs flowing into `request_log` (POL-04, migration 0005) + canonical gate position (POL-05, policy 403 never advances breaker) + Prometheus cardinality CI guard rejecting `*_id` labels (POL-06, P8-03 mitigation). All deliverables behind allow-all defaults — zero policy config preserves prior behavior (POL Success Criterion 5).
+
 ### Active (v0.11.0 — Retrieval-Ready Infrastructure)
 
 <!-- Locked 2026-05-29. Detailed REQ-IDs in REQUIREMENTS.md after research-first. -->
@@ -116,7 +122,7 @@ Consumed in production by the user's agents (n8n in a remote VPS over Cloudflare
 - **`RetrieverProvider` + pre-completion hook (P3):** MCP tool-driven retrieval primary, pre-completion hook como extension point opcional; payload rico (filtros, top-k, metadata, hybrid flags) sin orquestar retrieval.
 - **`SessionStore` + `ContextProvider` + `SummaryProvider` (P4):** abstracción de memory/session sin behavior; `SessionStore` Postgres-backed opcional, `ContextProvider` window-management sin semántica, `SummaryProvider` seam noop-default.
 - **`EmbeddingProvider` interface name + MCP exposure:** formalización del capability existente (v0.10.0 Phase 12) como provider interface con nombre estable.
-- **Policy primitives (slim):** model allowlists · cloud restrictions (`cloud_allowed: false`) · sensitive-workload routing · tenant/project/agent IDs en tracing/`request_log`/metadata.
+- ~~**Policy primitives (slim)**~~ — ✓ Validated in Phase 14 (see v0.11.0 partial section above).
 
 REQ-IDs concretos se definen en REQUIREMENTS.md post-research.
 
@@ -144,6 +150,7 @@ REQ-IDs concretos se definen en REQUIREMENTS.md post-research.
 
 ## Phase Progress
 
+- **Milestone v0.11.0 Retrieval-Ready Infrastructure — Phase 14 (Policy primitives + scoped IDs) complete 2026-05-30.** 5 phases remaining (15 MCP-host, 16 MCP-client, 17 /v1/responses streaming+tools, 18 Retriever+hooks, 19 Memory abstraction).
 - **Milestone v0.10.0 Cognitive Primitives — all 4 phases shipped 2026-05-29.** See [`MILESTONES.md`](./MILESTONES.md) for the consolidated summary and [`milestones/v0.10.0-ROADMAP.md`](./milestones/v0.10.0-ROADMAP.md) for per-phase details.
 - **Milestone v0.9.0 MVP — all 9 phases shipped 2026-05-28.** Archived in [`milestones/v0.9.0-ROADMAP.md`](./milestones/v0.9.0-ROADMAP.md).
 
@@ -191,4 +198,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-05-29 — v0.11.0 Retrieval-Ready Infrastructure milestone opened after v0.10.0 Cognitive Primitives shipped.*
+*Last updated: 2026-05-30 — Phase 14 (Policy primitives + scoped IDs) complete; v0.11.0 milestone 1/6 phases done.*
