@@ -289,6 +289,68 @@ export class InvalidAgentIdError extends Error {
   }
 }
 
+
+/**
+ * Phase 14 (v0.11.0 — POL-01): thrown by applyPolicyGate() when the requested
+ * model is not in `policies.default.model_allowlist`. Fires BEFORE the
+ * circuit-breaker check so policy violations never count as backend failures
+ * (P8-01 BLOCK). Maps to 403 + policy_violation on both wire surfaces.
+ */
+export class AllowlistViolationError extends Error {
+  readonly code = 'model_not_in_allowlist';
+  constructor(public readonly modelName: string) {
+    super(
+      `Model "${modelName}" is not in policies.default.model_allowlist. ` +
+        `Either add it to the allowlist in models.yaml or use a model from the allowed set.`,
+    );
+    this.name = 'AllowlistViolationError';
+  }
+}
+
+/**
+ * Phase 14 (v0.11.0 — POL-02): thrown by applyPolicyGate() when the resolved
+ * registry entry has `backend: ollama-cloud` AND `policy.cloud_allowed: false`.
+ * Fires BEFORE the circuit-breaker check (P8-01). Maps to 403 + policy_violation.
+ */
+export class CloudNotAllowedError extends Error {
+  readonly code = 'cloud_not_allowed';
+  constructor(public readonly modelName: string) {
+    super(
+      `Model "${modelName}" resolves to an ollama-cloud entry whose policy.cloud_allowed=false. ` +
+        `Cloud routing is denied for this entry; pick a local-backend model.`,
+    );
+    this.name = 'CloudNotAllowedError';
+  }
+}
+
+/**
+ * Phase 14 (v0.11.0 — POL-04): thrown by scopedIdsPreHandler when an inbound
+ * X-Tenant-ID or X-Project-ID header violates regex /^[A-Za-z0-9._:-]{1,128}$/.
+ * Mirrors InvalidAgentIdError (same regex, same 400 mapping). Diverges from
+ * X-Workload-Class (silent-NULL) because tenant/project IDs are operationally
+ * load-bearing.
+ *
+ * `headerLabel` is the header name for the error message (e.g. 'X-Tenant-ID').
+ * Truncates `suppliedValue` to 32 chars in the message body (log-injection defense,
+ * T-14-04 mitigation — mirrors InvalidAgentIdError pattern).
+ */
+export class InvalidScopedIdError extends Error {
+  readonly code: 'invalid_scoped_id' = 'invalid_scoped_id';
+  constructor(
+    public readonly headerLabel: string,
+    public readonly suppliedValue: string,
+  ) {
+    const display =
+      typeof suppliedValue === 'string' && suppliedValue.length > 32
+        ? `${suppliedValue.slice(0, 32)}...`
+        : String(suppliedValue ?? '');
+    super(
+      `${headerLabel} "${display}" violates regex /^[A-Za-z0-9._:-]{1,128}$/`,
+    );
+    this.name = 'InvalidScopedIdError';
+  }
+}
+
 /**
  * Plan 04-04 T-04-02 mitigation: thrown by openai-in.ts when an OpenAI assistant
  * `tool_calls[i].function.arguments` string is not valid JSON. Maps to 400 +
@@ -331,6 +393,12 @@ export function mapToHttpStatus(err: unknown): number {
   if (err instanceof CloudMaxTokensExceededError) return 400;
   // Plan 05-02 D-D5 / ROUTE-09: X-Agent-Id regex violation — pre-route 400.
   if (err instanceof InvalidAgentIdError) return 400;
+  // Phase 14 (v0.11.0 — POL-01 / POL-02): policy violations → 403.
+  if (err instanceof AllowlistViolationError) return 403;
+  if (err instanceof CloudNotAllowedError) return 403;
+  // Phase 14 (v0.11.0 — POL-04): tenant/project header regex violation → 400
+  // (mirrors InvalidAgentIdError pattern).
+  if (err instanceof InvalidScopedIdError) return 400;
   // Plan 08-07 (ROUTE-12 / D-D5): Idempotency-Key regex violation — 400.
   if (err instanceof InvalidIdempotencyKeyError) return 400;
   // Plan 04-04 T-04-02: malformed tool_calls[].function.arguments — 400.
@@ -435,6 +503,40 @@ export function toOpenAIErrorEnvelope(err: unknown): EnvelopeOrSkip {
         type: 'invalid_request_error',
         code: 'invalid_agent_id',
         param: 'X-Agent-Id',
+      },
+    };
+  }
+  // Phase 14 (v0.11.0 — POL-01 / POL-02): policy violation envelopes.
+  // type='policy_violation' is a new wire-level type — distinct from
+  // invalid_request_error (the request was well-formed; the policy refused it).
+  if (err instanceof AllowlistViolationError) {
+    return {
+      error: {
+        message: err.message,
+        type: 'policy_violation',
+        code: 'model_not_in_allowlist',
+        param: 'model',
+      },
+    };
+  }
+  if (err instanceof CloudNotAllowedError) {
+    return {
+      error: {
+        message: err.message,
+        type: 'policy_violation',
+        code: 'cloud_not_allowed',
+        param: 'model',
+      },
+    };
+  }
+  // Phase 14 (v0.11.0 — POL-04): scoped-ID regex violation — OpenAI envelope.
+  if (err instanceof InvalidScopedIdError) {
+    return {
+      error: {
+        message: err.message,
+        type: 'invalid_request_error',
+        code: 'invalid_scoped_id',
+        param: err.headerLabel,
       },
     };
   }
@@ -642,6 +744,20 @@ export function toAnthropicErrorEnvelope(err: unknown): AnthropicEnvelopeOrSkip 
   }
   // Plan 05-02 D-D5: X-Agent-Id regex violation — Anthropic envelope.
   if (err instanceof InvalidAgentIdError) {
+    return { type: 'error', error: { type: 'invalid_request_error', message: err.message } };
+  }
+  // Phase 14 (v0.11.0 — POL-01 / POL-02): policy violation envelopes.
+  // Anthropic's wire taxonomy reserves permission_error for policy-style
+  // refusals — matches the semantics of "the request was well-formed but
+  // policy refused it" better than the closer 'invalid_request_error'.
+  if (err instanceof AllowlistViolationError) {
+    return { type: 'error', error: { type: 'permission_error', message: err.message } };
+  }
+  if (err instanceof CloudNotAllowedError) {
+    return { type: 'error', error: { type: 'permission_error', message: err.message } };
+  }
+  // Phase 14 (v0.11.0 — POL-04): scoped-ID regex violation — Anthropic envelope.
+  if (err instanceof InvalidScopedIdError) {
     return { type: 'error', error: { type: 'invalid_request_error', message: err.message } };
   }
   // Plan 08-07 (ROUTE-12 / D-D5): Idempotency-Key regex violation — Anthropic envelope.
