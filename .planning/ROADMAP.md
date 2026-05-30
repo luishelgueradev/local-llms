@@ -69,7 +69,7 @@
 4. The live `/metrics` endpoint contains no label matching `.*_id` on `router_request_total` or `router_request_duration_seconds` (verified by the new `scripts/check-prometheus-cardinality.ts` CI check).
 5. Existing smoke test suite passes unchanged (policy defaults to allow-all with no config declared).
 
-**Plans:** 8/9 plans executed
+**Plans:** 9/9 plans complete
 - [x] 14-01-PLAN.md — Migration 0005 atomic tuple (SQL + Drizzle schema + journal entry) [POL-04]
 - [x] 14-02-PLAN.md — Extend RegistrySchema with `policies` + per-entry `policy.cloud_allowed` [POL-01, POL-02]
 - [x] 14-03-PLAN.md — Add AllowlistViolationError, CloudNotAllowedError, InvalidScopedIdError + envelope mappings [POL-01, POL-02, POL-05]
@@ -78,7 +78,7 @@
 - [x] 14-06-PLAN.md — scopedIdsPreHandler + agentId.child() extension + Pitfall-9 grep gate [POL-03, POL-05]
 - [x] 14-07-PLAN.md — Plumb scoped IDs through recordOutcome to request_log row + integration test [POL-04]
 - [x] 14-08-PLAN.md — Prometheus cardinality CI guard script + vitest [POL-06]
-- [ ] 14-09-PLAN.md — models.yaml commented stanza + DEPLOY/README docs + REQUIREMENTS POL-01 wording patch + smoke gate [POL-01, POL-02, POL-03]
+- [x] 14-09-PLAN.md — models.yaml commented stanza + DEPLOY/README docs + REQUIREMENTS POL-01 wording patch + smoke gate [POL-01, POL-02, POL-03]
 
 ---
 
@@ -229,7 +229,7 @@
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 14. Policy Primitives + Tenant ID Foundation | 8/9 | In Progress|  |
+| 14. Policy Primitives + Tenant ID Foundation | 9/9 | Complete   | 2026-05-30 |
 | 15. MCP Host (Router as MCP Server) | 0/TBD | Not started | - |
 | 16. /v1/responses Streaming + Tool Calls | 0/TBD | Not started | - |
 | 17. SessionStore + ContextProvider + SummaryProvider | 0/TBD | Not started | - |
