@@ -99,7 +99,20 @@ export async function agentIdPreHandler(
   }
 
   req.agentId = value;
-  // Decorate req.log so every subsequent pino line carries agent_id.
-  // THIS IS THE ONLY req.log reassignment in router/src/ (Pitfall 9 gate).
-  req.log = req.log.child({ agent_id: value });
+  // Decorate the pino child logger so every subsequent log line carries agent_id
+  // PLUS the scoped IDs stamped by scopedIdsPreHandler (which runs before this
+  // hook — app.ts registration order guarantee). Reading defensively with
+  // req.tenantId etc. — if scopedIdsPreHandler did not run, these are undefined,
+  // and pino's .child() silently omits undefined-valued keys (Assumption A2).
+  //
+  // Phase 14 (v0.11.0 — POL-03/04 / D-20): tenant_id, project_id, workload_class
+  // added here rather than in scopedIds.ts to preserve the Pitfall-9 invariant.
+  // THIS IS THE ONLY pino child reassignment in router/src/ production source
+  // (grep gate: grep -rn 'req\.log = ' router/src/ | grep -v '__tests__' | wc -l  == 1).
+  req.log = req.log.child({
+    agent_id: value,
+    tenant_id: req.tenantId,
+    project_id: req.projectId,
+    workload_class: req.workloadClass,
+  });
 }
