@@ -53,6 +53,15 @@ export const requestLog = pgTable(
     // pricing is declared. computeCostCents() in src/cost/computeCostCents.ts is
     // the single source of the formula.
     cost_cents: numeric('cost_cents', { precision: 10, scale: 4 }),
+    // Phase 14 (v0.11.0 — POL-04): scoped-ID columns from X-Tenant-ID /
+    // X-Project-ID headers. Validated regex (shared with X-Agent-Id per D-15):
+    // /^[A-Za-z0-9._:-]{1,128}$/. Invalid → 400 (D-16); missing → NULL (D-17).
+    tenant_id: text('tenant_id'),
+    project_id: text('project_id'),
+    // Phase 14 (v0.11.0 — POL-03): X-Workload-Class — opaque metadata (Frame-04).
+    // Regex /^[A-Za-z0-9._-]{1,64}$/, lowercased. Invalid → silent NULL (D-12).
+    // No routing impact, no content classification, no fixed enum (D-11).
+    workload_class: text('workload_class'),
   },
   (t) => ({
     // Baseline btree indexes per D-D1. Tune if/when volume warrants
