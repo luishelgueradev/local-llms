@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v0.11.0
 milestone_name: Retrieval-Ready Infrastructure
 status: executing
-last_updated: "2026-05-30T00:46:18.778Z"
-last_activity: 2026-05-30 -- Phase 14 planning complete
+last_updated: "2026-05-30T11:52:31.716Z"
+last_activity: 2026-05-30 -- Phase 14 execution started
 progress:
   total_phases: 6
   completed_phases: 0
@@ -16,7 +16,7 @@ progress:
 # Project State: local-llms
 
 **Last Updated:** 2026-05-29 — v0.11.0 roadmap created. 6 phases (14–19) / 48 requirements mapped. Ready for `/gsd:plan-phase 14`.
-**Status:** Ready to execute
+**Status:** Executing Phase 14
 
 ## Project Reference
 
@@ -24,14 +24,14 @@ progress:
 
 **Strategic frame (binding):** "Retrieval Interfaces, not Retrieval Logic" · "Memory Abstraction Layer, not Memory implementation" · local-llms = infraestructura; RAG/KB = consumidor downstream.
 
-**Current Focus:** v0.11.0 Retrieval-Ready Infrastructure — roadmap complete, planning Phase 14.
+**Current Focus:** Phase 14 — policy-primitives-tenant-project-id-foundation
 
 ## Current Position
 
-Phase: 14 (next to plan)
-Plan: —
-Status: Ready to execute
-Last activity: 2026-05-30 -- Phase 14 planning complete
+Phase: 14 (policy-primitives-tenant-project-id-foundation) — EXECUTING
+Plan: 1 of 9
+Status: Executing Phase 14
+Last activity: 2026-05-30 -- Phase 14 execution started
 
 ### Progress
 
