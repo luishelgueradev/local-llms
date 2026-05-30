@@ -43,6 +43,7 @@ import {
   truncateAndRedact,
 } from './metrics/recordOutcome.js';
 import { agentIdPreHandler as defaultAgentIdPreHandler } from './middleware/agentId.js';
+import { scopedIdsPreHandler as defaultScopedIdsPreHandler } from './middleware/scopedIds.js';
 import { makeRateLimitPreHandler } from './middleware/rateLimit.js';
 import { closeValkey, type ValkeyClient } from './clients/valkey.js';
 import { makeEmbeddingsCache } from './embeddings/cache.js';
@@ -119,6 +120,15 @@ export interface BuildAppOpts {
    * production agentIdPreHandler; tests override for hook-isolation cases.
    */
   agentIdPreHandler?: preHandlerAsyncHookHandler;
+  /**
+   * Phase 14 (v0.11.0 — POL-03/04 / D-19): preHandler that extracts
+   * X-Tenant-ID, X-Project-ID, X-Workload-Class headers and stamps them on
+   * req.tenantId / req.projectId / req.workloadClass. Must be registered
+   * BEFORE agentIdPreHandler so the pino .child() call in agentId sees the
+   * stamped fields (RESEARCH.md Pitfall 3 + D-18). Defaults to the production
+   * scopedIdsPreHandler; tests override for hook-isolation cases.
+   */
+  scopedIdsPreHandler?: preHandlerAsyncHookHandler;
   /**
    * Phase 14 (v0.11.0 — POL-05 / D-09 / P8-01 BLOCK) — Test seam for the
    * circuit breaker. Production path uses the breaker constructed from
@@ -281,6 +291,16 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
     });
     app.addHook('onRequest', rateLimitPreHandler);
   }
+
+  // Phase 14 (v0.11.0 — POL-03/04): scoped-ID extraction runs BEFORE the
+  // agentId preHandler. Both register at the preHandler hook; Fastify v5
+  // preserves addHook('preHandler', ...) registration order — first-registered
+  // runs first. Ordering matters: agentIdPreHandler enriches the pino child
+  // with scoped IDs by reading req.tenantId / req.projectId / req.workloadClass
+  // — which scopedIdsPreHandler MUST stamp first (RESEARCH.md Pitfall 3 +
+  // D-18 + D-20). Sibling module pattern: scopedIds stamps fields, agentId
+  // enriches the pino child with all four IDs in a single assignment (Pitfall-9).
+  app.addHook('preHandler', opts.scopedIdsPreHandler ?? defaultScopedIdsPreHandler);
 
   // Plan 05-02 (D-D5 / ROUTE-09) — X-Agent-Id preHandler runs AFTER bearer
   // auth (onRequest) and BEFORE the route handler. Hook ordering verified
