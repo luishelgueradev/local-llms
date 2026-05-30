@@ -229,7 +229,7 @@
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 14. Policy Primitives + Tenant ID Foundation | 9/9 | Complete   | 2026-05-30 |
+| 14. Policy Primitives + Tenant ID Foundation | 9/9 | Complete    | 2026-05-30 |
 | 15. MCP Host (Router as MCP Server) | 0/TBD | Not started | - |
 | 16. /v1/responses Streaming + Tool Calls | 0/TBD | Not started | - |
 | 17. SessionStore + ContextProvider + SummaryProvider | 0/TBD | Not started | - |

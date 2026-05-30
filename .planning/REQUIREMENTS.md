@@ -18,12 +18,12 @@ Mapped to roadmap phases 14–19 (continuation from v0.10.0; no reset).
 
 Build first because additive, zero-dependency, and every later phase's observability depends on these IDs being in place. (Phase 14 candidate.)
 
-- [ ] **POL-01**: Operator can declare a top-level `policies.default.model_allowlist: []` array in `models.yaml`; empty list (default) = allow-all. Requests for a model outside the allowlist return `403` with structured error `{ code: "model_not_in_allowlist", model }` BEFORE backend resolution (per registry-entry allowlist shape was discarded at discuss time — see CONTEXT.md D-02/D-03).
-- [ ] **POL-02**: Operator can declare `policy.cloud_allowed: false` per registry entry in `models.yaml`; request dispatch refuses any model resolved to a `backend: ollama-cloud` entry when this flag is false, returning `403 { code: "cloud_not_allowed", model }`.
-- [ ] **POL-03**: Caller can declare workload sensitivity via `X-Workload-Class: sensitive` request header; header value is extracted into `request_log.workload_class` and emitted in structured logs. **No content classification** — the value is opaque metadata.
-- [ ] **POL-04**: Caller can supply `X-Tenant-ID`, `X-Project-ID`, `X-Agent-ID` headers (each optional); values are extracted into new `request_log` columns (`tenant_id TEXT`, `project_id TEXT`; `agent_id` already exists). Drizzle migration 0005 adds the new columns with NULL default.
-- [ ] **POL-05**: The policy gate fires BEFORE the circuit breaker check in the request pipeline — policy violations MUST NOT count as backend failures (verified by integration test asserting breaker counter unchanged after 403).
-- [ ] **POL-06**: Prometheus metric labels NEVER include `tenant_id`, `project_id`, `agent_id`, or `session_id` (cardinality protection — verified by CI assertion against `/metrics` output).
+- [x] **POL-01**: Operator can declare a top-level `policies.default.model_allowlist: []` array in `models.yaml`; empty list (default) = allow-all. Requests for a model outside the allowlist return `403` with structured error `{ code: "model_not_in_allowlist", model }` BEFORE backend resolution (per registry-entry allowlist shape was discarded at discuss time — see CONTEXT.md D-02/D-03).
+- [x] **POL-02**: Operator can declare `policy.cloud_allowed: false` per registry entry in `models.yaml`; request dispatch refuses any model resolved to a `backend: ollama-cloud` entry when this flag is false, returning `403 { code: "cloud_not_allowed", model }`.
+- [x] **POL-03**: Caller can declare workload sensitivity via `X-Workload-Class: sensitive` request header; header value is extracted into `request_log.workload_class` and emitted in structured logs. **No content classification** — the value is opaque metadata.
+- [x] **POL-04**: Caller can supply `X-Tenant-ID`, `X-Project-ID`, `X-Agent-ID` headers (each optional); values are extracted into new `request_log` columns (`tenant_id TEXT`, `project_id TEXT`; `agent_id` already exists). Drizzle migration 0005 adds the new columns with NULL default.
+- [x] **POL-05**: The policy gate fires BEFORE the circuit breaker check in the request pipeline — policy violations MUST NOT count as backend failures (verified by integration test asserting breaker counter unchanged after 403).
+- [x] **POL-06**: Prometheus metric labels NEVER include `tenant_id`, `project_id`, `agent_id`, or `session_id` (cardinality protection — verified by CI assertion against `/metrics` output).
 
 ### MCP server / host (MCPS)
 
@@ -178,12 +178,12 @@ The roadmap and plan-phase agents must reject any task that would:
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| POL-01 | Phase 14 | Pending |
-| POL-02 | Phase 14 | Pending |
-| POL-03 | Phase 14 | Pending |
-| POL-04 | Phase 14 | Pending |
-| POL-05 | Phase 14 | Pending |
-| POL-06 | Phase 14 | Pending |
+| POL-01 | Phase 14 | Complete |
+| POL-02 | Phase 14 | Complete |
+| POL-03 | Phase 14 | Complete |
+| POL-04 | Phase 14 | Complete |
+| POL-05 | Phase 14 | Complete |
+| POL-06 | Phase 14 | Complete |
 | MCPS-01 | Phase 15 | Pending |
 | MCPS-02 | Phase 15 | Pending |
 | MCPS-03 | Phase 15 | Pending |
