@@ -1301,32 +1301,32 @@ export function applyPolicyGate(
 | A5 | Valkey cache key for the registry snapshot is `model-registry:*` (verified via project memory `project_models_yaml_hot_edit.md`) | Operator Affordances, Pitfall 5 | If the exact key name differs (e.g. `registry:snapshot:*`), DEPLOY.md instructions are wrong. Plan should confirm by running `valkey-cli KEYS 'model-registry:*'` in a smoke step. |
 | A6 | The CI cardinality script does not need to scan files beyond `src/metrics/registry.ts` | CI Cardinality Check | If a future phase declares Prometheus metrics outside that file, the script silently passes them. Phase 14 only commits to scanning the existing file; Phase 19's live-parse covers the broader case. |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Should the CI cardinality script also scan `src/metrics/recordOutcome.ts`?**
    - What we know: today, ALL prom-client metric declarations live in `src/metrics/registry.ts`. `recordOutcome.ts` only consumes them (`.inc()`, `.observe()`).
    - What's unclear: whether a future refactor might inline a metric declaration elsewhere.
-   - Recommendation: scope Phase 14's script to `src/metrics/registry.ts`; Phase 19's live-parse handles the open case. Document this scope decision in the script header.
+   - RESOLVED: scope Phase 14's script to `src/metrics/registry.ts`; Phase 19's live-parse handles the open case. Document this scope decision in the script header.
 
 2. **Should the policy gate emit a structured warn-log on 403?**
    - What we know: existing centralized error handler emits `req.log.warn({ err, url, status }, 'route error -> envelope')` for every error → 403 will be logged.
    - What's unclear: whether a dedicated `event: "policy_violation"` log field (per P8-04 FLAG) is in scope for Phase 14 or deferred.
-   - Recommendation: rely on the default `route error -> envelope` warn log for Phase 14. P8-04 (audit-log for policy CHANGES) is a separate concern, not in scope.
+   - RESOLVED: rely on the default `route error -> envelope` warn log for Phase 14. P8-04 (audit-log for policy CHANGES) is a separate concern, not in scope.
 
 3. **Does `applyPolicyGate()` receive `Registry['policies']` or the full Registry snapshot?**
    - What we know: D-07 code preview passes `policies` directly.
    - What's unclear: future per-entry-conditional logic might want the full registry. Premature.
-   - Recommendation: stick with D-07 — pass `policies` only. Refactor later if needed.
+   - RESOLVED: stick with D-07 — pass `policies` only. Refactor later if needed.
 
 4. **Should `InvalidScopedIdError` carry the supplied value in its message (truncated) like `InvalidAgentIdError` does?**
    - What we know: `InvalidAgentIdError` truncates to 32 chars for log/envelope safety.
    - What's unclear: whether Phase 14 should mirror this defense-in-depth.
-   - Recommendation: YES — mirror exactly (already encoded in §"Error Envelope Dual-Mapping" patch). One-line defense; no downside.
+   - RESOLVED: YES — mirror exactly (already encoded in §"Error Envelope Dual-Mapping" patch). One-line defense; no downside.
 
 5. **Migration timestamp value for `_journal.json` `when` field — exact format?**
    - What we know: existing entries use Unix milliseconds (e.g., `1779696000000` for 0004).
    - What's unclear: whether Drizzle uses this strictly or whether the relative ordering is what matters.
-   - Recommendation: use `Date.now()` captured at task-start. Drizzle's migrator orders by `idx`, not by `when` — the field is for human-readable audit.
+   - RESOLVED: use `Date.now()` captured at task-start. Drizzle's migrator orders by `idx`, not by `when` — the field is for human-readable audit.
 
 ## Environment Availability
 
