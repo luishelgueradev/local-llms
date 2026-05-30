@@ -18,7 +18,7 @@ Mapped to roadmap phases 14–19 (continuation from v0.10.0; no reset).
 
 Build first because additive, zero-dependency, and every later phase's observability depends on these IDs being in place. (Phase 14 candidate.)
 
-- [ ] **POL-01**: Operator can declare a `model_allowlist: []` array per registry entry in `models.yaml`; empty list (default) = allow all. Requests for a model outside the allowlist return `403` with structured error `{ code: "model_not_in_allowlist", model }` BEFORE backend resolution.
+- [ ] **POL-01**: Operator can declare a top-level `policies.default.model_allowlist: []` array in `models.yaml`; empty list (default) = allow-all. Requests for a model outside the allowlist return `403` with structured error `{ code: "model_not_in_allowlist", model }` BEFORE backend resolution (per registry-entry allowlist shape was discarded at discuss time — see CONTEXT.md D-02/D-03).
 - [ ] **POL-02**: Operator can declare `policy.cloud_allowed: false` per registry entry in `models.yaml`; request dispatch refuses any model resolved to a `backend: ollama-cloud` entry when this flag is false, returning `403 { code: "cloud_not_allowed", model }`.
 - [ ] **POL-03**: Caller can declare workload sensitivity via `X-Workload-Class: sensitive` request header; header value is extracted into `request_log.workload_class` and emitted in structured logs. **No content classification** — the value is opaque metadata.
 - [ ] **POL-04**: Caller can supply `X-Tenant-ID`, `X-Project-ID`, `X-Agent-ID` headers (each optional); values are extracted into new `request_log` columns (`tenant_id TEXT`, `project_id TEXT`; `agent_id` already exists). Drizzle migration 0005 adds the new columns with NULL default.
@@ -234,4 +234,4 @@ The roadmap and plan-phase agents must reject any task that would:
 
 ---
 *Requirements defined: 2026-05-29*
-*Last updated: 2026-05-29 — traceability finalized by roadmap (phases 14–19).*
+*Last updated: 2026-05-30 — POL-01 wording patched per D-03 (top-level policies block).*

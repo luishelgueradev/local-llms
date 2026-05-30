@@ -1,3 +1,63 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# POLICY PRIMITIVES (Phase 14 — v0.11.0 — POL-01 / POL-02)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Two policy controls are available via a top-level `policies:` section and a
+# per-entry `policy:` block.  Both default to ALLOW ALL — an absent or empty
+# `policies:` section, and absent `policy:` on any model entry, produce
+# identical behavior to the pre-v0.11.0 stack (D-04).
+#
+# GATE POSITION (D-09 / P8-01 — non-negotiable):
+#   bearer auth → body validation → capability check
+#     → [ POLICY GATE ] ← fires here, BEFORE circuit-breaker check
+#     → circuit breaker → upstream backend
+#   Policy violations (403) are NOT counted as backend failures.
+#
+# ── 1. Global model allowlist ─────────────────────────────────────────────────
+# Declares which model names are routable.  Empty list (the default) = allow all.
+# Requests for a model NOT in this list return:
+#   HTTP 403  { "error": { "code": "model_not_in_allowlist", "model": "...",
+#                          "type": "policy_violation" } }
+# (same envelope shape on /v1/chat/completions AND /v1/messages)
+#
+# Uncomment and populate to restrict which models callers may use:
+# policies:
+#   default:
+#     model_allowlist:
+#       - chat-local
+#       - vision-local
+#
+# ── 2. Per-entry cloud routing deny ───────────────────────────────────────────
+# Setting `policy.cloud_allowed: false` on a registry entry prevents the router
+# from dispatching that model to an `ollama-cloud` backend.
+# Default: `true` (or absent) — cloud dispatch is allowed.
+# Violation response:
+#   HTTP 403  { "error": { "code": "cloud_not_allowed", "model": "...",
+#                          "type": "policy_violation" } }
+#
+# Example (inside a model entry — all lines still `#`-prefixed here):
+#   - name: big-cloud
+#     backend: ollama-cloud
+#     ...
+#     # policy:
+#     #   cloud_allowed: false    # uncomment to deny cloud for this entry
+#
+# ── HOT-RELOAD CAVEAT ─────────────────────────────────────────────────────────
+# Editing this file requires TWO steps to take effect immediately (project
+# memory: project_models_yaml_hot_edit.md):
+#
+#   Step 1 — invalidate the Valkey model-registry snapshot:
+#     VALKEY_PASSWORD=$(grep '^VALKEY_PASSWORD=' .env | cut -d= -f2-)
+#     # valkey-cli DEL pattern (with auth): valkey-cli -a "$VALKEY_PASSWORD" --no-auth-warning DEL 'model-registry:*'
+#     docker compose exec -T valkey valkey-cli -a "$VALKEY_PASSWORD" --no-auth-warning DEL 'model-registry:*'
+#
+#   Step 2 — force-recreate the router (NOT restart — restart does NOT re-read):
+#     docker compose up -d --force-recreate router
+#
+# A bare `docker compose restart router` will NOT pick up policy changes because
+# the cached snapshot lives in Valkey and is served from memory on warm boot.
+# ─────────────────────────────────────────────────────────────────────────────
+
 backends:
   ollama:
     # base_url: documentation only — NOT used at runtime (see registry.ts BackendsSection comment).

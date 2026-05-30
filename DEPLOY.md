@@ -325,6 +325,147 @@ docker compose exec postgres psql -U app -d router -c '\d+ cost_per_agent_daily'
 
 ---
 
+## Policy primitives (Phase 14 — v0.11.0)
+
+Phase 14 adds two operator-level policy controls and three caller-supplied context headers. Both
+controls default to **allow-all** — an absent or empty `policies:` section in `models.yaml`
+produces identical behavior to pre-v0.11.0 stacks (decision D-04). No action required from
+operators who want the prior behavior.
+
+### 1. Global model allowlist (`policies.default.model_allowlist`)
+
+Add a top-level `policies:` block in `router/models.yaml` to restrict which model names callers
+may request:
+
+```yaml
+policies:
+  default:
+    model_allowlist:   # empty list (or absent section) = allow all
+      - chat-local
+      - vision-local
+```
+
+**Default behavior:** empty list (`[]`) or absent `policies:` section → all models allowed.
+
+**Violation response (HTTP 403):**
+```json
+{ "error": { "code": "model_not_in_allowlist", "model": "<requested>", "type": "policy_violation" } }
+```
+The Anthropic `/v1/messages` surface returns the same envelope shape.
+
+### 2. Per-entry cloud routing deny (`policy.cloud_allowed`)
+
+Add `policy.cloud_allowed: false` to any model entry to prevent the router from dispatching it to
+an `ollama-cloud` backend:
+
+```yaml
+models:
+  - name: big-cloud
+    backend: ollama-cloud
+    ...
+    policy:
+      cloud_allowed: false   # denies cloud for this entry; default true (or absent)
+```
+
+**Default:** `cloud_allowed: true` when the field is absent.
+
+**Violation response (HTTP 403):**
+```json
+{ "error": { "code": "cloud_not_allowed", "model": "<requested>", "type": "policy_violation" } }
+```
+
+### Gate position invariant (D-09 / P8-01 — non-negotiable)
+
+The policy gate fires **AFTER the capability check** and **BEFORE the circuit breaker**:
+
+```
+bearer auth → body validation → capability check
+  → [ POLICY GATE ] ← policy violations checked here
+  → circuit breaker → upstream backend
+```
+
+Policy 403 responses are **not counted as backend failures** — the circuit breaker counter is
+unchanged after either policy violation. This is verified by an integration test asserting
+`circuitBreaker.recordFailure()` counter is unchanged after a policy 403 (P8-01 BLOCK).
+
+### Scoped-ID request headers
+
+Three optional caller-supplied headers stamp context into `request_log` and pino structured logs.
+They appear on every model-bound route (`/v1/chat/completions`, `/v1/messages`, `/v1/embeddings`,
+`/v1/rerank`, `/v1/responses`).
+
+| Header | Regex | On invalid | Column |
+|--------|-------|-----------|--------|
+| `X-Tenant-ID` | `/^[A-Za-z0-9._:-]{1,128}$/` | **400** (same as `X-Agent-Id`) | `request_log.tenant_id` |
+| `X-Project-ID` | `/^[A-Za-z0-9._:-]{1,128}$/` | **400** (same as `X-Agent-Id`) | `request_log.project_id` |
+| `X-Workload-Class` | `/^[A-Za-z0-9._-]{1,64}$/` | **silent NULL** (opaque metadata — D-12) | `request_log.workload_class` |
+
+- Missing header → `NULL` in `request_log`; no warning, no error.
+- `X-Workload-Class` values are normalized to lowercase before storage (D-11).
+- These IDs appear in **pino structured logs** and `request_log` only. They are **not** added as
+  Prometheus label dimensions — adding `_id` labels to `/metrics` violates the cardinality
+  discipline enforced by the CI guard (see below).
+
+### Hot-reload procedure (critical — see `project_models_yaml_hot_edit.md`)
+
+Editing `models.yaml` (including adding a `policies:` block) requires two steps to take effect
+immediately. A bare `docker compose restart router` is **not sufficient** — the model-registry
+snapshot is cached in Valkey and served from memory on warm boot.
+
+```bash
+# Step 1 — invalidate the Valkey model-registry snapshot
+# (unauthenticated shorthand — if Valkey has a password, use the full form below)
+# docker compose exec -T valkey valkey-cli DEL 'model-registry:*'
+#
+# Full form with auth (production):
+VALKEY_PASSWORD=$(grep '^VALKEY_PASSWORD=' .env | cut -d= -f2-)
+docker compose exec -T valkey valkey-cli -a "$VALKEY_PASSWORD" --no-auth-warning DEL 'model-registry:*'
+
+# Step 2 — force-recreate the router (NOT restart)
+docker compose up -d --force-recreate router
+```
+
+### Migration 0005 — `request_log` scoped ID columns
+
+Migration `0005_request_log_scoped_ids.sql` adds three nullable columns to `request_log`:
+
+```sql
+ALTER TABLE request_log ADD COLUMN tenant_id TEXT;
+ALTER TABLE request_log ADD COLUMN project_id TEXT;
+ALTER TABLE request_log ADD COLUMN workload_class TEXT;
+```
+
+This migration auto-applies via the Drizzle migrator on the next router boot. No manual step
+required for fresh installs.
+
+**Rollback procedure** (if needed):
+```bash
+docker compose exec postgres psql -U app -d router -c "
+  ALTER TABLE request_log DROP COLUMN IF EXISTS tenant_id;
+  ALTER TABLE request_log DROP COLUMN IF EXISTS project_id;
+  ALTER TABLE request_log DROP COLUMN IF EXISTS workload_class;
+"
+# Then remove entry idx 5 from router/db/migrations/meta/_journal.json
+# and delete router/db/migrations/0005_request_log_scoped_ids.sql
+```
+
+### Cardinality CI guard (`check-prometheus-cardinality`)
+
+Phase 14 ships a vitest CI script (`router/scripts/__tests__/check-prometheus-cardinality.test.ts`)
+that fails the build if any `labelNames:` array in `src/metrics/registry.ts` contains an element
+matching `/_id$/` (catches `tenant_id`, `project_id`, `agent_id`, `session_id`, and any future
+`*_id` addition).
+
+**Operators editing `src/metrics/registry.ts` must not add `_id` labels.** The math is brutal:
+a `tenant_id` label with 500 tenants multiplied by 4 existing label cardinalities = 2000× more
+time-series than the current baseline (P8-03 cardinality analysis). Use `request_log` queries
+for per-tenant analytics instead.
+
+The CI guard runs automatically as part of `pnpm vitest run` (or `npm run test`) — no separate
+invocation needed.
+
+---
+
 ## Backups + retencion
 
 **Diarios al disco** (sidecar `pg-backup` corre cada noche):
