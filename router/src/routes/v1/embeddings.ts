@@ -531,6 +531,9 @@ export function registerEmbeddingsRoute(
           errorCode: caughtErr ? mapErrorToCode(caughtErr) : undefined,
           errorMessage: caughtErr?.message,
           agentId: req.agentId,
+          tenantId: req.tenantId,
+          projectId: req.projectId,
+          workloadClass: req.workloadClass,
           requestId: req.id,
           // Plan 08-07 (D-D5) — follower request_log row carries the leader's
           // upstream_message_id for cost-attribution grouping (Plan 08-08).

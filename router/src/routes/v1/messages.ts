@@ -369,6 +369,9 @@ export function registerMessagesRoute(
                     : undefined,
                 errorMessage: final?.error?.message,
                 agentId: req.agentId,
+                tenantId: req.tenantId,
+                projectId: req.projectId,
+                workloadClass: req.workloadClass,
                 requestId: req.id,
                 upstreamMessageId: followerUpstreamMessageId ?? final?.upstreamMessageId,
                 // 08-REVIEW CR-01: persist Idempotency-Key for the follower path.
@@ -457,6 +460,9 @@ export function registerMessagesRoute(
                 durationMs: performance.now() - (req._t0 ?? performance.now()),
                 errorCode: 'client_disconnect',
                 agentId: req.agentId,
+                tenantId: req.tenantId,
+                projectId: req.projectId,
+                workloadClass: req.workloadClass,
                 requestId: req.id,
                 // 08-REVIEW CR-01: persist Idempotency-Key on pre-stream errors.
                 idempotencyKey,
@@ -476,6 +482,9 @@ export function registerMessagesRoute(
               errorCode: mapErrorToCode(errInst),
               errorMessage: errInst.message,
               agentId: req.agentId,
+              tenantId: req.tenantId,
+              projectId: req.projectId,
+              workloadClass: req.workloadClass,
               requestId: req.id,
               // 08-REVIEW CR-01: persist Idempotency-Key on pre-stream errors.
               idempotencyKey,
@@ -606,6 +615,9 @@ export function registerMessagesRoute(
               errorCode,
               errorMessage,
               agentId: req.agentId,
+              tenantId: req.tenantId,
+              projectId: req.projectId,
+              workloadClass: req.workloadClass,
               requestId: req.id,
               upstreamMessageId: final?.upstreamMessageId,
               // 08-REVIEW CR-01: persist Idempotency-Key for the stream-end path.
@@ -759,6 +771,9 @@ export function registerMessagesRoute(
             errorCode: caughtErr ? mapErrorToCode(caughtErr) : undefined,
             errorMessage: caughtErr?.message,
             agentId: req.agentId,
+            tenantId: req.tenantId,
+            projectId: req.projectId,
+            workloadClass: req.workloadClass,
             requestId: req.id,
             // Plan 08-07 (D-D5) — follower rows carry the leader's
             // upstream_message_id (followerUpstreamMessageId); leader / non-

@@ -466,6 +466,9 @@ export function registerChatCompletionsRoute(
                     : undefined,
                 errorMessage: final?.error?.message,
                 agentId: req.agentId,
+                tenantId: req.tenantId,
+                projectId: req.projectId,
+                workloadClass: req.workloadClass,
                 requestId: req.id,
                 upstreamMessageId: followerUpstreamMessageId,
                 // 08-REVIEW CR-01: persist Idempotency-Key so dedup verification
@@ -547,6 +550,9 @@ export function registerChatCompletionsRoute(
                 durationMs: performance.now() - (req._t0 ?? performance.now()),
                 errorCode: 'client_disconnect',
                 agentId: req.agentId,
+                tenantId: req.tenantId,
+                projectId: req.projectId,
+                workloadClass: req.workloadClass,
                 requestId: req.id,
                 // 08-REVIEW CR-01: persist Idempotency-Key on pre-stream errors.
                 idempotencyKey,
@@ -566,6 +572,9 @@ export function registerChatCompletionsRoute(
               errorCode: mapErrorToCode(errInst),
               errorMessage: errInst.message,
               agentId: req.agentId,
+              tenantId: req.tenantId,
+              projectId: req.projectId,
+              workloadClass: req.workloadClass,
               requestId: req.id,
               // 08-REVIEW CR-01: persist Idempotency-Key on pre-stream errors.
               idempotencyKey,
@@ -706,6 +715,9 @@ export function registerChatCompletionsRoute(
               errorCode,
               errorMessage,
               agentId: req.agentId,
+              tenantId: req.tenantId,
+              projectId: req.projectId,
+              workloadClass: req.workloadClass,
               requestId: req.id,
               // Plan 08-07 — share upstream_message_id with followers'
               // request_log rows for Plan 08-08 cost-attribution grouping.
@@ -938,6 +950,9 @@ export function registerChatCompletionsRoute(
             errorCode: caughtErr ? mapErrorToCode(caughtErr) : undefined,
             errorMessage: caughtErr?.message,
             agentId: req.agentId,
+            tenantId: req.tenantId,
+            projectId: req.projectId,
+            workloadClass: req.workloadClass,
             requestId: req.id,
             // Plan 08-07 (D-D5) — follower request_log row carries the leader's
             // upstream_message_id so Plan 08-08's cost-attribution dashboard
