@@ -1,5 +1,6 @@
 // router/src/metrics/registry.ts — prom-client Registry + the 5 custom metrics
 // per CONTEXT D-C3 + RESEARCH §"Pattern 5" lines 405–449 (verbatim shape).
+// Phase 14 (POL-06): labelNames arrays MUST NOT contain elements ending in '_id' — guarded by scripts/check-prometheus-cardinality.ts (see CONTEXT.md D-25).
 //
 // Critical invariants (Pitfall 2 regression gate):
 // - `new Registry()` per call — NOT prom-client's default singleton. Without
