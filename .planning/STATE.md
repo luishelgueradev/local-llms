@@ -4,20 +4,20 @@ milestone: v0.11.0
 milestone_name: Retrieval-Ready Infrastructure
 status: ready_to_plan
 last_updated: 2026-05-30T21:43:35.380Z
-last_activity: 2026-05-30 -- Phase 14 execution started
+last_activity: 2026-05-30 -- Phase 14 complete (POL-01..06)
 progress:
   total_phases: 6
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 9
   completed_plans: 9
-  percent: 0
+  percent: 17
 stopped_at: Phase 14 complete (9/9) — ready to discuss Phase 15
 ---
 
 # Project State: local-llms
 
-**Last Updated:** 2026-05-29 — v0.11.0 roadmap created. 6 phases (14–19) / 48 requirements mapped. Ready for `/gsd:plan-phase 14`.
-**Status:** Ready to plan
+**Last Updated:** 2026-05-30 — Phase 14 (Policy primitives + scoped IDs) shipped. POL-01..06 validated. v0.11.0 progress: 1/6 phases complete.
+**Status:** Ready to plan Phase 15 (mcp host — router as mcp server)
 
 ## Project Reference
 
@@ -31,13 +31,13 @@ stopped_at: Phase 14 complete (9/9) — ready to discuss Phase 15
 
 Phase: 15
 Plan: Not started
-Status: Executing Phase 14
-Last activity: 2026-05-30
+Status: Ready to discuss Phase 15
+Last activity: 2026-05-30 — Phase 14 complete
 
 ### Progress
 
 ```
-Milestone v0.11.0: ░░░░░░░░░░  0% — in planning
+Milestone v0.11.0: █▓░░░░░░░░ 17% — Phase 14/6 shipped (POL-01..06)
   Phase 14: ░░░░░░░░░░ Policy Primitives + Tenant/Project ID Foundation (POL-01..06)
   Phase 15: ░░░░░░░░░░ MCP Host (MCPS-01..06)
   Phase 16: ░░░░░░░░░░ /v1/responses Streaming + Tool Calls (RESS-01..05)
