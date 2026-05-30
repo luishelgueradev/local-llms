@@ -21,13 +21,16 @@ import { APIConnectionError, APIConnectionTimeoutError } from 'openai';
 import { z } from 'zod/v4';
 import { hasZodFastifySchemaValidationErrors } from '@bram-dc/fastify-type-provider-zod';
 import {
+  AllowlistViolationError,
   BackendSaturatedError,
   CapabilityNotSupportedError,
   CloudMaxTokensExceededError,
+  CloudNotAllowedError,
   ImageFetchError,
   InvalidAgentIdError,
   InvalidIdempotencyKeyError,
   InvalidImageUrlError,
+  InvalidScopedIdError,
   InvalidStructuredOutputError,
   InvalidToolArgumentsError,
   RateLimitExceededError,
@@ -71,6 +74,11 @@ export interface OutcomeContext {
   errorCode?: string;
   errorMessage?: string;
   agentId?: string;
+  // Phase 14 (v0.11.0 — POL-03/POL-04): scoped IDs stamped by scopedIdsPreHandler.
+  // Mirrors the agentId? pattern — undefined when header absent or invalid.
+  tenantId?: string;
+  projectId?: string;
+  workloadClass?: string;
   requestId: string;
   upstreamMessageId?: string;
   /**
@@ -158,6 +166,14 @@ export function mapErrorToCode(err: unknown): string {
   // type='rate_limit_error' envelope.
   if (err instanceof RateLimitExceededError) return 'rate_limit_exceeded';
   if (err instanceof CapabilityNotSupportedError) return 'model_capability_mismatch';
+  // Phase 14 (v0.11.0 — POL-01/POL-02): policy violations get their own D-D2
+  // taxonomy labels so the request_log error_code separates policy-403s from
+  // other client errors. Mirrors the CapabilityNotSupportedError precedent.
+  if (err instanceof AllowlistViolationError) return 'model_not_in_allowlist';
+  if (err instanceof CloudNotAllowedError) return 'cloud_not_allowed';
+  // Phase 14 (v0.11.0 — POL-03/POL-04): scoped-ID regex violations join the
+  // invalid_request D-D2 bucket — mirrors InvalidAgentIdError above.
+  if (err instanceof InvalidScopedIdError) return 'invalid_request';
   // Phase 10 (v0.10.0 — JSON-06): post-retry structured-output validation failure
   // gets its OWN bucket label so the metric `router_json_validation_total{result="failed"}`
   // (recorded in the route handler) and the request_log error_code stay aligned.
@@ -253,6 +269,11 @@ export function makeRecordRequestOutcome(deps: RecordRequestOutcomeDeps) {
       error_message:
         ctx.errorMessage !== undefined ? truncateAndRedact(ctx.errorMessage) : null,
       agent_id: ctx.agentId ?? null,
+      // Phase 14 (v0.11.0 — POL-03/POL-04): scoped-ID columns. ?? null mirrors
+      // agent_id pattern — undefined (absent/invalid header) becomes NULL in the row.
+      tenant_id: ctx.tenantId ?? null,
+      project_id: ctx.projectId ?? null,
+      workload_class: ctx.workloadClass ?? null,
       request_id: ctx.requestId,
       upstream_message_id: ctx.upstreamMessageId ?? null,
       // 08-REVIEW CR-01: Idempotency-Key column (Plan 08-07 / D-D5). Populated

@@ -379,6 +379,10 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
         errorCode: mapErrorToCode(err),
         errorMessage: truncateAndRedact(err instanceof Error ? err.message : String(err)),
         agentId: req.agentId,
+        // Phase 14: pre-resolve errors still get scoped-ID context if scopedIdsPreHandler ran before the error.
+        tenantId: req.tenantId,
+        projectId: req.projectId,
+        workloadClass: req.workloadClass,
         requestId: req.id,
         timestamp: new Date(),
       });
