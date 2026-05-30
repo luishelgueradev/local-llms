@@ -50,6 +50,15 @@ export const ModelEntrySchema = z.object({
       output_per_1m: z.number().nonnegative(),
     })
     .optional(),
+  // Phase 14 (v0.11.0 — POL-02, D-02, D-05): per-entry policy block.
+  // `cloud_allowed` defaults to true when omitted; gate uses strict `=== false` to fire only when
+  // explicitly denied. Local-backend entries can legally set cloud_allowed: false — vacuous but not
+  // an error. No passthrough — P8-02 strict-schema discipline.
+  policy: z
+    .object({
+      cloud_allowed: z.boolean().default(true),
+    })
+    .optional(),
 });
 
 /**
@@ -74,6 +83,18 @@ const BackendsSection = z.record(
 export const RegistrySchema = z.object({
   models: z.array(ModelEntrySchema).min(1, 'models.yaml must declare at least one model'),
   backends: BackendsSection,
+  // Phase 14 (v0.11.0 — POL-01, D-01, D-02, D-04): top-level allowlist resolves POL-01's
+  // "BEFORE backend resolution" requirement — empty OR absent both = allow-all.
+  // Placed at top level (not per-entry) so the gate fires before registry.resolve() picks an entry.
+  policies: z
+    .object({
+      default: z
+        .object({
+          model_allowlist: z.array(z.string()).default([]),
+        })
+        .optional(),
+    })
+    .optional(),
 }).superRefine((reg, ctx) => {
   // Read env at refinement time (not module load) — allows operators to change VRAM_ENVELOPE_GB
   // via `docker compose restart router` without rebundling, AND lets tests toggle per-case
