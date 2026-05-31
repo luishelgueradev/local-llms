@@ -153,7 +153,7 @@ describe('Phase 15 MCP host plugin — integration', () => {
     expect(result.capabilities.tools).toBeDefined(); // tools capability advertised, even if list is empty
   });
 
-  it('Test 3 (MCPS-01): session reuse — second POST on the same session id is accepted (zero registered tools; tools/list path activates in Wave 4)', async () => {
+  it('Test 3 (MCPS-01 / MCPS-03 / MCPS-04): tools/list returns the 5-tool golden set [chat_completion, create_embedding, create_response, list_models, rerank]', async () => {
     const built = await buildMcpApp();
     app = built.app;
 
@@ -187,19 +187,10 @@ describe('Phase 15 MCP host plugin — integration', () => {
     // The session-reuse path completes without an error response (notification → 202 or 200).
     expect([200, 202]).toContain(ackRes.statusCode);
 
-    // 3) tools/list — Wave 3 registers ZERO tools, so the SDK's McpServer does
-    //    NOT install its `tools/list` request handler (the McpServer only calls
-    //    setToolRequestHandlers() from inside registerTool — verified at
-    //    node_modules/@modelcontextprotocol/sdk/.../server/mcp.js:650). Result:
-    //    tools/list returns JSON-RPC -32601 "Method not found" until Wave 4
-    //    lands the first registerTool call inside buildServerForRequest.
-    //
-    //    This test asserts the contract documented in the plan: "tools/list
-    //    returns the McpServer's registered tool list — initially empty (zero
-    //    tools); Wave 4 plans land the 5 tool registrations". The Wave-3
-    //    interpretation of "empty" is "no tools/list handler exists yet";
-    //    Wave 4 will flip this assertion to expect `result.tools = []`
-    //    before the first tool, then `result.tools.length === 5` after.
+    // 3) tools/list — Plan 15-10 wires all 5 tools in buildServerForRequest
+    //    (P1-05 hard-coded allowlist). The set is locked: any drift here
+    //    would mean either a new tool was added without a plan, or one was
+    //    silently dropped. Sort-stable assertion below.
     const listRes = await app.inject({
       method: 'POST',
       url: '/mcp',
@@ -215,16 +206,233 @@ describe('Phase 15 MCP host plugin — integration', () => {
     const frame = extractFirstJsonRpcFrame(listRes.body);
     expect(frame.jsonrpc).toBe('2.0');
     expect(frame.id).toBe(1);
-    // SDK shape: when no tools registered → JSON-RPC -32601 "Method not found"
-    // OR result.tools = []. Either is acceptable for Wave 3; Wave 4 inverts.
-    if (frame.result !== undefined) {
-      const result = frame.result as { tools?: Array<{ name: string }> };
-      expect(Array.isArray(result.tools)).toBe(true);
-      expect(result.tools).toHaveLength(0);
-    } else {
-      const error = frame.error as { code: number; message: string } | undefined;
-      expect(error?.code).toBe(-32601); // Method not found — SDK's "no tools registered" branch
+    expect(frame.result).toBeDefined();
+    const result = frame.result as { tools: Array<{ name: string }> };
+    expect(Array.isArray(result.tools)).toBe(true);
+    const names = result.tools.map((t) => t.name).sort();
+    expect(names).toEqual([
+      'chat_completion',
+      'create_embedding',
+      'create_response',
+      'list_models',
+      'rerank',
+    ]);
+  });
+
+  it('Test 6 (MCPS-03 / D-10 / T-3-A2): tools/call list_models returns the policy-projected set with no backend leak', async () => {
+    const built = await buildMcpApp();
+    app = built.app;
+
+    // 1) Initialize.
+    const initRes = await app.inject({
+      method: 'POST',
+      url: '/mcp',
+      headers: {
+        authorization: `Bearer ${TOKEN}`,
+        'content-type': 'application/json',
+        accept: ACCEPT_BOTH,
+      },
+      payload: INITIALIZE_BODY,
+    });
+    expect(initRes.statusCode).toBe(200);
+    const sid = initRes.headers['mcp-session-id'] as string;
+    expect(sid).toBeTruthy();
+
+    // 2) Acknowledge the handshake.
+    const ackRes = await app.inject({
+      method: 'POST',
+      url: '/mcp',
+      headers: {
+        authorization: `Bearer ${TOKEN}`,
+        'content-type': 'application/json',
+        accept: ACCEPT_BOTH,
+        'mcp-session-id': sid,
+      },
+      payload: { jsonrpc: '2.0', method: 'notifications/initialized' },
+    });
+    expect([200, 202]).toContain(ackRes.statusCode);
+
+    // 3) tools/call list_models — no args (v0.11.0 contract).
+    const callRes = await app.inject({
+      method: 'POST',
+      url: '/mcp',
+      headers: {
+        authorization: `Bearer ${TOKEN}`,
+        'content-type': 'application/json',
+        accept: ACCEPT_BOTH,
+        'mcp-session-id': sid,
+      },
+      payload: {
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'tools/call',
+        params: { name: 'list_models', arguments: {} },
+      },
+    });
+    expect(callRes.statusCode).toBe(200);
+    const frame = extractFirstJsonRpcFrame(callRes.body);
+    expect(frame.jsonrpc).toBe('2.0');
+    expect(frame.id).toBe(2);
+    expect(frame.result).toBeDefined();
+
+    const r = frame.result as {
+      content: Array<{ type: string; text: string }>;
+      structuredContent: {
+        object: string;
+        data: Array<Record<string, unknown>>;
+      };
+      isError?: boolean;
+    };
+    expect(r.isError).toBeFalsy();
+    expect(r.content[0]!.type).toBe('text');
+    expect(r.content[0]!.text).toMatch(/^\d+ models available$/);
+    expect(r.structuredContent.object).toBe('list');
+    expect(Array.isArray(r.structuredContent.data)).toBe(true);
+    expect(r.structuredContent.data.length).toBeGreaterThan(0);
+
+    // T-3-A2 anti-leak: every entry MUST NOT include backend / backend_url
+    // / backend_model / vram_budget_gb fields. Whether the YAML fixture has
+    // them present in the registry or not, the projection must hide them.
+    for (const entry of r.structuredContent.data) {
+      expect(entry.backend).toBeUndefined();
+      expect(entry.backend_url).toBeUndefined();
+      expect(entry.backend_model).toBeUndefined();
+      expect(entry.vram_budget_gb).toBeUndefined();
+      // D-10 annotation: every projected entry has policy.cloud_allowed.
+      expect(entry.policy).toBeDefined();
+      const pol = entry.policy as { cloud_allowed: boolean };
+      expect(typeof pol.cloud_allowed).toBe('boolean');
     }
+  });
+
+  it('Test 7 (MCPS-01 #3 — assistant text round-trip): tools/call chat_completion returns assistant text via the MCP wire end-to-end', async () => {
+    // This test uses an opts.makeAdapter override to stub the upstream adapter,
+    // exercising the full Plan 15-06 chat_completion handler over the MCP wire:
+    // registerTool → tools/call → applyPreflight → adapter.chatCompletionsCanonical
+    // → canonicalToOpenAIResponse → dual-shape MCP return. It is the canonical
+    // success-criterion #3 gate for MCPS-01 ("assistant text round-trip").
+    const registry = makeRegistryStore(loadRegistryFromString(YAML));
+    const metrics = makeMetricsRegistry();
+
+    // Minimal fake adapter — mirrors the shape of router/src/backends/adapter.ts
+    // BackendAdapter; the chat_completion tool only calls chatCompletionsCanonical
+    // and the liveness scheduler calls probeLiveness. Other adapter methods throw
+    // since this test never exercises them.
+    const fakeAdapter = {
+      // biome-ignore lint/suspicious/noExplicitAny: minimal adapter stub
+      chatCompletionsCanonical: async (_canonical: unknown, _signal: AbortSignal): Promise<any> => ({
+        id: 'mcp-test-id',
+        type: 'message' as const,
+        role: 'assistant' as const,
+        model: 'llama3.2:3b',
+        content: [{ type: 'text' as const, text: 'hello from MCP' }],
+        stop_reason: 'end_turn' as const,
+        stop_sequence: null,
+        usage: { input_tokens: 4, output_tokens: 3 },
+      }),
+      // biome-ignore lint/suspicious/noExplicitAny: minimal adapter stub
+      chatCompletionsCanonicalStream: async (): Promise<any> => {
+        throw new Error('stream branch not used');
+      },
+      // biome-ignore lint/suspicious/noExplicitAny: minimal adapter stub
+      embeddings: async (): Promise<any> => {
+        throw new Error('embeddings not used');
+      },
+      // biome-ignore lint/suspicious/noExplicitAny: minimal adapter stub
+      rerank: async (): Promise<any> => {
+        throw new Error('rerank not used');
+      },
+      probeLiveness: async (): Promise<{ ok: boolean; latencyMs: number }> => ({
+        ok: true,
+        latencyMs: 1,
+      }),
+    };
+
+    const localApp = await buildApp({
+      registry,
+      bearerToken: TOKEN,
+      loggerOpts: false as never,
+      bufferedWriter: makeFakeBufferedWriter(),
+      metrics,
+      // biome-ignore lint/suspicious/noExplicitAny: BackendAdapter narrowing
+      makeAdapter: (() => fakeAdapter) as any,
+    });
+    app = localApp;
+
+    // 1) Initialize.
+    const initRes = await app.inject({
+      method: 'POST',
+      url: '/mcp',
+      headers: {
+        authorization: `Bearer ${TOKEN}`,
+        'content-type': 'application/json',
+        accept: ACCEPT_BOTH,
+      },
+      payload: INITIALIZE_BODY,
+    });
+    expect(initRes.statusCode).toBe(200);
+    const sid = initRes.headers['mcp-session-id'] as string;
+
+    // 2) Acknowledge.
+    const ackRes = await app.inject({
+      method: 'POST',
+      url: '/mcp',
+      headers: {
+        authorization: `Bearer ${TOKEN}`,
+        'content-type': 'application/json',
+        accept: ACCEPT_BOTH,
+        'mcp-session-id': sid,
+      },
+      payload: { jsonrpc: '2.0', method: 'notifications/initialized' },
+    });
+    expect([200, 202]).toContain(ackRes.statusCode);
+
+    // 3) tools/call chat_completion with a single user message.
+    const callRes = await app.inject({
+      method: 'POST',
+      url: '/mcp',
+      headers: {
+        authorization: `Bearer ${TOKEN}`,
+        'content-type': 'application/json',
+        accept: ACCEPT_BOTH,
+        'mcp-session-id': sid,
+      },
+      payload: {
+        jsonrpc: '2.0',
+        id: 7,
+        method: 'tools/call',
+        params: {
+          name: 'chat_completion',
+          arguments: {
+            model: 'llama3.2:3b',
+            messages: [{ role: 'user', content: 'hi' }],
+          },
+        },
+      },
+    });
+    expect(callRes.statusCode).toBe(200);
+    const frame = extractFirstJsonRpcFrame(callRes.body);
+    expect(frame.jsonrpc).toBe('2.0');
+    expect(frame.id).toBe(7);
+    expect(frame.result).toBeDefined();
+
+    const r = frame.result as {
+      content: Array<{ type: string; text: string }>;
+      structuredContent: {
+        choices: Array<{ message: { role: string; content: string } }>;
+        usage: { prompt_tokens: number; completion_tokens: number };
+      };
+      isError?: boolean;
+    };
+    expect(r.isError).toBeFalsy();
+    // D-03 stamp: joined assistant text block content lives in content[0].text.
+    expect(r.content[0]!.type).toBe('text');
+    expect(r.content[0]!.text).toBe('hello from MCP');
+    // structuredContent carries the full OpenAI ChatCompletion shape.
+    expect(r.structuredContent.choices[0]!.message.role).toBe('assistant');
+    expect(r.structuredContent.choices[0]!.message.content).toBe('hello from MCP');
+    expect(r.structuredContent.usage.prompt_tokens).toBe(4);
+    expect(r.structuredContent.usage.completion_tokens).toBe(3);
   });
 
   it('Test 4 (MCPS-05): app.close() shuts down active sessions; router_mcp_active_sessions gauge → 0', async () => {
