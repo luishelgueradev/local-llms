@@ -228,21 +228,30 @@ function makeSpyMetrics(): {
 
 /** Stub FastifyRequest the plugin would normally capture at session-initialize time. */
 function makeFakeReq(): FastifyRequest {
+  // Cast through unknown — the production FastifyBaseLogger has
+  // `level/fatal/trace/silent` fields that we don't exercise here; building a
+  // full pino-compatible mock would obscure the test intent. The chat tool
+  // only reads `child` and the per-level loggers it returns.
+  const fakeLog = {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+    fatal: vi.fn(),
+    trace: vi.fn(),
+    level: 'info',
+    silent: vi.fn(),
+    child(): unknown {
+      return fakeLog;
+    },
+  };
   return {
     id: 'req-test-123',
     tenantId: 'acme',
     projectId: 'agents',
     agentId: 'a1',
     workloadClass: 'dev',
-    log: {
-      info: vi.fn(),
-      warn: vi.fn(),
-      error: vi.fn(),
-      debug: vi.fn(),
-      child(): FastifyRequest['log'] {
-        return this;
-      },
-    },
+    log: fakeLog,
   } as unknown as FastifyRequest;
 }
 
@@ -457,14 +466,14 @@ describe('Plan 15-06 — registerChatCompletionTool (D-01..D-14 invariants)', ()
       return new Promise<CanonicalResponse>((_, reject) => {
         if (signal.aborted) {
           observedAbortedAtThrow = true;
-          reject(new APIUserAbortError({ cause: new Error('aborted') }));
+          reject(new APIUserAbortError({ message: 'aborted' }));
           return;
         }
         signal.addEventListener(
           'abort',
           () => {
             observedAbortedAtThrow = signal.aborted;
-            reject(new APIUserAbortError({ cause: new Error('aborted') }));
+            reject(new APIUserAbortError({ message: 'aborted' }));
           },
           { once: true },
         );
