@@ -35,7 +35,18 @@ import { LlamacppOpenAIAdapter } from './llamacpp-openai.js';
 import { VLLMOpenAIAdapter } from './vllm-openai.js';
 import { OllamaCloudAdapter } from './ollama-cloud.js';
 
-type LocalAdapterCtor = new (baseURL: string) => BackendAdapter;
+export interface LocalAdapterCtorOpts {
+  /**
+   * Upstream HTTP timeout (ms) handed to the underlying OpenAI SDK client.
+   * Threaded from env.ROUTER_BACKEND_TIMEOUT_MS via the makeAdapterWithCloudKey
+   * closure (see app.ts). Optional so existing direct-construction call sites
+   * (e.g. tests, probes that build an adapter ad-hoc with `new OllamaOpenAIAdapter(url)`)
+   * keep working — each adapter ctor falls back to a 300_000 ms default that
+   * matches the env default.
+   */
+  timeoutMs?: number;
+}
+type LocalAdapterCtor = new (baseURL: string, opts?: LocalAdapterCtorOpts) => BackendAdapter;
 type CloudAdapterCtor = new (baseURL: string, apiKey: string) => BackendAdapter;
 
 const LOCAL_ADAPTERS: Record<string, LocalAdapterCtor> = {
@@ -61,6 +72,13 @@ const CLOUD_ADAPTERS: Record<string, CloudAdapterCtor> = {
  */
 export interface MakeAdapterDeps {
   cloudApiKey?: string;
+  /**
+   * Phase 15.1 housekeeping — upstream HTTP timeout (ms) for the OpenAI SDK
+   * clients used by local adapters (ollama/llamacpp/vllm). Threaded from
+   * env.ROUTER_BACKEND_TIMEOUT_MS via app.ts. Cloud adapters ignore it (they
+   * have their own timeout discipline that maps to provider SLAs).
+   */
+  backendTimeoutMs?: number;
 }
 
 export function makeAdapter(entry: ModelEntry, deps: MakeAdapterDeps = {}): BackendAdapter {
@@ -76,5 +94,5 @@ export function makeAdapter(entry: ModelEntry, deps: MakeAdapterDeps = {}): Back
   }
   const LocalCtor = LOCAL_ADAPTERS[entry.backend];
   if (!LocalCtor) throw new Error(`No adapter registered for backend "${entry.backend}"`);
-  return new LocalCtor(entry.backend_url);
+  return new LocalCtor(entry.backend_url, { timeoutMs: deps.backendTimeoutMs });
 }

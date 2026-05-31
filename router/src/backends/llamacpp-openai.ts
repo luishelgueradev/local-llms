@@ -12,6 +12,7 @@ import {
 } from '../translation/openai-out.js';
 import { CapabilityNotSupportedError } from '../errors/envelope.js';
 import { backendFetchOptions } from './http-dispatcher.js';
+import type { LocalAdapterCtorOpts } from './factory.js';
 
 /**
  * LlamacppOpenAIAdapter — mirrors OllamaOpenAIAdapter exactly modulo the apiKey
@@ -29,17 +30,19 @@ import { backendFetchOptions } from './http-dispatcher.js';
 export class LlamacppOpenAIAdapter implements BackendAdapter {
   private readonly client: OpenAI;
 
-  constructor(baseURL: string) {
+  constructor(baseURL: string, opts?: LocalAdapterCtorOpts) {
     // baseURL example: 'http://llamacpp:8080/v1'
     // apiKey is a non-empty placeholder per D-B1; llama.cpp-server ignores it.
     // SDK v6 throws at construction time on empty apiKey (RESEARCH §Anti-Patterns).
     // fetchOptions.dispatcher → shared keep-alive-tuned undici Agent so idle
     // sockets are recycled before the network silently kills them
     // (debug session router-504-stale-sockets). See http-dispatcher.ts.
+    // Phase 15.1 housekeeping — timeout from env.ROUTER_BACKEND_TIMEOUT_MS (300_000
+    // default), threaded by the factory. See ollama-openai.ts ctor for the full rationale.
     this.client = new OpenAI({
       baseURL,
       apiKey: 'llamacpp',
-      timeout: 60_000,
+      timeout: opts?.timeoutMs ?? 300_000,
       fetchOptions: backendFetchOptions(),
     });
   }

@@ -212,7 +212,10 @@ export interface BuildAppOpts {
     // MCP_GC_INTERVAL_MS=1_800_000). Production wiring (index.ts) always
     // passes the full env so the optional path is exclusively a
     // test-fixture concern.
-    Partial<Pick<Env, 'MCP_ENABLED' | 'MCP_SESSION_TTL_SEC' | 'MCP_GC_INTERVAL_MS'>>;
+    Partial<Pick<Env, 'MCP_ENABLED' | 'MCP_SESSION_TTL_SEC' | 'MCP_GC_INTERVAL_MS'>> &
+    // Phase 15.1 housekeeping — upstream backend timeout. Partial so existing
+    // test fixtures keep working; index.ts always passes the env value.
+    Partial<Pick<Env, 'ROUTER_BACKEND_TIMEOUT_MS'>>;
   /**
    * Plan 08-04 — test injection seam for the breaker's clock. Tests can pass
    * a custom `now` so they can advance fake-time without real timers. When
@@ -264,8 +267,13 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
   // needed". If a cloud entry somehow reaches the factory with this empty
   // closure key, factory.ts throws with a clear "requires cloudApiKey" error.
   const cloudApiKey = opts.cloudApiKey ?? '';
+  // Phase 15.1 housekeeping — env.ROUTER_BACKEND_TIMEOUT_MS is the single source
+  // of truth for the local-backend upstream timeout (ollama / llamacpp / vllm).
+  // Default 300_000 (5 min) tolerates cold model loads on WSL2 + shared GPU; the
+  // env schema rejects values below 60_000 (see config/env.ts rationale).
+  const backendTimeoutMs = opts.env?.ROUTER_BACKEND_TIMEOUT_MS ?? 300_000;
   const makeAdapterWithCloudKey: AdapterFactory = (entry) =>
-    defaultMakeAdapter(entry, { cloudApiKey });
+    defaultMakeAdapter(entry, { cloudApiKey, backendTimeoutMs });
 
   // WR-02 (TD-03 fix) — stamp `req._t0` at the earliest possible hook so
   // latency_ms is non-zero for pre-preHandler errors (preValidation zod

@@ -17,6 +17,7 @@ import {
 } from '../translation/ollama-native-out.js';
 import type { Agent } from 'undici';
 import { makeBackendAgent } from './http-dispatcher.js';
+import type { LocalAdapterCtorOpts } from './factory.js';
 
 /**
  * Walk canonical.messages → returns true iff any message has an image content block.
@@ -49,7 +50,7 @@ export class OllamaOpenAIAdapter implements BackendAdapter {
    */
   private readonly nativeBase: string;
 
-  constructor(baseURL: string) {
+  constructor(baseURL: string, opts?: LocalAdapterCtorOpts) {
     // baseURL example: 'http://ollama:11434/v1'
     // apiKey is a non-empty placeholder per D-B1; local Ollama ignores it.
     // SDK v6 throws at construction time on empty apiKey (RESEARCH §Anti-Patterns).
@@ -58,10 +59,14 @@ export class OllamaOpenAIAdapter implements BackendAdapter {
     // dead-from-idle or abort-poisoned socket is never reused
     // (debug session router-504-stale-sockets). See http-dispatcher.ts.
     this.dispatcher = makeBackendAgent();
+    // Phase 15.1 housekeeping — accept the SDK request timeout from the factory
+    // (env.ROUTER_BACKEND_TIMEOUT_MS). Default 300_000 mirrors the env default
+    // and the ollama runtime's OLLAMA_LOAD_TIMEOUT:5m0s. The previous hard-coded
+    // 60_000 was too short for a cold model load on WSL2 + shared GPU.
     this.client = new OpenAI({
       baseURL,
       apiKey: 'ollama',
-      timeout: 60_000,
+      timeout: opts?.timeoutMs ?? 300_000,
       fetchOptions: { dispatcher: this.dispatcher },
     });
     this.nativeBase = baseURL.replace(/\/v1\/?$/, '');

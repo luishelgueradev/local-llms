@@ -12,6 +12,7 @@ import {
   openAIChunksToCanonicalEvents,
 } from '../translation/openai-out.js';
 import { backendFetchOptions } from './http-dispatcher.js';
+import type { LocalAdapterCtorOpts } from './factory.js';
 
 /**
  * VLLMOpenAIAdapter — Phase 7 (Plan 07-03). vLLM exposes the OpenAI-compatible
@@ -46,7 +47,7 @@ import { backendFetchOptions } from './http-dispatcher.js';
 export class VLLMOpenAIAdapter implements BackendAdapter {
   private readonly client: OpenAI;
 
-  constructor(baseURL: string) {
+  constructor(baseURL: string, opts?: LocalAdapterCtorOpts) {
     // baseURL example: 'http://vllm:8000/v1' (chat) or 'http://vllm-embed:8000/v1' (embed).
     // apiKey is a non-empty placeholder; vLLM does not enforce auth on the internal
     // backend network in this stack. SDK v6 throws at construction time on empty
@@ -54,10 +55,13 @@ export class VLLMOpenAIAdapter implements BackendAdapter {
     // fetchOptions.dispatcher → shared keep-alive-tuned undici Agent so idle
     // sockets are recycled before the network silently kills them
     // (debug session router-504-stale-sockets). See http-dispatcher.ts.
+    // Phase 15.1 housekeeping — timeout from env.ROUTER_BACKEND_TIMEOUT_MS
+    // (300_000 default), threaded by the factory. See ollama-openai.ts ctor for
+    // the full rationale (cold-load on WSL2 + shared GPU > old 60 s ceiling).
     this.client = new OpenAI({
       baseURL,
       apiKey: 'vllm',
-      timeout: 60_000,
+      timeout: opts?.timeoutMs ?? 300_000,
       fetchOptions: backendFetchOptions(),
     });
   }

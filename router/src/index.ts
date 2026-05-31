@@ -178,6 +178,10 @@ async function main(): Promise<void> {
       // Phase 12 (v0.10.0 — EMB-H01): TTL for the embeddings cache. buildApp wires
       // makeEmbeddingsCache only when both opts.valkey AND opts.env are present.
       ROUTER_EMBED_CACHE_TTL_SEC: env.ROUTER_EMBED_CACHE_TTL_SEC,
+      // Phase 15.1 housekeeping — upstream HTTP timeout for the local backends
+      // (ollama/llamacpp/vllm). 300_000 default tolerates cold model loads on
+      // WSL2 + shared GPU. See config/env.ts ROUTER_BACKEND_TIMEOUT_MS rationale.
+      ROUTER_BACKEND_TIMEOUT_MS: env.ROUTER_BACKEND_TIMEOUT_MS,
     },
   });
 

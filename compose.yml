@@ -585,6 +585,10 @@ services:
       - CIRCUIT_FAILURE_THRESHOLD=${CIRCUIT_FAILURE_THRESHOLD:-5}
       - CIRCUIT_WINDOW_MS=${CIRCUIT_WINDOW_MS:-30000}
       - CIRCUIT_COOLDOWN_MS=${CIRCUIT_COOLDOWN_MS:-60000}
+      # Phase 15.1 housekeeping — local-backend upstream HTTP timeout. 300_000
+      # default tolerates cold model loads on WSL2 + shared GPU. See env.ts
+      # rationale and .env.example for tuning advice.
+      - ROUTER_BACKEND_TIMEOUT_MS=${ROUTER_BACKEND_TIMEOUT_MS:-300000}
       # router-504-stale-sockets: raise libuv threadpool so concurrent backend
       # DNS getaddrinfo calls (5 liveness probes every 10s) cannot starve each
       # other. Defense-in-depth — the primary fix is the c-ares connect.lookup
@@ -698,6 +702,8 @@ services:
       - CIRCUIT_FAILURE_THRESHOLD=${CIRCUIT_FAILURE_THRESHOLD:-5}
       - CIRCUIT_WINDOW_MS=${CIRCUIT_WINDOW_MS:-30000}
       - CIRCUIT_COOLDOWN_MS=${CIRCUIT_COOLDOWN_MS:-60000}
+      # Phase 15.1 housekeeping — mirrored from router: service.
+      - ROUTER_BACKEND_TIMEOUT_MS=${ROUTER_BACKEND_TIMEOUT_MS:-300000}
     volumes:
       - ./router/src:/app/src:ro
       - ./router/tsconfig.json:/app/tsconfig.json:ro

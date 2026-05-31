@@ -128,3 +128,31 @@ describe('EnvSchema — MCP_* defaults + overrides (Plan 15-01 / D-15)', () => {
     expect(() => loadEnv({ ...baseEnv, MCP_GC_INTERVAL_MS: '-100' })).toThrow();
   });
 });
+
+describe('EnvSchema — ROUTER_BACKEND_TIMEOUT_MS (Phase 15.1 housekeeping)', () => {
+  it('default is 300_000 ms (5 min — aligned with OLLAMA_LOAD_TIMEOUT:5m0s)', () => {
+    const env = loadEnv(baseEnv);
+    expect(env.ROUTER_BACKEND_TIMEOUT_MS).toBe(300_000);
+  });
+
+  it('accepts operator override (coerced from string)', () => {
+    const env = loadEnv({ ...baseEnv, ROUTER_BACKEND_TIMEOUT_MS: '120000' });
+    expect(env.ROUTER_BACKEND_TIMEOUT_MS).toBe(120_000);
+  });
+
+  it('rejects values below the 60_000 floor (preserves cold-load tolerance)', () => {
+    // 59_999 reintroduces the cold-load flake that this knob was created to
+    // eliminate. The min() floor is the contract.
+    expect(() => loadEnv({ ...baseEnv, ROUTER_BACKEND_TIMEOUT_MS: '59999' })).toThrow();
+  });
+
+  it('rejects zero and negative values', () => {
+    expect(() => loadEnv({ ...baseEnv, ROUTER_BACKEND_TIMEOUT_MS: '0' })).toThrow();
+    expect(() => loadEnv({ ...baseEnv, ROUTER_BACKEND_TIMEOUT_MS: '-1' })).toThrow();
+  });
+
+  it('accepts the exact 60_000 floor', () => {
+    const env = loadEnv({ ...baseEnv, ROUTER_BACKEND_TIMEOUT_MS: '60000' });
+    expect(env.ROUTER_BACKEND_TIMEOUT_MS).toBe(60_000);
+  });
+});

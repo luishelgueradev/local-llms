@@ -61,6 +61,30 @@ const EnvSchema = z.object({
   // a zero or negative limit would either disable the limit entirely (zero)
   // or be meaningless (negative); both are operator-error cases.
   ROUTER_RATE_LIMIT_RPM: z.coerce.number().int().min(1).default(600),
+  // Phase 15.1 (housekeeping 2026-05-31) — Upstream HTTP timeout (ms) for the
+  // OpenAI-SDK clients used by the local backends (ollama, llamacpp, vllm).
+  //
+  // Default 300_000 (5 min) is deliberately aligned with ollama's own
+  // `OLLAMA_LOAD_TIMEOUT:5m0s`. The previous hard-coded 60_000 was too short
+  // for the realistic worst case: a cold model load on WSL2 with shared GPU
+  // (a 3B GGUF can take 60-120 s to map all layers + warm CUDA the first time
+  // after the ollama container boots). When the 60s timeout fired, the SDK
+  // retried internally (maxRetries: 2 default), generating an opaque ~117 s
+  // response — the client perceived an empty body / dropped connection mid-
+  // load. With 300_000 the first cold load completes within one SDK attempt;
+  // genuinely broken backends still fail fast because they return non-2xx
+  // immediately (the timeout only matters when ollama is alive but slow).
+  //
+  // Override via env if you want stricter fail-fast for debugging; do NOT
+  // drop below 60_000 — that is the empirical "cold load completed" floor
+  // for our slowest backend on this hardware. Smoke-test pre-warm is the
+  // belt-and-braces companion in bin/smoke-test-router.sh Phase 3.
+  //
+  // POL-05 / D-09 invariant preserved: this knob ONLY affects the upstream
+  // request lifetime — policy gate + circuit breaker run BEFORE the request
+  // is even dispatched (applyPreflight), so a long timeout never holds a
+  // policy-rejected request open.
+  ROUTER_BACKEND_TIMEOUT_MS: z.coerce.number().int().min(60_000).default(300_000),
   // Phase 12 (v0.10.0 — EMB-H01): Valkey TTL (seconds) for the /v1/embeddings cache.
   // Default 86400 (24h) — embeddings are deterministic per model+input so a long
   // TTL is safe; the key shape (backend|backend_model|encoding_format|dimensions|input)
