@@ -24,7 +24,7 @@
 // prom-client's defaults (0.005..10) max out at 10s, which is too short for
 // LLM completions; the custom buckets reflect the latency profile observed in
 // Phase 2/3/4 smoke tests.
-import { Counter, Histogram, Registry, collectDefaultMetrics } from 'prom-client';
+import { Counter, Gauge, Histogram, Registry, collectDefaultMetrics } from 'prom-client';
 
 export function makeMetricsRegistry() {
   const register = new Registry();
@@ -121,6 +121,28 @@ export function makeMetricsRegistry() {
     registers: [register],
   });
 
+  // Phase 15 (v0.11.0 — MCPS-05 / CONTEXT D-07): MCP tool-call counter.
+  // Wave 4 tool handlers (chat_completion, message, embedding, response, rerank)
+  // increment this once per invocation. Cardinality: 5 tools × ~5 status_classes
+  // ≈ 25 series — well under POL-06 cap. labelNames MUST NOT contain '_id'-suffixed
+  // entries (POL-06 invariant, enforced by scripts/check-prometheus-cardinality.ts).
+  const routerMcpToolCallsTotal = new Counter({
+    name: 'router_mcp_tool_calls_total',
+    help: 'MCP tool calls observed by tool + status_class',
+    labelNames: ['tool', 'status_class'] as const,
+    registers: [register],
+  });
+
+  // Phase 15 (v0.11.0 — MCPS-05 / CONTEXT D-07): active MCP session count.
+  // Updated on session create / GC sweep / Fastify onClose. Operational canary
+  // for P1-04 (session leakage). Gauge value is a numeric count — NO session IDs
+  // are exposed via labels (T-15-04-INFO disposition: accept).
+  const routerMcpActiveSessions = new Gauge({
+    name: 'router_mcp_active_sessions',
+    help: 'Currently-tracked MCP Streamable HTTP sessions',
+    registers: [register],
+  });
+
   return {
     register,
     requestsTotal,
@@ -132,6 +154,8 @@ export function makeMetricsRegistry() {
     embeddingsCacheTotal,
     embeddingsBatchSize,
     embeddingsDimsTotal,
+    routerMcpToolCallsTotal,
+    routerMcpActiveSessions,
   };
 }
 
