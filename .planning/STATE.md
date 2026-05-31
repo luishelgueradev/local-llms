@@ -2,16 +2,17 @@
 gsd_state_version: 1.0
 milestone: v0.11.0
 milestone_name: Retrieval-Ready Infrastructure
-status: ready_to_plan
-last_updated: 2026-05-30T21:43:35.380Z
-last_activity: 2026-05-30 -- Phase 14 complete (POL-01..06)
+status: planning
+last_updated: "2026-05-31T03:06:46.205Z"
+last_activity: 2026-05-31 — Phase 15 context gathered
 progress:
   total_phases: 6
   completed_phases: 1
   total_plans: 9
   completed_plans: 9
   percent: 17
-stopped_at: Phase 14 complete (9/9) — ready to discuss Phase 15
+stopped_at: Phase 15 context gathered (15-CONTEXT.md, 15 decisions D-01..D-15)
+resume_file: .planning/phases/15-mcp-host-router-as-mcp-server/15-CONTEXT.md
 ---
 
 # Project State: local-llms
@@ -31,8 +32,8 @@ stopped_at: Phase 14 complete (9/9) — ready to discuss Phase 15
 
 Phase: 15
 Plan: Not started
-Status: Ready to discuss Phase 15
-Last activity: 2026-05-30 — Phase 14 complete
+Status: Context gathered — ready to plan Phase 15
+Last activity: 2026-05-31 — Phase 15 context gathered (15 decisions D-01..D-15)
 
 ### Progress
 
