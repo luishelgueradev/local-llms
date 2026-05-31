@@ -31,8 +31,8 @@ Phase 15 candidate. Router exposes its existing endpoints as MCP tools via Strea
 
 - [x] **MCPS-01**: Operator can connect any MCP-compatible client to `POST /mcp` over Streamable HTTP transport; the endpoint speaks JSON-RPC 2.0 per the MCP specification (verified against `@modelcontextprotocol/sdk` client integration test).
 - [x] **MCPS-02**: The MCP server endpoint sits behind the existing bearer `onRequest` hook; requests without a valid `Authorization: Bearer <token>` return `401` BEFORE any MCP-level handling.
-- [ ] **MCPS-03**: The MCP server exposes five tools — `chat_completion`, `create_response`, `create_embedding`, `rerank`, `list_models` — each wrapping the existing service-layer handler with a JSON Schema 2020-12 `inputSchema`.
-- [ ] **MCPS-04**: MCP tool handlers return structured errors on failure (`isError: true` with `{ error, code, message }` content block) instead of throwing, so MCP clients can self-correct.
+- [x] **MCPS-03**: The MCP server exposes five tools — `chat_completion`, `create_response`, `create_embedding`, `rerank`, `list_models` — each wrapping the existing service-layer handler with a JSON Schema 2020-12 `inputSchema`.
+- [x] **MCPS-04**: MCP tool handlers return structured errors on failure (`isError: true` with `{ error, code, message }` content block) instead of throwing, so MCP clients can self-correct.
 - [x] **MCPS-05**: The MCP server cleans up open sessions on `SIGTERM` (verified by integration test triggering shutdown and asserting no leaked sessions).
 - [ ] **MCPS-06**: Stdio transport is NOT exposed in v0.11.0 (n8n compatibility constraint — n8n consumes Streamable HTTP only).
 
@@ -186,8 +186,8 @@ The roadmap and plan-phase agents must reject any task that would:
 | POL-06 | Phase 14 | Complete |
 | MCPS-01 | Phase 15 | Complete |
 | MCPS-02 | Phase 15 | Complete |
-| MCPS-03 | Phase 15 | Pending |
-| MCPS-04 | Phase 15 | Pending |
+| MCPS-03 | Phase 15 | Complete |
+| MCPS-04 | Phase 15 | Complete |
 | MCPS-05 | Phase 15 | Complete |
 | MCPS-06 | Phase 15 | Pending |
 | RESS-01 | Phase 16 | Pending |
