@@ -3,19 +3,19 @@ gsd_state_version: 1.0
 milestone: v0.11.0
 milestone_name: Retrieval-Ready Infrastructure
 status: executing
-last_updated: "2026-05-31T05:04:15.414Z"
+last_updated: "2026-05-31T05:20:34.238Z"
 last_activity: 2026-05-31
 progress:
   total_phases: 6
   completed_phases: 1
   total_plans: 21
-  completed_plans: 13
+  completed_plans: 14
   percent: 17
 ---
 
 # Project State: local-llms
 
-**Last Updated:** 2026-05-31 — Phase 15 Plan 03 shipped (5 HTTP routes refactored to call applyPreflight; HTTP wire shape preserved byte-identical; Phase 14 invariants green). v0.11.0 progress: 1/6 phases + 4/12 Phase-15 plans complete (Wave 1: 15-01 env + 15-02 helper; Wave 2: 15-03 route refactor + 15-04 metric surface).
+**Last Updated:** 2026-05-31 — Phase 15 Plan 05 shipped (mcpHostPlugin shell: multi-method POST/GET/DELETE /mcp + in-process sessionMap + idle GC sweep + 5s Promise.race SIGTERM shutdown; buildServerForRequest is the SOLE Wave-4 tool-registration hook; MCPS-01/02/05 verified end-to-end). v0.11.0 progress: 1/6 phases + 5/12 Phase-15 plans complete (Wave 1: 15-01 env + 15-02 helper; Wave 2: 15-03 route refactor + 15-04 metric surface; Wave 3: 15-05 MCP plugin shell).
 **Status:** Ready to execute
 
 ## Project Reference
@@ -29,7 +29,7 @@ progress:
 ## Current Position
 
 Phase: 15
-Plan: 5 of 12 complete (15-01 EnvSchema widening; 15-02 applyPreflight helper; 15-03 HTTP route refactor; 15-04 MCP metric surface + protocol union) — Wave 2 done
+Plan: 5 of 12 complete (15-01 EnvSchema widening; 15-02 applyPreflight helper; 15-03 HTTP route refactor; 15-04 MCP metric surface + protocol union; 15-05 mcpHostPlugin shell + sessionMap + GC + SIGTERM race) — Wave 3 task 1 of 4 done
 Status: Ready to execute
 Last activity: 2026-05-31
 
@@ -38,7 +38,7 @@ Last activity: 2026-05-31
 ```
 Milestone v0.11.0: █▓░░░░░░░░ 17% — Phase 14/6 shipped (POL-01..06)
   Phase 14: ██████████ Policy Primitives + Tenant/Project ID Foundation (POL-01..06) — SHIPPED 2026-05-30
-  Phase 15: ███░░░░░░░ MCP Host (MCPS-01..06) — Wave 1 done (15-01 env + 15-02 applyPreflight); Wave 2 done (15-03 HTTP route refactor + 15-04 metric surface)
+  Phase 15: ████░░░░░░ MCP Host (MCPS-01..06) — Wave 1 done (15-01 env + 15-02 applyPreflight); Wave 2 done (15-03 HTTP route refactor + 15-04 metric surface); Wave 3 in-flight (15-05 mcpHostPlugin shell shipped — MCPS-01/02/05 end-to-end)
   Phase 16: ░░░░░░░░░░ /v1/responses Streaming + Tool Calls (RESS-01..05)
   Phase 17: ░░░░░░░░░░ SessionStore + ContextProvider + SummaryProvider (SESS-01..06 + CTXP-01..04 + SUMP-01..03)
   Phase 18: ░░░░░░░░░░ MCP Client + RetrieverProvider + Pre-Completion Hook (MCPC-01..06 + RETR-01..06)
@@ -87,6 +87,9 @@ Milestone v0.9.0:  ██████████ 100% — SHIPPED 2026-05-28 (a
 - **OutcomeContext.protocol union (Phase 15 / Plan 15-04)**: widened from `'openai' | 'anthropic'` to `'openai' | 'anthropic' | 'mcp'`. Strict superset; no migration needed (request_log.protocol is TEXT NOT NULL with no CHECK constraint). Wave 4 MCP tool handlers write `protocol: 'mcp'` rows without `as any` casts.
 - **Plan 15-03 HTTP route refactor**: All 5 HTTP routes (`chat-completions`, `messages`, `embeddings`, `rerank`, `responses`) call `applyPreflight()` at the top of the handler with structurally-identical stanza; `applyPolicyGate` + inline `breaker.check` removed from each route. Sentinel-open branch follows `req.resolvedBackend` stamp so `X-Model-Backend` header still flows on 503 responses. Phase 14 `policy-gate-integration.test.ts` 10/10 green; full vitest run 869 passed / 0 failed.
 - **15-03 capability check placement**: capability checks (vision/json_mode/embeddings/rerank/chat) kept in their pre-refactor location in each route — outside-try for chat/messages, inside-try for embeddings/rerank/responses — rather than moving them. This preserves the existing inner-try observability contract for capability-mismatch 400s without invasively reshaping each handler.
+- **Plan 15-05 mcpHostPlugin shell ships (Wave 3 task 1 of 4)**: router/src/mcp/host/{plugin.ts, session-gc.ts, index.ts} + tests + app.ts wiring. `buildServerForRequest(capturedReq, opts)` is the SOLE Wave-4 tool-registration site — Wave 4 plans (15-06..15-10) each add ONE `registerXxxTool` call inside. Wave 3 ships zero tools → SDK's `tools/list` returns -32601 (McpServer only installs `setToolRequestHandlers` from inside `registerTool` — verified in node_modules/.../server/mcp.js:650); Wave 4 will invert Test 3 to expect a populated tools array.
+- **15-05 BuildAppOpts.env widening**: changed to intersection `Pick<Env, existing 5 keys> & Partial<Pick<Env, MCP_ENABLED|MCP_SESSION_TTL_SEC|MCP_GC_INTERVAL_MS>>` to preserve 4 pre-existing integration test fixtures (circuit-breaker, idempotency, rate-limit) that build env without MCP keys. Production wiring (index.ts) always passes the full env.
+- **15-05 onClose ordering**: MCP plugin registered AFTER main app.ts onClose body in buildApp — Fastify v5 fires main FIRST (3s bufferedWriter.drain), MCP onClose AFTER (5s Promise.race transport teardown ceiling). Fits 10s Compose stop_grace_period with 2s margin.
 - Migration numbering: Phase 14 gets next sequential number after 0004 (existing) — must read `_journal.json` as first task of Phase 14 plan
 - MCP session GC: 30-min interval + SIGTERM handler 5s timeout + Fastify `onClose` hook
 - SessionStore writes: SYNC + 1s timeout + fail-open (different from async-buffered request_log)
@@ -100,4 +103,4 @@ Milestone v0.9.0:  ██████████ 100% — SHIPPED 2026-05-28 (a
 
 ### Active Todos
 
-- `/gsd:execute-phase 15` — Phase 15 execution underway (Wave 1 complete: 15-01, 15-02; Wave 2 complete: 15-03 HTTP route refactor + 15-04 metric surface). Wave 3 next: 15-05+ (MCP plugin scaffold).
+- `/gsd:execute-phase 15` — Phase 15 execution underway (Wave 1 complete: 15-01, 15-02; Wave 2 complete: 15-03 HTTP route refactor + 15-04 metric surface; Wave 3 task 1/4 complete: 15-05 mcpHostPlugin shell). Wave 4 next: 15-06+ (5 tool registrations parallelizable on top of buildServerForRequest seam).
