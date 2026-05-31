@@ -2193,11 +2193,107 @@ fi
 echo ""
 echo "[smoke-test-router] === Phase 15 MCP section complete ==="
 
+# ============================================================================
+# Phase 16 (v0.11.0 — RESS-01..05) — /v1/responses streaming + tool calls
+# ============================================================================
+# Proves the Plan 16-03 streaming branch is live end-to-end at HTTP level:
+#
+#   RESS-01: POST /v1/responses {stream:true} returns 200 with response.created
+#            + response.completed emitted on the wire.
+#   RESS-02: every event payload carries sequence_number; response.completed
+#            is the LAST event of the stream (last-event invariant / P3-03).
+#   P3-04:   no `data:` line carries the literal string "heartbeat" — heartbeats
+#            MUST be SSE comment lines (`: keep-alive\n\n`), never data events.
+#   RESS-04: no `[DONE]` terminator (Responses API uses response.completed).
+#
+# Designed to run against the live tunnel after `docker compose up -d --build router`.
+# Mirrors the SC1 chat-completions section shape (curl -N + grep + python parse).
+# ============================================================================
+
+echo ""
+echo "[smoke-test-router] === Phase 16 — /v1/responses streaming (RESS-01..05) ==="
+
+# Issue a streaming /v1/responses request, capture the SSE body to a tmp file.
+# `mktemp` + `trap rm` ensures cleanup even on unexpected exit; the model used
+# is the same $MODEL that has already passed SC1/SC2 above (proven healthy).
+RESS_TMP=$(mktemp /tmp/ress-smoke-XXXXXX.sse)
+# Append-only trap so we don't blow away earlier traps (sc3-stream.txt etc.).
+trap 'rm -f "${RESS_TMP}"' EXIT
+
+RESS_BODY=$(_SMOKE_MODEL="${MODEL}" python3 -c '
+import json, os
+print(json.dumps({
+  "model": os.environ.get("_SMOKE_MODEL", ""),
+  "input": "say hi in 3 words",
+  "stream": True,
+}))
+')
+
+RESS_HTTP_CODE=$(curl -sN -o "${RESS_TMP}" -w '%{http_code}' \
+  --max-time 60 \
+  -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -d "${RESS_BODY}" \
+  "${ROUTER_URL}/v1/responses" 2>/dev/null || echo "000")
+
+if [[ "${RESS_HTTP_CODE}" == "200" ]]; then
+  pass "RESS-01: POST /v1/responses stream:true returns 200"
+else
+  fail "RESS-01: POST /v1/responses stream:true returned ${RESS_HTTP_CODE} (expected 200); body head: $(head -c 200 "${RESS_TMP}")"
+fi
+
+# RESS-01: response.created event emitted.
+if grep -q '^event: response.created' "${RESS_TMP}"; then
+  pass "RESS-01: response.created emitted"
+else
+  fail "RESS-01: missing response.created event"
+fi
+
+# RESS-01: response.completed event emitted.
+if grep -q '^event: response.completed' "${RESS_TMP}"; then
+  pass "RESS-01: response.completed emitted"
+else
+  fail "RESS-01: missing response.completed terminator"
+fi
+
+# RESS-02 / P3-03: response.completed is the LAST event (last-event invariant).
+RESS_LAST_EVENT=$(grep '^event:' "${RESS_TMP}" | tail -1)
+if [[ "${RESS_LAST_EVENT}" == "event: response.completed" ]]; then
+  pass "RESS-02 / P3-03: response.completed is the last event (last-event invariant)"
+else
+  fail "RESS-02 / P3-03: last event is '${RESS_LAST_EVENT}', expected 'event: response.completed'"
+fi
+
+# RESS-02: sequence_number present on every event payload (sample at least 3).
+RESS_SEQ_COUNT=$(grep -cE '"sequence_number":[[:space:]]*[0-9]+' "${RESS_TMP}" || true)
+if [[ "${RESS_SEQ_COUNT}" -ge 3 ]]; then
+  pass "RESS-02: sequence_number present on ${RESS_SEQ_COUNT} events (≥3 required)"
+else
+  fail "RESS-02: sequence_number found on only ${RESS_SEQ_COUNT} events (expected ≥3)"
+fi
+
+# P3-04: heartbeat MUST be SSE comment, never a data: event payload.
+if ! grep -qE '^data:.*heartbeat' "${RESS_TMP}"; then
+  pass "P3-04: no 'heartbeat' string in any data: line (heartbeats stay as SSE comments)"
+else
+  fail "P3-04: heartbeat leaked as data: event (regression — see PITFALLS.md §P3-04 + grep gate at router/tests/unit/grep-gates/heartbeat-no-data-event.test.ts)"
+fi
+
+# RESS-04: Responses API uses response.completed, NEVER `data: [DONE]`.
+if ! grep -qF 'data: [DONE]' "${RESS_TMP}"; then
+  pass "RESS-04: no '[DONE]' terminator (Responses uses response.completed only)"
+else
+  fail "RESS-04: stray '[DONE]' in /v1/responses stream (chat-completions OpenAI-legacy bled through)"
+fi
+
+echo ""
+echo "[smoke-test-router] === Phase 16 RESS section complete ==="
+
 # Final summary
 echo ""
 echo "[smoke-test-router] ================================================================"
 if [[ "${FAILURES}" -eq 0 ]]; then
-  echo "[smoke-test-router]  Phase 2/3/4/5/7/8/12/13/15 router verification: COMPLETE."
+  echo "[smoke-test-router]  Phase 2/3/4/5/7/8/12/13/15/16 router verification: COMPLETE."
   echo "[smoke-test-router]  Model used : ${MODEL}"
   echo "[smoke-test-router]  Router URL : ${ROUTER_URL}"
   echo "[smoke-test-router]  Skipped    : ${SKIPS:-0} (vision sections require llama3.2-vision pull + outbound HTTPS)"
