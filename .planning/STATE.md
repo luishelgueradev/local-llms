@@ -2,23 +2,21 @@
 gsd_state_version: 1.0
 milestone: v0.11.0
 milestone_name: Retrieval-Ready Infrastructure
-status: planning
-last_updated: "2026-05-31T03:06:46.205Z"
-last_activity: 2026-05-31 — Phase 15 context gathered
+status: executing
+last_updated: "2026-05-31T04:04:04Z"
+last_activity: 2026-05-31 — Phase 15 Plan 02 shipped (applyPreflight helper + 7-test matrix; MCPS-01)
 progress:
   total_phases: 6
   completed_phases: 1
-  total_plans: 9
-  completed_plans: 9
+  total_plans: 21
+  completed_plans: 10
   percent: 17
-stopped_at: Phase 15 context gathered (15-CONTEXT.md, 15 decisions D-01..D-15)
-resume_file: .planning/phases/15-mcp-host-router-as-mcp-server/15-CONTEXT.md
 ---
 
 # Project State: local-llms
 
-**Last Updated:** 2026-05-30 — Phase 14 (Policy primitives + scoped IDs) shipped. POL-01..06 validated. v0.11.0 progress: 1/6 phases complete.
-**Status:** Ready to plan Phase 15 (mcp host — router as mcp server)
+**Last Updated:** 2026-05-31 — Phase 15 Plan 02 shipped (applyPreflight helper + 7-test unit matrix). v0.11.0 progress: 1/6 phases + 2/12 Phase-15 plans complete.
+**Status:** Executing Phase 15 (mcp host — router as mcp server)
 
 ## Project Reference
 
@@ -31,16 +29,16 @@ resume_file: .planning/phases/15-mcp-host-router-as-mcp-server/15-CONTEXT.md
 ## Current Position
 
 Phase: 15
-Plan: Not started
-Status: Context gathered — ready to plan Phase 15
-Last activity: 2026-05-31 — Phase 15 context gathered (15 decisions D-01..D-15)
+Plan: 02 of 12 complete (15-01 EnvSchema widening; 15-02 applyPreflight helper) — 15-03 next
+Status: Executing Phase 15 (Wave 1 in progress — 2/2 plans done, ready for Wave 2)
+Last activity: 2026-05-31 — Phase 15 Plan 02 shipped (applyPreflight helper + 7-test matrix; MCPS-01)
 
 ### Progress
 
 ```
 Milestone v0.11.0: █▓░░░░░░░░ 17% — Phase 14/6 shipped (POL-01..06)
   Phase 14: ██████████ Policy Primitives + Tenant/Project ID Foundation (POL-01..06) — SHIPPED 2026-05-30
-  Phase 15: ░░░░░░░░░░ MCP Host (MCPS-01..06)
+  Phase 15: ██░░░░░░░░ MCP Host (MCPS-01..06) — Wave 1 done (15-01 env + 15-02 applyPreflight)
   Phase 16: ░░░░░░░░░░ /v1/responses Streaming + Tool Calls (RESS-01..05)
   Phase 17: ░░░░░░░░░░ SessionStore + ContextProvider + SummaryProvider (SESS-01..06 + CTXP-01..04 + SUMP-01..03)
   Phase 18: ░░░░░░░░░░ MCP Client + RetrieverProvider + Pre-Completion Hook (MCPC-01..06 + RETR-01..06)
@@ -80,6 +78,8 @@ Milestone v0.9.0:  ██████████ 100% — SHIPPED 2026-05-28 (a
 
 ### Active Decisions
 
+- **applyPreflight Option A sentinel return (Phase 15 / Plan 15-02)**: helper RETURNS breakerState rather than throwing, so HTTP callers stamp Retry-After before raising BreakerOpenError while MCP tool handlers throw without setting any header. Single helper for both protocols; protocol-agnostic.
+- **applyPreflight lives at router/src/dispatch/preflight.ts (Phase 15 / Plan 15-02)**: D-09 left dir to planner's discretion; chose `dispatch/` (not `policy/`) because pipeline includes resilience/breaker step, not just policy.
 - Migration numbering: Phase 14 gets next sequential number after 0004 (existing) — must read `_journal.json` as first task of Phase 14 plan
 - MCP session GC: 30-min interval + SIGTERM handler 5s timeout + Fastify `onClose` hook
 - SessionStore writes: SYNC + 1s timeout + fail-open (different from async-buffered request_log)
@@ -93,4 +93,4 @@ Milestone v0.9.0:  ██████████ 100% — SHIPPED 2026-05-28 (a
 
 ### Active Todos
 
-- `/gsd:plan-phase 14` — Phase 14 planning next
+- `/gsd:execute-phase 15` — Phase 15 execution underway (Wave 1 complete: 15-01, 15-02; Wave 2 next: 15-03 HTTP route refactor)
