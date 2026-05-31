@@ -75,4 +75,60 @@ describe('makeMetricsRegistry', () => {
       expect(line).not.toContain('error_message=');
     }
   });
+
+  // ─── Phase 15 / Plan 15-04 (MCPS-05 / CONTEXT D-07): MCP metric surface ───
+  // New series:
+  //   router_mcp_tool_calls_total{tool, status_class}  → Counter
+  //   router_mcp_active_sessions                       → Gauge (no labels)
+  // Cardinality budget: 5 tools × ~5 status_classes ≈ 25 series. POL-06 invariant:
+  // labelNames MUST NOT contain elements ending in '_id'. Static guard re-runs
+  // in scripts/__tests__/check-prometheus-cardinality.test.ts.
+
+  it('6. (15-04) returns routerMcpToolCallsTotal Counter and routerMcpActiveSessions Gauge', () => {
+    const m = makeMetricsRegistry();
+    expect(m.routerMcpToolCallsTotal).toBeDefined();
+    expect(m.routerMcpActiveSessions).toBeDefined();
+  });
+
+  it('7. (15-04) routerMcpToolCallsTotal.inc({ tool, status_class }) emits a row in register.metrics()', async () => {
+    const m = makeMetricsRegistry();
+    m.routerMcpToolCallsTotal.inc({ tool: 'chat_completion', status_class: 'success' });
+    const text = await m.register.metrics();
+    expect(text).toContain('# HELP router_mcp_tool_calls_total');
+    expect(text).toContain('# TYPE router_mcp_tool_calls_total counter');
+    // The rendered line should carry exactly the two labels.
+    const lines = text.split('\n').filter((l) => l.startsWith('router_mcp_tool_calls_total{'));
+    expect(lines.length).toBeGreaterThan(0);
+    expect(lines[0]).toContain('tool="chat_completion"');
+    expect(lines[0]).toContain('status_class="success"');
+  });
+
+  it('8. (15-04) routerMcpActiveSessions.set(n) reflects the latest value in register.metrics()', async () => {
+    const m = makeMetricsRegistry();
+    m.routerMcpActiveSessions.set(3);
+    let text = await m.register.metrics();
+    expect(text).toContain('# HELP router_mcp_active_sessions');
+    expect(text).toContain('# TYPE router_mcp_active_sessions gauge');
+    expect(text).toMatch(/^router_mcp_active_sessions 3$/m);
+    m.routerMcpActiveSessions.set(0);
+    text = await m.register.metrics();
+    expect(text).toMatch(/^router_mcp_active_sessions 0$/m);
+  });
+
+  it('9. (15-04 / POL-06 invariant) routerMcpToolCallsTotal labelNames are exactly ["tool","status_class"] — no _id suffix', async () => {
+    const m = makeMetricsRegistry();
+    m.routerMcpToolCallsTotal.inc({ tool: 'chat_completion', status_class: 'success' });
+    const text = await m.register.metrics();
+    const lines = text.split('\n').filter((l) => l.startsWith('router_mcp_tool_calls_total{'));
+    expect(lines.length).toBeGreaterThan(0);
+    for (const line of lines) {
+      // Two labels expected; no third forbidden label snuck in.
+      expect(line).not.toMatch(/[a-z0-9_]+_id=/);
+      expect(line).not.toContain('agent_id=');
+      expect(line).not.toContain('tenant_id=');
+      expect(line).not.toContain('project_id=');
+      expect(line).not.toContain('session_id=');
+      expect(line).not.toContain('request_id=');
+    }
+  });
 });
