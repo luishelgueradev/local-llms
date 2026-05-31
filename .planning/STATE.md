@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v0.11.0
 milestone_name: Retrieval-Ready Infrastructure
 status: executing
-last_updated: "2026-05-31T05:20:34.238Z"
+last_updated: "2026-05-31T05:39:05.092Z"
 last_activity: 2026-05-31
 progress:
   total_phases: 6
   completed_phases: 1
   total_plans: 21
-  completed_plans: 14
+  completed_plans: 15
   percent: 17
 ---
 
@@ -29,7 +29,7 @@ progress:
 ## Current Position
 
 Phase: 15
-Plan: 5 of 12 complete (15-01 EnvSchema widening; 15-02 applyPreflight helper; 15-03 HTTP route refactor; 15-04 MCP metric surface + protocol union; 15-05 mcpHostPlugin shell + sessionMap + GC + SIGTERM race) — Wave 3 task 1 of 4 done
+Plan: 6 of 12 complete (15-01 EnvSchema widening; 15-02 applyPreflight helper; 15-03 HTTP route refactor; 15-04 MCP metric surface + protocol union; 15-05 mcpHostPlugin shell + sessionMap + GC + SIGTERM race) — Wave 3 task 1 of 4 done
 Status: Ready to execute
 Last activity: 2026-05-31
 
@@ -90,7 +90,7 @@ Milestone v0.9.0:  ██████████ 100% — SHIPPED 2026-05-28 (a
 - **Plan 15-05 mcpHostPlugin shell ships (Wave 3 task 1 of 4)**: router/src/mcp/host/{plugin.ts, session-gc.ts, index.ts} + tests + app.ts wiring. `buildServerForRequest(capturedReq, opts)` is the SOLE Wave-4 tool-registration site — Wave 4 plans (15-06..15-10) each add ONE `registerXxxTool` call inside. Wave 3 ships zero tools → SDK's `tools/list` returns -32601 (McpServer only installs `setToolRequestHandlers` from inside `registerTool` — verified in node_modules/.../server/mcp.js:650); Wave 4 will invert Test 3 to expect a populated tools array.
 - **15-05 BuildAppOpts.env widening**: changed to intersection `Pick<Env, existing 5 keys> & Partial<Pick<Env, MCP_ENABLED|MCP_SESSION_TTL_SEC|MCP_GC_INTERVAL_MS>>` to preserve 4 pre-existing integration test fixtures (circuit-breaker, idempotency, rate-limit) that build env without MCP keys. Production wiring (index.ts) always passes the full env.
 - **15-05 onClose ordering**: MCP plugin registered AFTER main app.ts onClose body in buildApp — Fastify v5 fires main FIRST (3s bufferedWriter.drain), MCP onClose AFTER (5s Promise.race transport teardown ceiling). Fits 10s Compose stop_grace_period with 2s margin.
-- Migration numbering: Phase 14 gets next sequential number after 0004 (existing) — must read `_journal.json` as first task of Phase 14 plan
+- **Plan 15-06 chat_completion MCP tool ships (Wave 4 task 1 of 5)**: `router/src/mcp/host/tools/chat-completion.ts` + 8-case unit-test matrix. Registers `chat_completion` on the McpServer with `inputSchema = ChatCompletionRequestSchema` (Zod object passed directly — SDK 1.29.0 rejects raw JSON Schema input per `node_modules/@modelcontextprotocol/sdk/.../mcp.js:868`). Exported `JSON_SCHEMA_LOCK = z.toJSONSchema(ChatCompletionRequestSchema)` preserves the P1-03 drift gate at module load. Handler shape: applyPreflight → openAIRequestToCanonical(stream:false coerced) → adapter.chatCompletionsCanonical(signal) → dual-shape return; catch runs toOpenAIErrorEnvelope → isError:true (NO_ENVELOPE → 'client_disconnect'); finally pushes one `protocol:'mcp'` row + increments `routerMcpToolCallsTotal{tool:'chat_completion', status_class}`. D-14 abort wiring uses `extra.signal.addEventListener('abort', ...)` + finally removeEventListener. plugin.ts wiring deferred to Plan 15-10 per concurrency_warning (siblings 15-07/08/09 land their files in parallel; 15-10 wires all 5 atomically). Integration test extension (Task 3) also deferred to 15-10 because tool-call round-trip can only pass once the tool is wired.
 - MCP session GC: 30-min interval + SIGTERM handler 5s timeout + Fastify `onClose` hook
 - SessionStore writes: SYNC + 1s timeout + fail-open (different from async-buffered request_log)
 - Token counting: `chars / 3` conservative heuristic + 20% ctx_size safety margin (no model-specific tokenizer)
