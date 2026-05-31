@@ -3,19 +3,19 @@ gsd_state_version: 1.0
 milestone: v0.11.0
 milestone_name: Retrieval-Ready Infrastructure
 status: executing
-last_updated: "2026-05-31T04:50:43.268Z"
+last_updated: "2026-05-31T04:57:33.722Z"
 last_activity: 2026-05-31
 progress:
   total_phases: 6
   completed_phases: 1
   total_plans: 21
-  completed_plans: 11
+  completed_plans: 12
   percent: 17
 ---
 
 # Project State: local-llms
 
-**Last Updated:** 2026-05-31 — Phase 15 Plan 02 shipped (applyPreflight helper + 7-test unit matrix). v0.11.0 progress: 1/6 phases + 2/12 Phase-15 plans complete.
+**Last Updated:** 2026-05-31 — Phase 15 Plan 04 shipped (MCP metric surface: router_mcp_tool_calls_total Counter + router_mcp_active_sessions Gauge + OutcomeContext.protocol widened to include 'mcp'). v0.11.0 progress: 1/6 phases + 3/12 Phase-15 plans complete (15-03 running in parallel).
 **Status:** Ready to execute
 
 ## Project Reference
@@ -29,7 +29,7 @@ progress:
 ## Current Position
 
 Phase: 15
-Plan: 3 of 12 complete (15-01 EnvSchema widening; 15-02 applyPreflight helper) — 15-03 next
+Plan: 4 of 12 complete (15-01 EnvSchema widening; 15-02 applyPreflight helper; 15-04 MCP metric surface + protocol union; 15-03 running in parallel)
 Status: Ready to execute
 Last activity: 2026-05-31
 
@@ -38,7 +38,7 @@ Last activity: 2026-05-31
 ```
 Milestone v0.11.0: █▓░░░░░░░░ 17% — Phase 14/6 shipped (POL-01..06)
   Phase 14: ██████████ Policy Primitives + Tenant/Project ID Foundation (POL-01..06) — SHIPPED 2026-05-30
-  Phase 15: ██░░░░░░░░ MCP Host (MCPS-01..06) — Wave 1 done (15-01 env + 15-02 applyPreflight)
+  Phase 15: ██▓░░░░░░░ MCP Host (MCPS-01..06) — Wave 1 done (15-01 env + 15-02 applyPreflight); Wave 2 partial (15-04 metric surface shipped; 15-03 HTTP route refactor in parallel)
   Phase 16: ░░░░░░░░░░ /v1/responses Streaming + Tool Calls (RESS-01..05)
   Phase 17: ░░░░░░░░░░ SessionStore + ContextProvider + SummaryProvider (SESS-01..06 + CTXP-01..04 + SUMP-01..03)
   Phase 18: ░░░░░░░░░░ MCP Client + RetrieverProvider + Pre-Completion Hook (MCPC-01..06 + RETR-01..06)
@@ -82,6 +82,9 @@ Milestone v0.9.0:  ██████████ 100% — SHIPPED 2026-05-28 (a
 - **MCP_ENABLED z.coerce.boolean quirk documented**: Zod v4 z.coerce.boolean() delegates to Boolean(value); any non-empty string is truthy. Operators disable by unsetting var (or `MCP_ENABLED=`). Documented inline in env.ts + .env.example so `MCP_ENABLED=false` doesn't silently leave plugin enabled.
 - **applyPreflight Option A sentinel return (Phase 15 / Plan 15-02)**: helper RETURNS breakerState rather than throwing, so HTTP callers stamp Retry-After before raising BreakerOpenError while MCP tool handlers throw without setting any header. Single helper for both protocols; protocol-agnostic.
 - **applyPreflight lives at router/src/dispatch/preflight.ts (Phase 15 / Plan 15-02)**: D-09 left dir to planner's discretion; chose `dispatch/` (not `policy/`) because pipeline includes resilience/breaker step, not just policy.
+- **MCP metric naming (Phase 15 / Plan 15-04)**: MCP-specific Prometheus series use the `router_mcp_*` namespace — Counter `router_mcp_tool_calls_total{tool,status_class}` + Gauge `router_mcp_active_sessions` (no labels). Future MCP metrics must extend the same prefix for PromQL discoverability. Cardinality budget for the counter: 5 tools × ~5 status_classes ≈ 25 series.
+- **Plan 15-04 test placement convention**: registry assertions extend the canonical `router/tests/unit/metricsRegistry.test.ts`, NOT a new `router/tests/unit/metrics/registry.test.ts`. Keeps Pitfall 2 (no-double-register) coverage co-located with new-metric introspection.
+- **OutcomeContext.protocol union (Phase 15 / Plan 15-04)**: widened from `'openai' | 'anthropic'` to `'openai' | 'anthropic' | 'mcp'`. Strict superset; no migration needed (request_log.protocol is TEXT NOT NULL with no CHECK constraint). Wave 4 MCP tool handlers write `protocol: 'mcp'` rows without `as any` casts.
 - Migration numbering: Phase 14 gets next sequential number after 0004 (existing) — must read `_journal.json` as first task of Phase 14 plan
 - MCP session GC: 30-min interval + SIGTERM handler 5s timeout + Fastify `onClose` hook
 - SessionStore writes: SYNC + 1s timeout + fail-open (different from async-buffered request_log)
@@ -95,4 +98,4 @@ Milestone v0.9.0:  ██████████ 100% — SHIPPED 2026-05-28 (a
 
 ### Active Todos
 
-- `/gsd:execute-phase 15` — Phase 15 execution underway (Wave 1 complete: 15-01, 15-02; Wave 2 next: 15-03 HTTP route refactor)
+- `/gsd:execute-phase 15` — Phase 15 execution underway (Wave 1 complete: 15-01, 15-02; Wave 2: 15-04 metric surface SHIPPED; 15-03 HTTP route refactor running in parallel)
