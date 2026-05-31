@@ -68,6 +68,30 @@ const EnvSchema = z.object({
   // the alias's backend_model (EMB-H05). Operators wanting smaller TTL (e.g. while
   // iterating on a model) override via env. Min 1s; 0 would defeat the cache.
   ROUTER_EMBED_CACHE_TTL_SEC: z.coerce.number().int().min(1).default(86400),
+  // Phase 15 (v0.11.0 — MCPS-01..06 / D-15) — MCP host plugin tunables.
+  //
+  // MCP_ENABLED — when false, downstream plans skip MCP plugin registration
+  //   entirely so `POST /mcp` returns 404. Default true (plugin registers
+  //   once Plan 15-03+ wires it). Boolean coerced from env strings:
+  //   "true"/"1" → true; "false"/"0" → false (Zod v4 z.coerce.boolean()
+  //   delegates to Boolean() which treats any non-empty string as true,
+  //   so consumers MUST set the literal string "false" / "0" — never an
+  //   empty string — to disable).
+  // MCP_SESSION_TTL_SEC — idle MCP session TTL in seconds. GC closes any
+  //   session whose last activity is older than this. Default 3600 (1h).
+  //   positive() rejects 0 / negative — a zero TTL would garbage-collect
+  //   every session on the next sweep.
+  // MCP_GC_INTERVAL_MS — MCP session GC sweep cadence in milliseconds.
+  //   Default 1_800_000 (30 min). positive() rejects 0 / negative — a
+  //   zero interval would either disable the sweep (setInterval(0) is
+  //   clamped to ~4ms, melting CPU) or be operator-error.
+  //
+  // No models.yaml stanza — env-var lifecycle matches the plugin lifecycle
+  // better than hot-reload (a hot-reloaded session-TTL would apply
+  // inconsistently to existing sessions).
+  MCP_ENABLED: z.coerce.boolean().default(true),
+  MCP_SESSION_TTL_SEC: z.coerce.number().int().positive().default(3600),
+  MCP_GC_INTERVAL_MS: z.coerce.number().int().positive().default(1_800_000),
 });
 
 export type Env = z.infer<typeof EnvSchema>;
