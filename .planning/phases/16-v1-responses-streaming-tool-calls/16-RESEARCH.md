@@ -997,22 +997,21 @@ function makeResponseEnvelope(args: {
 
 ---
 
-## Open Questions
+## Open Questions (RESOLVED)
+
+> All three questions were resolved by the orchestrator on 2026-05-31 prior to planner spawn. The resolutions are wire-format reality calls (SDK enums + SSE semantics), not design opinions. REQUIREMENTS.md + ROADMAP.md were patched in the same session to align the contract text with the SDK-correct shapes.
 
 1. **`X-Cost-Cents` header on cloud streaming response (ROADMAP §Phase 16 SC4 verification target)**
    - What we know: SSE headers flush before the first event yield; tokens (and therefore cost) aren't known until `message_delta` ships from upstream. The existing chat-completions stream path explicitly accepts this limitation — cost lives only in the `request_log.cost_cents` column for streams.
-   - What's unclear: ROADMAP §Phase 16 SC4 says "verified by smoke test confirming `X-Cost-Cents` header present on a cloud model streaming response." This is technically impossible with current SSE semantics.
-   - Recommendation: discuss-phase should clarify with user that SC4 is achievable on the NON-streaming branch only (which already works in v0.10.0); for streams, the X-Cost-Cents check happens against `request_log.cost_cents` via DB query, not the response header. Plan can split SC4 into "non-stream header present (existing)" + "stream cost row populated (new test)".
+   - **RESOLVED:** Cost is recorded in `request_log.cost_cents` on stream completion (same mechanism as chat-completions today). `X-Cost-Cents` header is NOT emitted on streamed responses; only non-streaming `/v1/responses` carries the header. REQUIREMENTS.md RESS-05 + ROADMAP SC4 patched 2026-05-31 to reflect this. Verification: smoke asserts `request_log.cost_cents > 0` row for a streaming cloud request (NOT a header check). Reference: `router/src/routes/v1/chat-completions.ts:693-703` documents the same limitation in code.
 
 2. **`status: "requires_action"` vs `status: "incomplete" + incomplete_details.reason: "tool_calls"` (ROADMAP §Phase 16 SC2)**
    - What we know: the openai@6.37.0 `ResponseStatus` enum in dist is `'completed' | 'cancelled' | 'failed' | 'incomplete' | 'in_progress' | 'queued'`. There is no `'requires_action'`. The Assistants API v2 has `requires_action`; Responses API does not.
-   - What's unclear: ROADMAP literally says "requires_action". This is either a wording error or the user intended Assistants-API behavior, which is the wrong API.
-   - Recommendation: discuss-phase confirms the intended signal is `status: "incomplete"` + `incomplete_details.reason: "tool_calls"`. The plan's success-criterion verbatim copy should patch ROADMAP §SC2 to reflect the Responses-API-correct enum value.
+   - **RESOLVED:** Use `status: "incomplete"` with `incomplete_details: { reason: "tool_calls" }` per the verified openai@6.x SDK type. REQUIREMENTS.md RESS-03 + ROADMAP SC2 patched 2026-05-31 with an editorial note explaining the enum constraint. The plans (16-02, 16-03, 16-04) implement this verbatim; the unit and integration tests assert the exact shape.
 
 3. **Should `response.error` be emitted on pre-stream errors (instead of returning a JSON envelope)?**
    - What we know: chat-completions emits a JSON envelope via `toOpenAIErrorEnvelope` if the adapter throws BEFORE any SSE frame ships. After headers ship, the translator catches and emits `response.failed`.
-   - What's unclear: Responses-API spec includes `response.error` (responses.d.ts:1968 — fields: `code`, `message`, `param`, `sequence_number`). When is `response.error` vs `response.failed` the right terminator?
-   - Recommendation: For Phase 16, mirror chat-completions exactly: pre-stream → JSON envelope (using `toOpenAIErrorEnvelope`), post-stream → `response.failed`. Defer `response.error` emission to RESS-FUT. Document this as an explicit Plan decision.
+   - **RESOLVED:** Mirror chat-completions exactly — pre-stream error → JSON envelope via `toOpenAIErrorEnvelope`; post-stream-start error → final SSE event `response.failed` (terminator, mutually exclusive with `response.completed`). `response.error` emission is deferred to RESS-FUT. Plan 16-02 task 1 catch block + Plan 16-03 pre-stream catch implement this; unit test #12 + integration test R11 verify the post-headers-ship failure path.
 
 ---
 
