@@ -172,14 +172,14 @@ Plans:
 - `SummaryProvider.summarize()` is NEVER invoked when session has a pending tool call (P6-01 BLOCK) — `has_pending_tool_call` flag prevents summarization until tool round-trip completes (SUMP-03)
 - Session persistence is optional — callers without `X-Session-ID` operate stateless with zero SessionStore involvement (SESS-06)
 - Session writes are synchronous durable writes (NOT async-buffered like request_log) — fail-open under 1s timeout with `persisted: false` flag (SESS-04)
-- No FK from `session_turns` to `request_log` — sessions must be independently deletable (P4-06 FLAG)
+- No FK from `conversation_turns` to `request_log` — sessions must be independently deletable (P4-06 FLAG). (Editorial fix 2026-05-31: aligned table name with REQUIREMENTS.md SESS-02; earlier draft used `session_turns` inconsistently.)
 - Migration journal: assign number as first task; consult `_journal.json` before writing any SQL (P9-01 BLOCK)
 
 **Success Criteria** (what must be TRUE):
 1. A caller sends `POST /v1/chat/completions` twice with the same `X-Session-ID: <id>` header; the second request's model response demonstrates awareness of the first turn's content (the history was loaded and injected into the second request's message array).
 2. A caller sends `X-Session-ID` with one `agent_id` and attempts to load that session with a different `agent_id`; they receive an empty history (cross-tenant leakage prevention verified by integration test).
 3. A model entry declaring `context_strategy: sliding-window` with `ctx_size: 4096` receives a long session; the ContextProvider trims the history to fit, the system message is always present at index 0 in the trimmed context, and no 400 "context length exceeded" error occurs from the backend.
-4. A session created without `X-Session-ID` in the request operates fully stateless — no `sessions` or `session_turns` rows are written, and the response is identical to pre-Phase-17 behavior.
+4. A session created without `X-Session-ID` in the request operates fully stateless — no `sessions` or `conversation_turns` rows are written, and the response is identical to pre-Phase-17 behavior.
 5. The `X-Session-ID` response header is set on responses when a session is active; the `NoopSummaryProvider` is the default and never calls any model.
 
 **Plans**: TBD
