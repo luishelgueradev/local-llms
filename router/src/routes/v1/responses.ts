@@ -13,7 +13,8 @@
  *     instructions?:      string,
  *     temperature?:       number,
  *     max_output_tokens?: number,
- *     stream?:            false   // explicit; true → 400 (deferred to backlog)
+ *     stream?:            boolean // false → JSON wire body (this file's legacy path);
+ *                                  // true  → Responses-API SSE stream (Phase 16 / RESS-01..05)
  *   }
  *
  * Shape (output):
@@ -47,9 +48,17 @@
  *   - X-Model-Backend + X-Cost-Cents response headers (onSend hook)
  *   - request_log row + Prometheus metrics
  *
- * Streaming is INTENTIONALLY out of scope for v0.10.0 (deferred to v0.11+).
- * Clients that pass `stream: true` get a clear 400 telling them to either drop
- * stream:true OR call /v1/chat/completions which fully supports streams.
+ * Phase 16 (v0.11.0 — RESS-01..05): streaming branch wired in. `stream: true`
+ * now emits Responses-API SSE via `canonicalToResponsesSse` — a different
+ * protocol vocabulary from chat-completions (P3-01 BLOCK; the translator never
+ * imports from openai-out.ts). The non-stream branch below is preserved
+ * byte-identical (P9-02 BLOCK). The streaming branch is a near-verbatim copy
+ * of chat-completions.ts:506-779 with two substitutions: translator
+ * (canonicalToOpenAISse → canonicalToResponsesSse) and route string.
+ *
+ * X-Cost-Cents header is NOT emitted on the streaming branch — SSE headers
+ * seal before tokens are known. Cost still lands in request_log.cost_cents
+ * (same as chat-completions stream). Mirrors orchestrator inline resolution #1.
  */
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from '@bram-dc/fastify-type-provider-zod';
@@ -58,10 +67,14 @@ import type { RegistryStore } from '../../config/registry.js';
 import type { AdapterFactory, BackendAdapter } from '../../backends/adapter.js';
 import type { BackendSemaphore } from '../../concurrency/semaphore.js';
 import { BackendSaturatedError } from '../../concurrency/semaphore.js';
+import { startHeartbeat } from '../../sse/heartbeat.js';
+import { canonicalToResponsesSse } from '../../translation/responses-stream.js';
 import {
   BreakerOpenError,
   CapabilityNotSupportedError,
+  NO_ENVELOPE,
   mapToHttpStatus,
+  toOpenAIErrorEnvelope,
 } from '../../errors/envelope.js';
 import { applyPreflight } from '../../dispatch/preflight.js';
 import type { CircuitBreaker } from '../../resilience/circuitBreaker.js';
@@ -74,7 +87,11 @@ import {
   type RecordRequestOutcome,
 } from '../../metrics/recordOutcome.js';
 import { computeCostCents } from '../../cost/computeCostCents.js';
-import type { CanonicalRequest, CanonicalResponse } from '../../translation/canonical.js';
+import type {
+  CanonicalRequest,
+  CanonicalResponse,
+  CanonicalStreamEvent,
+} from '../../translation/canonical.js';
 
 // ── Body schema ────────────────────────────────────────────────────────────────
 //
@@ -295,21 +312,12 @@ export function registerResponsesRoute(
     async (req, reply) => {
       const body = req.body;
 
-      // RESP-02 v0.10.0 limitation: streaming is in the v0.11 backlog. Reject
-      // BEFORE registry resolution so the request_log row has a clean error
-      // path and the client gets an actionable message.
-      if (body.stream === true) {
-        return reply.code(400).send({
-          error: {
-            message:
-              '/v1/responses streaming is not supported in v0.10.0. Drop stream:true ' +
-              'OR call /v1/chat/completions which fully supports streamed responses.',
-            type: 'invalid_request_error',
-            code: 'responses_stream_unsupported',
-            param: 'stream',
-          },
-        });
-      }
+      // Phase 16 (v0.11.0 — RESS-01): the previous v0.10.0 stream:true → 400
+      // rejection block was removed when streaming shipped. The stream:true
+      // path now lives below as a near-verbatim copy of chat-completions.ts's
+      // streaming branch with the translator swap (canonicalToOpenAISse →
+      // canonicalToResponsesSse) and the route-string swap. Non-stream wire
+      // shape is preserved byte-identical (P9-02 BLOCK).
 
       // Phase 15 (v0.11.0 — MCPS-01 / CONTEXT.md D-09): consolidated preflight.
       // applyPreflight runs resolve → applyPolicyGate → breaker.check in one
@@ -329,9 +337,16 @@ export function registerResponsesRoute(
       const adapter: BackendAdapter = opts.makeAdapter(entry);
       const canonical = responsesToCanonical(body, entry.backend_model);
 
+      // ── Phase 16 (RESS-05): unified AbortController + onClose wiring.
+      // CRITICAL: req.raw.socket.once NOT req.raw.once — see chat-completions.ts:251-265
+      // comment block for the full empirical justification (req.raw.once fires on body
+      // parse, not TCP close). The stopHeartbeat closure variable is wired through so
+      // the listener also clears the heartbeat when client disconnects mid-stream.
       const controller = new AbortController();
+      let stopHeartbeat: (() => void) | null = null;
       const onClose = (): void => {
         controller.abort(new Error('client-disconnect'));
+        stopHeartbeat?.();
       };
       const sock = req.raw.socket;
       if (sock) {
@@ -339,7 +354,7 @@ export function registerResponsesRoute(
       } else {
         req.log.warn(
           { url: req.url },
-          'responses: req.raw.socket undefined — abort propagation may not fire',
+          'stream: req.raw.socket undefined — abort propagation may not fire (HTTP/2 or inject?)',
         );
       }
 
@@ -365,6 +380,366 @@ export function registerResponsesRoute(
       const idempotencyKey = extractIdempotencyKey(req.headers);
       let idempotencyRole: 'leader' | 'follower' | undefined;
       let followerUpstreamMessageId: string | undefined;
+
+      // ────────────────────────────────────────────────────────────────────────
+      // Phase 16 (v0.11.0 — RESS-01..05): STREAMING BRANCH.
+      //
+      // Reachable ONLY after applyPreflight succeeds (resolve → policy gate →
+      // breaker check). Mirrors chat-completions.ts:506-779 with two
+      // substitutions: translator (canonicalToOpenAISse → canonicalToResponsesSse)
+      // and route string ('/v1/chat/completions' → '/v1/responses').
+      //
+      // X-Cost-Cents header is NOT emitted on this branch — SSE headers seal
+      // before tokens are known. Cost lands in request_log.cost_cents only.
+      // req.computedCostCents is NOT stamped on this branch (would no-op anyway
+      // since onSend runs synchronously inside reply.send() which never fires
+      // for streaming — but documenting the contract for clarity).
+      // ────────────────────────────────────────────────────────────────────────
+      if (body.stream === true) {
+        // Capability gate — chat surface (same check as non-stream branch).
+        // Fires BEFORE the adapter call; this branch has its own envelope path,
+        // intentional duplication to keep each branch self-contained.
+        if (!entry.capabilities.includes('chat')) {
+          req.raw.socket?.off('close', onClose);
+          throw new CapabilityNotSupportedError(entry.name, 'chat' as never);
+        }
+
+        let capturedUpstreamMessageId: string | undefined;
+
+        // ── Idempotency-Key handling (mirrors chat-completions.ts:349-497) ──
+        if (idempotencyKey && opts.idempotency) {
+          const acq = await opts.idempotency.acquire(idempotencyKey, req.id);
+          idempotencyRole = acq.role;
+          if (acq.role === 'follower') {
+            // ── STREAM FOLLOWER ──────────────────────────────────────────
+            // Pipe the multiplexer's iterator through the SAME translator the
+            // leader uses; wire output is byte-identical because both run the
+            // same canonicalToResponsesSse with the same displayModel + echo.
+            const followerHeartbeat = startHeartbeat(reply.raw);
+            stopHeartbeat = (): void => followerHeartbeat.stop();
+            const muxIter = opts.idempotency.awaitStreamResult(idempotencyKey, req.id);
+            let muxTerminal: 'done' | 'error' | 'aborted' | undefined;
+            const followerEvents: AsyncIterable<CanonicalStreamEvent> = {
+              async *[Symbol.asyncIterator](): AsyncGenerator<CanonicalStreamEvent> {
+                for await (const item of muxIter) {
+                  if (item.terminal !== undefined) {
+                    muxTerminal = item.terminal;
+                    return;
+                  }
+                  if (item.event !== undefined) {
+                    if ((item.event as CanonicalStreamEvent).type === 'message_start') {
+                      capturedUpstreamMessageId = (
+                        item.event as Extract<CanonicalStreamEvent, { type: 'message_start' }>
+                      ).message.id;
+                    }
+                    yield item.event as CanonicalStreamEvent;
+                  }
+                }
+              },
+            };
+            const followerSseCleanup = (final?: {
+              tokensIn: number;
+              tokensOut: number;
+              error?: Error;
+            }): void => {
+              followerHeartbeat.stop();
+              req.raw.socket?.off('close', onClose);
+              // Followers never acquired the semaphore — no safeRelease call.
+              const aborted = muxTerminal === 'aborted' || controller.signal.aborted;
+              const hasErr = final?.error !== undefined;
+              const errStatus = hasErr
+                ? mapToHttpStatus(final!.error)
+                : reply.statusCode;
+              const statusClass = aborted
+                ? 'disconnect'
+                : hasErr
+                  ? deriveStatusClass(errStatus, false)
+                  : deriveStatusClass(reply.statusCode, false);
+              const errorCode = aborted
+                ? 'client_disconnect'
+                : hasErr
+                  ? mapErrorToCode(final!.error)
+                  : undefined;
+              const costCents = hasErr
+                ? undefined
+                : computeCostCents({
+                    entry,
+                    tokensIn: final?.tokensIn,
+                    tokensOut: final?.tokensOut,
+                  }) ?? undefined;
+              safeRecord({
+                protocol: 'openai',
+                route: req.url.split('?')[0] ?? req.url,
+                backend: entry.backend,
+                model: entry.name,
+                statusClass,
+                httpStatus: errStatus,
+                durationMs: performance.now() - (req._t0 ?? performance.now()),
+                ttftMs: followerHeartbeat.msSinceStart,
+                tokensIn: final?.tokensIn,
+                tokensOut: final?.tokensOut,
+                errorCode,
+                errorMessage: hasErr ? final!.error!.message : undefined,
+                agentId: req.agentId,
+                tenantId: req.tenantId,
+                projectId: req.projectId,
+                workloadClass: req.workloadClass,
+                requestId: req.id,
+                upstreamMessageId: capturedUpstreamMessageId,
+                idempotencyKey,
+                costCents,
+                timestamp: new Date(),
+              });
+            };
+            try {
+              await reply.sse(
+                canonicalToResponsesSse(followerEvents, {
+                  signal: controller.signal,
+                  onCleanup: followerSseCleanup,
+                  displayModel: entry.name,
+                  echo: {
+                    instructions: body.instructions,
+                    temperature: body.temperature,
+                    max_output_tokens: body.max_output_tokens,
+                    tools: (body as { tools?: unknown[] }).tools,
+                    tool_choice: (body as { tool_choice?: unknown }).tool_choice,
+                  },
+                }),
+              );
+            } finally {
+              followerHeartbeat.stop();
+            }
+            if (controller.signal.aborted) {
+              req.log.info(
+                {
+                  url: req.url,
+                  bytesEmitted: followerHeartbeat.bytesSinceStart,
+                  msSinceStart: followerHeartbeat.msSinceStart,
+                },
+                'stream: client disconnected (follower)',
+              );
+            }
+            return;
+          }
+          // Leader role: fall through and execute the adapter call.
+        }
+
+        // ── Leader path ────────────────────────────────────────────────
+        // Semaphore acquire (cancellable on client-disconnect via controller.signal).
+        const semaphore = opts.semaphores.get(entry.backend);
+        try {
+          release = await semaphore.acquire(controller.signal);
+          released = false;
+        } catch (err) {
+          // BackendSaturatedError → centralized error handler stamps Retry-After + 429.
+          req.raw.socket?.off('close', onClose);
+          if (err instanceof BackendSaturatedError) {
+            void reply.header('Retry-After', String(Math.ceil(err.waitedMs / 1000)));
+          }
+          throw err;
+        }
+
+        // Pre-stream upstream call. If the adapter throws BEFORE the first
+        // canonical event yields, headers are still mutable — JSON envelope.
+        let upstream: AsyncIterable<CanonicalStreamEvent>;
+        try {
+          upstream = await adapter.chatCompletionsCanonicalStream(canonical, controller.signal);
+        } catch (err) {
+          void opts.breaker.recordFailure(entry.backend, err);
+          if (idempotencyKey && idempotencyRole === 'leader' && opts.idempotency) {
+            void opts.idempotency
+              .finalizeStream(idempotencyKey, 'error')
+              .catch((finalizeErr: unknown) => {
+                req.log.warn(
+                  { err: finalizeErr, idempotencyKey },
+                  'idempotency: finalizeStream(error) failed (leader pre-stream catch)',
+                );
+              });
+          }
+          req.raw.socket?.off('close', onClose);
+          safeRelease();
+          const env = toOpenAIErrorEnvelope(err);
+          const status = mapToHttpStatus(err);
+          const errInst = err instanceof Error ? err : new Error(String(err));
+          if (env === NO_ENVELOPE) {
+            safeRecord({
+              protocol: 'openai',
+              route: req.url.split('?')[0] ?? req.url,
+              backend: entry.backend,
+              model: entry.name,
+              statusClass: 'disconnect',
+              httpStatus: status,
+              durationMs: performance.now() - (req._t0 ?? performance.now()),
+              errorCode: 'client_disconnect',
+              errorMessage: errInst.message,
+              agentId: req.agentId,
+              tenantId: req.tenantId,
+              projectId: req.projectId,
+              workloadClass: req.workloadClass,
+              requestId: req.id,
+              idempotencyKey,
+              timestamp: new Date(),
+            });
+            return;
+          }
+          safeRecord({
+            protocol: 'openai',
+            route: req.url.split('?')[0] ?? req.url,
+            backend: entry.backend,
+            model: entry.name,
+            statusClass: deriveStatusClass(status, false),
+            httpStatus: status,
+            durationMs: performance.now() - (req._t0 ?? performance.now()),
+            errorCode: mapErrorToCode(err),
+            errorMessage: errInst.message,
+            agentId: req.agentId,
+            tenantId: req.tenantId,
+            projectId: req.projectId,
+            workloadClass: req.workloadClass,
+            requestId: req.id,
+            idempotencyKey,
+            timestamp: new Date(),
+          });
+          return reply.code(status).send(env);
+        }
+
+        // Leader idempotency mux wrap — each canonical event is fire-and-forget
+        // RPUSHed + PUBLISHed before being yielded to the SSE translator.
+        const upstreamWithMux: AsyncIterable<CanonicalStreamEvent> =
+          idempotencyKey && idempotencyRole === 'leader' && opts.idempotency
+            ? {
+                async *[Symbol.asyncIterator](): AsyncGenerator<CanonicalStreamEvent> {
+                  for await (const ev of upstream) {
+                    if (ev.type === 'message_start') {
+                      capturedUpstreamMessageId = ev.message.id;
+                    }
+                    void opts.idempotency!.publishStreamEvent(idempotencyKey, ev);
+                    yield ev;
+                  }
+                },
+              }
+            : {
+                async *[Symbol.asyncIterator](): AsyncGenerator<CanonicalStreamEvent> {
+                  for await (const ev of upstream) {
+                    if (ev.type === 'message_start') {
+                      capturedUpstreamMessageId = ev.message.id;
+                    }
+                    yield ev;
+                  }
+                },
+              };
+
+        const heartbeat = startHeartbeat(reply.raw);
+        stopHeartbeat = () => heartbeat.stop();
+
+        const sseCleanup = (final?: {
+          tokensIn: number;
+          tokensOut: number;
+          error?: Error;
+        }): void => {
+          heartbeat.stop();
+          req.raw.socket?.off('close', onClose);
+          safeRelease();
+          if (final?.error !== undefined) {
+            void opts.breaker.recordFailure(entry.backend, final.error);
+          } else {
+            void opts.breaker.recordSuccess(entry.backend);
+          }
+          if (idempotencyKey && idempotencyRole === 'leader' && opts.idempotency) {
+            const terminal: 'done' | 'error' | 'aborted' =
+              final?.error !== undefined
+                ? 'error'
+                : controller.signal.aborted
+                  ? 'aborted'
+                  : 'done';
+            void opts.idempotency
+              .finalizeStream(idempotencyKey, terminal, capturedUpstreamMessageId)
+              .catch((finalizeErr: unknown) => {
+                req.log.warn(
+                  { err: finalizeErr, idempotencyKey, terminal },
+                  'idempotency: finalizeStream failed (leader stream end)',
+                );
+              });
+          }
+          const hasUpstreamError = final?.error !== undefined;
+          const errStatus = hasUpstreamError
+            ? mapToHttpStatus(final!.error)
+            : reply.statusCode;
+          const statusClass = hasUpstreamError
+            ? deriveStatusClass(errStatus, false)
+            : deriveStatusClass(reply.statusCode, controller.signal.aborted);
+          const errorCode = hasUpstreamError
+            ? mapErrorToCode(final!.error)
+            : controller.signal.aborted
+              ? 'client_disconnect'
+              : undefined;
+          const errorMessage = hasUpstreamError ? final!.error!.message : undefined;
+          // Phase 16 (RESS-05): cost on the streaming path lands in
+          // request_log.cost_cents only — the X-Cost-Cents HEADER cannot be
+          // sent on streamed responses (SSE headers sealed before first chunk).
+          const costCents = hasUpstreamError
+            ? undefined
+            : computeCostCents({
+                entry,
+                tokensIn: final?.tokensIn,
+                tokensOut: final?.tokensOut,
+              }) ?? undefined;
+          safeRecord({
+            protocol: 'openai',
+            route: req.url.split('?')[0] ?? req.url,
+            backend: entry.backend,
+            model: entry.name,
+            statusClass,
+            httpStatus: errStatus,
+            durationMs: performance.now() - (req._t0 ?? performance.now()),
+            ttftMs: heartbeat.msSinceStart,
+            tokensIn: final?.tokensIn,
+            tokensOut: final?.tokensOut,
+            errorCode,
+            errorMessage,
+            agentId: req.agentId,
+            tenantId: req.tenantId,
+            projectId: req.projectId,
+            workloadClass: req.workloadClass,
+            requestId: req.id,
+            upstreamMessageId: capturedUpstreamMessageId,
+            idempotencyKey,
+            costCents,
+            timestamp: new Date(),
+          });
+        };
+
+        try {
+          await reply.sse(
+            canonicalToResponsesSse(upstreamWithMux, {
+              signal: controller.signal,
+              onCleanup: sseCleanup,
+              displayModel: entry.name,
+              echo: {
+                instructions: body.instructions,
+                temperature: body.temperature,
+                max_output_tokens: body.max_output_tokens,
+                tools: (body as { tools?: unknown[] }).tools,
+                tool_choice: (body as { tool_choice?: unknown }).tool_choice,
+              },
+            }),
+          );
+        } finally {
+          heartbeat.stop();
+        }
+
+        if (controller.signal.aborted) {
+          req.log.info(
+            {
+              url: req.url,
+              bytesEmitted: heartbeat.bytesSinceStart,
+              msSinceStart: heartbeat.msSinceStart,
+            },
+            'stream: client disconnected (leader)',
+          );
+        }
+        return;
+      }
 
       try {
         // RESP-04 — capability gate. Responses requires chat (it's a chat
