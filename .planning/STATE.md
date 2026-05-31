@@ -3,20 +3,23 @@ gsd_state_version: 1.0
 milestone: v0.11.0
 milestone_name: Retrieval-Ready Infrastructure
 status: executing
-last_updated: "2026-05-31T06:15:16Z"
+last_updated: "2026-05-31T20:21:15.119Z"
 last_activity: 2026-05-31
 progress:
   total_phases: 6
-  completed_phases: 1
-  total_plans: 21
-  completed_plans: 21
-  percent: 18
+  completed_phases: 2
+  total_plans: 25
+  completed_plans: 22
+  percent: 33
 ---
 
 # Project State: local-llms
 
-**Last Updated:** 2026-05-31 — Phase 15 COMPLETE (Plan 15-12 — final wrap-up shipped). Golden snapshot drift gate (P1-03): router/tests/golden/mcp-tools-manifest.json + tools-manifest drift test locks the exact tools/list shape for all 5 tools — any schema change surfaces as CI failure unless `UPDATE_GOLDEN=1` regenerates. MCPS-05 SIGTERM cleanup integration test (3 tests) proves app.close() with a wedged-transport simulation completes within ~5s + gauge → 0 + warn line "5s timeout" fires. D-15 disabled-mode integration test (4 tests) verifies `MCP_ENABLED=false` → /mcp returns 404 + no regression on /v1/*. bin/smoke-test-router.sh extended with MCP-01..03 section (initialize + bearer 401 + tools/call list_models). DEPLOY.md gains `## MCP Host (Phase 15 — v0.11.0)` section (5 tools table, streaming caveat, env vars, n8n integration, observability surfaces, scoped IDs, verification matrix). README.md feature list mentions MCP host. MCPS-06 stdio grep gate locked in as vitest unit test (StdioServerTransport + StdioClientTransport both proven absent from router/src/). Full vitest run: 949 passed / 7 skipped / 0 failed across 95 test files (single-fork to avoid pre-existing fs.watchFile flake under CPU contention). typecheck green. All 6 MCPS requirements complete. v0.11.0 progress: 2/6 phases + 12/12 Phase-15 plans complete.
-**Status:** Ready to execute
+**Last Updated:** 2026-05-31 — Phase 16 Plan 16-01 SHIPPED (Wave 0 scaffold). 10 files landed (0 production-code touched): translator unit-suite skeleton (`router/tests/translation/responses-stream.test.ts`, 28 it.todo stubs across 6 describe blocks) + 6 golden-fixture placeholders (`router/tests/translation/golden/responses-stream/01..06-*.json`, locked shape `{ name, description, opts, canonical_events: [], expected_sse: [] }`) + route integration-suite skeleton (`router/tests/routes/responses-stream.test.ts`, 15 it.todo R1..R15 across 4 describes) + P9-02 regression fixture placeholder (`router/tests/routes/golden/responses-nonstream-v0.10.0.json`, `__placeholder: true` flag) + README documenting the new route-level golden convention. Wave-end gate green: translator suite exits non-zero on intentional missing-import signal (`canonicalToResponsesSse` path doesn't resolve yet — Plan 16-02 lands the translator), route suite reports 15 todo skipped (no failed assertions), all 7 JSON files parse, `git diff router/src/` empty. Establishes `tests/routes/golden/` as a NEW directory convention (first route-level golden snapshot in the repo). Phase 16 plan progress: 1/4.
+
+(Previous: 2026-05-31 — Phase 15 COMPLETE (Plan 15-12 — final wrap-up shipped). Full vitest run: 949 passed / 7 skipped / 0 failed across 95 test files; typecheck green; all 6 MCPS requirements complete. v0.11.0 progress: 2/6 phases + 12/12 Phase-15 plans + 1/4 Phase-16 plans.)
+
+**Status:** Phase 16 in progress (Plan 16-01 shipped, 16-02 next)
 
 ## Project Reference
 
@@ -24,22 +27,22 @@ progress:
 
 **Strategic frame (binding):** "Retrieval Interfaces, not Retrieval Logic" · "Memory Abstraction Layer, not Memory implementation" · local-llms = infraestructura; RAG/KB = consumidor downstream.
 
-**Current Focus:** Phase 16 — `/v1/responses` streaming + tool calls (next)
+**Current Focus:** Phase 16 — `/v1/responses` streaming + tool calls (in progress: Plan 16-01 shipped, 16-02 next)
 
 ## Current Position
 
-Phase: 15 → 16 (Phase 15 SHIPPED 2026-05-31; next phase is 16)
-Plan: 12/12 complete (15-01..15-12). Phase 15 final gate: vitest 949/0/7 (single-fork) + typecheck clean + all 6 MCPS requirements verified + 4 grep gates green.
-Status: Ready to execute
+Phase: 16 (Phase 15 SHIPPED 2026-05-31; Phase 16 in progress)
+Plan: 1/4 complete (16-01 — Wave 0 scaffold shipped 2026-05-31). Next: 16-02 (translator + FSM + populated golden fixtures).
+Status: In progress
 Last activity: 2026-05-31
 
 ### Progress
 
 ```
-Milestone v0.11.0: ███▓░░░░░░ 33% — Phase 14 + Phase 15 shipped (POL-01..06 + MCPS-01..06)
+Milestone v0.11.0: ███▓░░░░░░ 33% — Phase 14 + Phase 15 shipped (POL-01..06 + MCPS-01..06); Phase 16 1/4 plans
   Phase 14: ██████████ Policy Primitives + Tenant/Project ID Foundation (POL-01..06) — SHIPPED 2026-05-30
   Phase 15: ██████████ MCP Host (MCPS-01..06) — SHIPPED 2026-05-31 (all 12 plans + final gate green: golden snapshot drift gate, SIGTERM 5s race, D-15 disabled-mode, smoke section, DEPLOY+README docs, MCPS-06 stdio grep gate)
-  Phase 16: ░░░░░░░░░░ /v1/responses Streaming + Tool Calls (RESS-01..05)
+  Phase 16: ██▓░░░░░░░ /v1/responses Streaming + Tool Calls (RESS-01..05) — 1/4 plans (16-01 Wave-0 scaffold shipped)
   Phase 17: ░░░░░░░░░░ SessionStore + ContextProvider + SummaryProvider (SESS-01..06 + CTXP-01..04 + SUMP-01..03)
   Phase 18: ░░░░░░░░░░ MCP Client + RetrieverProvider + Pre-Completion Hook (MCPC-01..06 + RETR-01..06)
   Phase 19: ░░░░░░░░░░ EmbeddingProvider Formalization + Observability Hardening (EMBP-01..02 + OBSV-01..04)
@@ -78,6 +81,7 @@ Milestone v0.9.0:  ██████████ 100% — SHIPPED 2026-05-28 (a
 
 ### Active Decisions
 
+- **Plan 16-01 Wave-0 scaffold conventions (Phase 16)**: (a) translator unit-suite imports `canonicalToResponsesSse` from a path that does not yet exist — intentional Wave-0 signal that the verification harness predates the code; vitest exits non-zero with "Cannot find module" rather than silently skipping. Plan 16-02 makes the import resolve. (b) Golden fixtures land with empty `canonical_events: []` and `expected_sse: []`; Plan 16-02 captures the live translator output and fills them in (avoids hard-coding placeholder values that would become a maintenance trap). (c) NEW directory convention: `router/tests/routes/golden/<scenario>.json` for captured wire-body snapshots; first instance is the P9-02 regression fixture (`responses-nonstream-v0.10.0.json`) with explicit `__placeholder: true` sentinel so Plan 16-04 can assert "not still a placeholder" as part of phase wrap-up (T-16-01-T mitigation). (d) Route integration suite imports `buildApp` + registry helpers + bearer constants eagerly and `void`s them — Plan 16-03 deletes the voids when `beforeEach` + assertions land (no import churn). (e) Every `it.todo` string is the exact test-matrix case name so Plans 16-02/16-03 flip todo → real test with zero rename churn.
 - **Plan 15-01 path corrections**: router/ uses npm (package-lock.json present, no pnpm-lock.yaml) — `npm install` not `pnpm install`. Env tests append to `router/tests/config/env.test.ts` (canonical) not `router/tests/unit/config/env.test.ts` (plan path, nonexistent). `.env.example` lives at repo root not `router/.env.example` — appending to root preserves single operator surface alongside CIRCUIT_*, ROUTER_RATE_LIMIT_RPM, ROUTER_EMBED_CACHE_TTL_SEC.
 - **MCP_ENABLED z.coerce.boolean quirk documented**: Zod v4 z.coerce.boolean() delegates to Boolean(value); any non-empty string is truthy. Operators disable by unsetting var (or `MCP_ENABLED=`). Documented inline in env.ts + .env.example so `MCP_ENABLED=false` doesn't silently leave plugin enabled.
 - **applyPreflight Option A sentinel return (Phase 15 / Plan 15-02)**: helper RETURNS breakerState rather than throwing, so HTTP callers stamp Retry-After before raising BreakerOpenError while MCP tool handlers throw without setting any header. Single helper for both protocols; protocol-agnostic.
@@ -106,4 +110,8 @@ Milestone v0.9.0:  ██████████ 100% — SHIPPED 2026-05-28 (a
 
 ### Active Todos
 
-- `/gsd:execute-phase 15` — Phase 15 execution: Waves 1..5 complete (15-01..15-10) + Wave 6 task 1 complete (15-11). Wave 6 remaining: 15-12 (final phase wrap-up). MCPS-01..05 closed end-to-end through the MCP wire; MCPS-03/04 verified via the integration suite's 5-tool golden set + tools/call round-trips; MCPS-05 verified via /metrics integration tests (gauge + counter live values + POL-06 invariant); HTTP and MCP surfaces now share a single projection lens (D-10/D-11).
+- `/gsd:execute-phase 16` — Phase 16 execution: Plan 16-01 SHIPPED (Wave 0 scaffold). Next: Plan 16-02 (canonicalToResponsesSse translator + OutputItemStateMachine FSM + 25 unit tests + 6 populated golden fixtures). Remaining: 16-02 → 16-03 (route streaming branch + RESS-01..05 integration tests) → 16-04 (P9-02 byte-identical golden lockdown + P3-04 heartbeat grep gate + smoke RESS section + STATE/ROADMAP wrap-up).
+
+### Last session
+
+- 2026-05-31T20:19:20Z — Stopped at: Completed 16-01-PLAN.md. Resume file: None.
