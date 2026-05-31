@@ -1,0 +1,7 @@
+{
+  "name": "06-aborted-mid-stream",
+  "description": "signal.aborted — no terminator frame emitted (matches openai-out.ts:436-439)",
+  "opts": { "idOverride": "resp_FIXED", "displayModel": "chat-local" },
+  "canonical_events": [],
+  "expected_sse": []
+}

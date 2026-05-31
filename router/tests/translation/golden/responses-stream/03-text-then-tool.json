@@ -1,0 +1,7 @@
+{
+  "name": "03-text-then-tool",
+  "description": "Text item then function_call item — FSM correctness gate (P3-02)",
+  "opts": { "idOverride": "resp_FIXED", "displayModel": "chat-local" },
+  "canonical_events": [],
+  "expected_sse": []
+}

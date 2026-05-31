@@ -1,0 +1,7 @@
+{
+  "name": "04-multi-delta-text",
+  "description": "N=5+ text deltas — sequence_number monotonicity stress (RESS-02)",
+  "opts": { "idOverride": "resp_FIXED", "displayModel": "chat-local" },
+  "canonical_events": [],
+  "expected_sse": []
+}

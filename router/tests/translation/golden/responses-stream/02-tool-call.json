@@ -1,0 +1,7 @@
+{
+  "name": "02-tool-call",
+  "description": "Single function_call — RESS-03 happy path; emits incomplete + tool_calls",
+  "opts": { "idOverride": "resp_FIXED", "displayModel": "chat-local" },
+  "canonical_events": [],
+  "expected_sse": []
+}

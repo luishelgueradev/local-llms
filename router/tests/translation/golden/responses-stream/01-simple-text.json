@@ -1,0 +1,7 @@
+{
+  "name": "01-simple-text",
+  "description": "3-delta text-only stream — RESS-01 + RESS-02 happy path",
+  "opts": { "idOverride": "resp_FIXED", "displayModel": "chat-local" },
+  "canonical_events": [],
+  "expected_sse": []
+}

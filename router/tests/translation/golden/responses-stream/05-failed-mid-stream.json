@@ -1,0 +1,7 @@
+{
+  "name": "05-failed-mid-stream",
+  "description": "Upstream throws after message_start — response.failed terminator (P3-03)",
+  "opts": { "idOverride": "resp_FIXED", "displayModel": "chat-local" },
+  "canonical_events": [],
+  "expected_sse": []
+}
