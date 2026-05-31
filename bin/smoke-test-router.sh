@@ -586,8 +586,22 @@ else:
     fail "/readyz body shape wrong; body=${READYZ_BODY}"
   fi
 
+  # Pre-warm (Phase 15.1 housekeeping fix for the Phase 3.A cold-load flake):
+  # `docker compose --profile ollama up` boots ollama with the cold runtime
+  # (no model in VRAM). The first chat request would trigger a 60-120s cold
+  # load on shared-GPU WSL2 — even though the router now allows up to 5 min
+  # (ROUTER_BACKEND_TIMEOUT_MS), the network plumbing of `up -d --wait` +
+  # container-network re-bind sometimes drops the first connection on the
+  # host port. A 1-token warmup inside the ollama container preloads the
+  # model into VRAM so A4 below tests the steady-state path, not the cold-
+  # start. Failure here is non-fatal: A4 still asserts the contract; the
+  # warmup is belt-and-braces.
+  docker compose exec -T ollama ollama run llama3.2:3b-instruct-q4_K_M "hi" \
+    >/dev/null 2>&1 || \
+    echo "[smoke-test-router] WARN: Phase 3.A pre-warm best-effort skipped (container exec failed or model already warm)"
+
   # Assertion A4 (SC1 -- half 1): POST /v1/chat/completions with the ollama model serves tokens
-  CHAT_BODY=$(curl -sf -X POST \
+  CHAT_BODY=$(curl -sf --max-time 240 -X POST \
     -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
     -H "Content-Type: application/json" \
     -d '{"model":"llama3.2:3b-instruct-q4_K_M","messages":[{"role":"user","content":"Say hello in exactly two words"}],"stream":false,"max_tokens":20}' \
@@ -604,7 +618,10 @@ sys.exit(0 if isinstance(content, str) and len(content) > 0 else 1)
   fi
 
   # Assertion A5: POST /v1/chat/completions to the llamacpp model returns 4xx/5xx (its backend is down)
-  CHAT_LLAMACPP_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+  # --connect-timeout + --max-time so a transient host-port iptables flap right
+  # after A4 surfaces as a curl error (000) rather than hanging the assertion.
+  # The router is expected to return 5xx fast (the llamacpp probe is already down).
+  CHAT_LLAMACPP_CODE=$(curl -s --connect-timeout 10 --max-time 30 -o /dev/null -w '%{http_code}' -X POST \
     -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
     -H "Content-Type: application/json" \
     -d '{"model":"qwen2.5-7b-instruct-q4km","messages":[{"role":"user","content":"hi"}],"stream":false,"max_tokens":5}' \
@@ -737,7 +754,19 @@ else:
       # reliable on all hosts where CUDA initialized successfully (including WSL2).
       # The \1 backreference enforces that ALL layers were offloaded (N/N), so a partial
       # CPU fallback like '15/29 layers' correctly fails this check.
-      if docker compose --profile llamacpp logs llamacpp 2>/dev/null | grep -qE 'load_tensors: offloaded ([1-9][0-9]*)/\1 layers to GPU'; then
+      # Docker log buffering can lag a few seconds after the model finishes
+      # loading — the SC1 chat assertion above already proved the model is
+      # serving, so the `load_tensors: offloaded N/N` line MUST be in the log
+      # eventually; just retry 3× with 2s backoff (race-safe under WSL2 +
+      # cold-start).
+      OFFLOAD_FOUND=0
+      for _attempt in 1 2 3; do
+        if docker compose --profile llamacpp logs llamacpp 2>/dev/null | grep -qE 'load_tensors: offloaded ([1-9][0-9]*)/\1 layers to GPU'; then
+          OFFLOAD_FOUND=1; break
+        fi
+        sleep 2
+      done
+      if [[ "${OFFLOAD_FOUND}" == "1" ]]; then
         pass "llamacpp logs confirm full GPU offload (load_tensors N/N layers to GPU) -- BCKND-02 via log-parse (WSL2 path)"
       else
         fail "could not verify llamacpp GPU residency via nvidia-smi or log-parse (BCKND-02)"
