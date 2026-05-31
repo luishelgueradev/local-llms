@@ -61,7 +61,13 @@ export type StatusClass = 'success' | 'client_error' | 'server_error' | 'disconn
  * - timestamp — new Date() at call site (tested with deterministic values)
  */
 export interface OutcomeContext {
-  protocol: 'openai' | 'anthropic';
+  // Phase 15 (v0.11.0 — MCPS-05 / CONTEXT D-07 / RESEARCH Pitfall 7): widened to
+  // include 'mcp' so Wave 4 tool handlers push request_log rows + prom-client
+  // observations under `protocol: 'mcp'` without `as any` casts. The
+  // `request_log.protocol` column is TEXT NOT NULL with no CHECK constraint, so
+  // 'mcp' writes cleanly (no migration). prom-client Counter `.inc({ protocol: 'mcp', ... })`
+  // accepts any string value for the `protocol` label.
+  protocol: 'openai' | 'anthropic' | 'mcp';
   route: string;
   backend: string;
   model: string;
