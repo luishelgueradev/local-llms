@@ -16,6 +16,9 @@
  *   7. Unknown model → 404.
  */
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
+import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../../src/app.js';
 import {
@@ -366,5 +369,77 @@ describe('POST /v1/responses — cost on chat-completions parity (COST-02 cross-
     });
     expect(res.statusCode).toBe(200);
     expect(res.headers['x-cost-cents']).toBe('0.0003');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 16 Plan 16-04 — P9-02 BLOCK: byte-identical non-stream golden snapshot.
+//
+// Determinism strategy (Rule-1 deviation from plan-as-written):
+//
+//   The plan suggested vi.useFakeTimers() + vi.setSystemTime(new Date(0)) so
+//   `created_at: Math.floor(Date.now()/1000)` resolves to 0 inside the route
+//   handler. In practice that freezes Fastify's internal timers and causes
+//   `app.inject` to hang (same root cause as the R4 heartbeat deferral in
+//   responses-stream.test.ts). Mirrors the Plan 16-02 post-capture-scrub
+//   approach (see STATE.md "Plan 16-02 translator landed" entry).
+//
+//   Solution: post-capture normalization. The only non-deterministic field in
+//   the non-stream body is `created_at` (Date.now()); the fake adapter returns
+//   a static `id: 'msg_01TESTRESPID'` so `responseId` and `outputId` are
+//   already stable. Capture the body, replace `created_at` with the sentinel
+//   `0` before write/compare, and any drift in canonicalToResponses still
+//   fails the deep `toEqual`.
+//
+// Regenerate via:
+//   cd router && UPDATE_GOLDEN=1 npx vitest run tests/routes/responses.test.ts -t "P9-02"
+//
+// Any future edit to canonicalToResponses that mutates the wire shape will
+// fail this test on the next CI run, surfacing the regression at the source.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('POST /v1/responses — P9-02 byte-identical golden snapshot (Phase 16 Plan 16-04)', () => {
+  it('non-stream /v1/responses body matches the locked v0.10.0 golden snapshot (P9-02 BLOCK)', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/responses',
+      headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
+      payload: { model: LOCAL_CHAT, input: 'hola' },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+
+    // Sanity: the only field expected to drift between runs is created_at.
+    // Confirm it's a number before we scrub it (catches a regression where
+    // the route stops emitting created_at at all).
+    expect(typeof body.created_at).toBe('number');
+    const bodyForGolden = { ...body, created_at: 0 };
+
+    const __filename = fileURLToPath(import.meta.url);
+    const __dirname = dirname(__filename);
+    const goldenPath = resolve(__dirname, 'golden/responses-nonstream-v0.10.0.json');
+
+    if (process.env.UPDATE_GOLDEN === '1') {
+      writeFileSync(goldenPath, JSON.stringify(bodyForGolden, null, 2) + '\n');
+      // Re-read so the assertion below validates the just-written file is parseable.
+      const written = JSON.parse(readFileSync(goldenPath, 'utf8'));
+      expect(written).toEqual(bodyForGolden);
+      return;
+    }
+
+    if (!existsSync(goldenPath)) {
+      throw new Error(
+        `P9-02 golden missing at ${goldenPath}. ` +
+          `Regenerate via: cd router && UPDATE_GOLDEN=1 npx vitest run tests/routes/responses.test.ts -t "P9-02"`,
+      );
+    }
+    const golden = JSON.parse(readFileSync(goldenPath, 'utf8'));
+    if (golden.__placeholder === true) {
+      throw new Error(
+        `P9-02 golden is still a placeholder at ${goldenPath}. ` +
+          `Regenerate via: cd router && UPDATE_GOLDEN=1 npx vitest run tests/routes/responses.test.ts -t "P9-02"`,
+      );
+    }
+    // Byte-identical wire-body lockdown. Any drift in canonicalToResponses fails here.
+    expect(bodyForGolden).toEqual(golden);
   });
 });

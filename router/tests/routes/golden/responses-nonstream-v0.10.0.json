@@ -1,11 +1,57 @@
 {
-  "__placeholder": true,
-  "__description": "P9-02 regression fixture — v0.10.0 non-streaming /v1/responses wire body. Captured by Plan 16-04 once Phase 16 stream branch lands and the existing non-stream test runs with deterministic ids (vi.setSystemTime(new Date(0)) + opts.idOverride). DO NOT EDIT BY HAND — regenerate via UPDATE_GOLDEN=1.",
-  "id": "<filled-in-plan-16-04>",
+  "id": "msg_01TESTRESPID",
   "object": "response",
   "created_at": 0,
   "status": "completed",
-  "model": "<filled-in-plan-16-04>",
-  "output": [],
-  "usage": null
+  "error": null,
+  "incomplete_details": null,
+  "instructions": null,
+  "max_output_tokens": null,
+  "model": "qwen2.5-local",
+  "output": [
+    {
+      "type": "message",
+      "id": "msg_01TESTRESPID",
+      "status": "completed",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "hello from fake",
+          "annotations": []
+        }
+      ]
+    }
+  ],
+  "parallel_tool_calls": true,
+  "previous_response_id": null,
+  "reasoning": {
+    "effort": null,
+    "summary": null
+  },
+  "store": false,
+  "temperature": null,
+  "text": {
+    "format": {
+      "type": "text"
+    }
+  },
+  "tool_choice": "auto",
+  "tools": [],
+  "top_p": null,
+  "truncation": "disabled",
+  "usage": {
+    "input_tokens": 12,
+    "input_tokens_details": {
+      "cached_tokens": 0
+    },
+    "output_tokens": 6,
+    "output_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "total_tokens": 18
+  },
+  "user": null,
+  "metadata": {},
+  "output_text": "hello from fake"
 }
