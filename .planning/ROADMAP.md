@@ -106,8 +106,8 @@
 4. When the router receives `SIGTERM`, all active MCP sessions are closed cleanly within 5 seconds (verified by integration test triggering shutdown and asserting no leaked session entries in the session map).
 5. The `router_mcp_active_sessions` Prometheus gauge is present in `/metrics` output and reflects the current session count (0 when no MCP clients are connected).
 
-**Plans:** 1/12 plans executed
-- [ ] 15-01-PLAN.md — Install @modelcontextprotocol/sdk@^1.29.0 + extend EnvSchema with MCP_ENABLED/MCP_SESSION_TTL_SEC/MCP_GC_INTERVAL_MS [MCPS-01]
+**Plans:** 2/12 plans executed
+- [x] 15-01-PLAN.md — Install @modelcontextprotocol/sdk@^1.29.0 + extend EnvSchema with MCP_ENABLED/MCP_SESSION_TTL_SEC/MCP_GC_INTERVAL_MS [MCPS-01]
 - [x] 15-02-PLAN.md — applyPreflight helper (resolve + gate + breaker) + unit-test matrix [MCPS-01]
 - [ ] 15-03-PLAN.md — Refactor 5 HTTP routes to call applyPreflight (chat/messages/embeddings/rerank/responses) [MCPS-01]
 - [ ] 15-04-PLAN.md — router_mcp_tool_calls_total counter + router_mcp_active_sessions gauge + widen OutcomeContext.protocol union to include 'mcp' [MCPS-05]
@@ -242,7 +242,7 @@
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 14. Policy Primitives + Tenant ID Foundation | 9/9 | Complete    | 2026-05-30 |
-| 15. MCP Host (Router as MCP Server) | 1/12 | In Progress|  |
+| 15. MCP Host (Router as MCP Server) | 2/12 | In Progress|  |
 | 16. /v1/responses Streaming + Tool Calls | 0/TBD | Not started | - |
 | 17. SessionStore + ContextProvider + SummaryProvider | 0/TBD | Not started | - |
 | 18. MCP Client + RetrieverProvider + Pre-Completion Hook | 0/TBD | Not started | - |

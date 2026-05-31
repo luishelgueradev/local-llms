@@ -3,20 +3,20 @@ gsd_state_version: 1.0
 milestone: v0.11.0
 milestone_name: Retrieval-Ready Infrastructure
 status: executing
-last_updated: "2026-05-31T04:04:04Z"
-last_activity: 2026-05-31 — Phase 15 Plan 02 shipped (applyPreflight helper + 7-test matrix; MCPS-01)
+last_updated: "2026-05-31T04:50:43.268Z"
+last_activity: 2026-05-31
 progress:
   total_phases: 6
   completed_phases: 1
   total_plans: 21
-  completed_plans: 10
+  completed_plans: 11
   percent: 17
 ---
 
 # Project State: local-llms
 
 **Last Updated:** 2026-05-31 — Phase 15 Plan 02 shipped (applyPreflight helper + 7-test unit matrix). v0.11.0 progress: 1/6 phases + 2/12 Phase-15 plans complete.
-**Status:** Executing Phase 15 (mcp host — router as mcp server)
+**Status:** Ready to execute
 
 ## Project Reference
 
@@ -29,9 +29,9 @@ progress:
 ## Current Position
 
 Phase: 15
-Plan: 02 of 12 complete (15-01 EnvSchema widening; 15-02 applyPreflight helper) — 15-03 next
-Status: Executing Phase 15 (Wave 1 in progress — 2/2 plans done, ready for Wave 2)
-Last activity: 2026-05-31 — Phase 15 Plan 02 shipped (applyPreflight helper + 7-test matrix; MCPS-01)
+Plan: 3 of 12 complete (15-01 EnvSchema widening; 15-02 applyPreflight helper) — 15-03 next
+Status: Ready to execute
+Last activity: 2026-05-31
 
 ### Progress
 
@@ -78,6 +78,8 @@ Milestone v0.9.0:  ██████████ 100% — SHIPPED 2026-05-28 (a
 
 ### Active Decisions
 
+- **Plan 15-01 path corrections**: router/ uses npm (package-lock.json present, no pnpm-lock.yaml) — `npm install` not `pnpm install`. Env tests append to `router/tests/config/env.test.ts` (canonical) not `router/tests/unit/config/env.test.ts` (plan path, nonexistent). `.env.example` lives at repo root not `router/.env.example` — appending to root preserves single operator surface alongside CIRCUIT_*, ROUTER_RATE_LIMIT_RPM, ROUTER_EMBED_CACHE_TTL_SEC.
+- **MCP_ENABLED z.coerce.boolean quirk documented**: Zod v4 z.coerce.boolean() delegates to Boolean(value); any non-empty string is truthy. Operators disable by unsetting var (or `MCP_ENABLED=`). Documented inline in env.ts + .env.example so `MCP_ENABLED=false` doesn't silently leave plugin enabled.
 - **applyPreflight Option A sentinel return (Phase 15 / Plan 15-02)**: helper RETURNS breakerState rather than throwing, so HTTP callers stamp Retry-After before raising BreakerOpenError while MCP tool handlers throw without setting any header. Single helper for both protocols; protocol-agnostic.
 - **applyPreflight lives at router/src/dispatch/preflight.ts (Phase 15 / Plan 15-02)**: D-09 left dir to planner's discretion; chose `dispatch/` (not `policy/`) because pipeline includes resilience/breaker step, not just policy.
 - Migration numbering: Phase 14 gets next sequential number after 0004 (existing) — must read `_journal.json` as first task of Phase 14 plan
