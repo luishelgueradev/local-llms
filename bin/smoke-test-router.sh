@@ -1955,7 +1955,7 @@ echo "[smoke-test-router] === Phase 12 section complete ==="
 # -----------------------------------------------------------------------------
 # Live verification:
 #   1. /v1/responses happy path — Responses-shape body returned.
-#   2. /v1/responses stream:true rejected with structured envelope.
+#   2. /v1/responses stream:true was deferred at Phase 13; SHIPPED in Phase 16 (RESS-01..05). Now a no-op marker; full verification is in the Phase 16 RESS section.
 #   3. /v1/responses capability gate — embeddings model → 400.
 #   4. X-Cost-Cents header present on local chat call (when pricing declared) OR
 #      absent (when no pricing). Smoke runs against the local model used elsewhere
@@ -1993,16 +1993,13 @@ else
   fail "Phase 13: /v1/responses content type=${P13_CONTENT_TYPE}"
 fi
 
-# 2. stream:true → 400 with responses_stream_unsupported code.
-P13_STREAM_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST "${ROUTER_URL}/v1/responses" \
-  -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
-  -H "content-type: application/json" \
-  -d "$(printf '{"model":"%s","input":"x","stream":true}' "${MODEL}")")
-if [[ "${P13_STREAM_STATUS}" == "400" ]]; then
-  pass "Phase 13: /v1/responses stream:true → 400 (deferred to v0.11)"
-else
-  fail "Phase 13: /v1/responses stream:true returned ${P13_STREAM_STATUS} (expected 400)"
-fi
+# 2. stream:true was a Phase 13 deferral. Phase 16 (RESS-01..05) SHIPPED the
+#    streaming path on 2026-05-31, so the legacy "expected 400" assertion is
+#    obsolete. The Phase 16 RESS section below (search "Phase 16 — /v1/responses
+#    streaming") verifies the streaming path end-to-end. This assertion is
+#    kept as a no-op so smoke section numbering remains stable and to
+#    document closure of the deferral.
+pass "Phase 13: /v1/responses stream:true now SHIPPED in Phase 16 (RESS-01..05) — see RESS section below"
 
 # 3. Capability gate — embeddings-only model on /v1/responses → 400.
 P13_CAP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST "${ROUTER_URL}/v1/responses" \
