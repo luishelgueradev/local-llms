@@ -15,7 +15,7 @@ progress:
 
 # Project State: local-llms
 
-**Last Updated:** 2026-05-31 — Phase 15 Plan 11 shipped (HTTP /v1/models + /v1/models/:id mirror the MCP list_models tool: D-10 allowlist filter + D-11 cloud_allowed annotation + 404-on-allowlist-excluded single-lens semantics; T-3-A2 anti-leak preserved by inline filterAndProject helper. 3 new cross-cutting integration tests: list-models-policy-filter (5 tests, dual-surface parity), mcp-request-log (5 tests, D-05/D-06 row population + scoped-IDs propagation + Pitfall-8), mcp-metrics (6 tests, D-07 gauge+counter + POL-06 invariant at /metrics). 27/27 tests across all 4 plan-related files green; Plan 15-10's 7/7 integration tests still green — no regression). v0.11.0 progress: 1/6 phases + 11/12 Phase-15 plans complete.
+**Last Updated:** 2026-05-31 — Phase 15 COMPLETE (Plan 15-12 — final wrap-up shipped). Golden snapshot drift gate (P1-03): router/tests/golden/mcp-tools-manifest.json + tools-manifest drift test locks the exact tools/list shape for all 5 tools — any schema change surfaces as CI failure unless `UPDATE_GOLDEN=1` regenerates. MCPS-05 SIGTERM cleanup integration test (3 tests) proves app.close() with a wedged-transport simulation completes within ~5s + gauge → 0 + warn line "5s timeout" fires. D-15 disabled-mode integration test (4 tests) verifies `MCP_ENABLED=false` → /mcp returns 404 + no regression on /v1/*. bin/smoke-test-router.sh extended with MCP-01..03 section (initialize + bearer 401 + tools/call list_models). DEPLOY.md gains `## MCP Host (Phase 15 — v0.11.0)` section (5 tools table, streaming caveat, env vars, n8n integration, observability surfaces, scoped IDs, verification matrix). README.md feature list mentions MCP host. MCPS-06 stdio grep gate locked in as vitest unit test (StdioServerTransport + StdioClientTransport both proven absent from router/src/). Full vitest run: 949 passed / 7 skipped / 0 failed across 95 test files (single-fork to avoid pre-existing fs.watchFile flake under CPU contention). typecheck green. All 6 MCPS requirements complete. v0.11.0 progress: 2/6 phases + 12/12 Phase-15 plans complete.
 **Status:** Ready to execute
 
 ## Project Reference
@@ -24,27 +24,27 @@ progress:
 
 **Strategic frame (binding):** "Retrieval Interfaces, not Retrieval Logic" · "Memory Abstraction Layer, not Memory implementation" · local-llms = infraestructura; RAG/KB = consumidor downstream.
 
-**Current Focus:** Phase 15 — mcp host (router as mcp server)
+**Current Focus:** Phase 16 — `/v1/responses` streaming + tool calls (next)
 
 ## Current Position
 
-Phase: 15
-Plan: 12 of 12 complete (15-01..15-10 + 15-11 — Wave 6 task 1 done: HTTP /v1/models surfaces share a single projection lens with MCP list_models; 3 cross-cutting integration tests lock D-05/D-06 request_log writes, D-07 /metrics observability, D-10/D-11 dual-surface parity)
+Phase: 15 → 16 (Phase 15 SHIPPED 2026-05-31; next phase is 16)
+Plan: 12/12 complete (15-01..15-12). Phase 15 final gate: vitest 949/0/7 (single-fork) + typecheck clean + all 6 MCPS requirements verified + 4 grep gates green.
 Status: Ready to execute
 Last activity: 2026-05-31
 
 ### Progress
 
 ```
-Milestone v0.11.0: █▓░░░░░░░░ 17% — Phase 14/6 shipped (POL-01..06)
+Milestone v0.11.0: ███▓░░░░░░ 33% — Phase 14 + Phase 15 shipped (POL-01..06 + MCPS-01..06)
   Phase 14: ██████████ Policy Primitives + Tenant/Project ID Foundation (POL-01..06) — SHIPPED 2026-05-30
-  Phase 15: █████████░ MCP Host (MCPS-01..06) — Wave 1..6 task 1 done (15-01..15-11): env + applyPreflight helper + HTTP route refactor + metric surface + mcpHostPlugin shell + 5 tool handlers + 5-tool wiring + HTTP /v1/models single-lens mirror + 3 cross-cutting integration tests; MCPS-01..05 verified end-to-end; 15-12 (final phase wrap-up) next
+  Phase 15: ██████████ MCP Host (MCPS-01..06) — SHIPPED 2026-05-31 (all 12 plans + final gate green: golden snapshot drift gate, SIGTERM 5s race, D-15 disabled-mode, smoke section, DEPLOY+README docs, MCPS-06 stdio grep gate)
   Phase 16: ░░░░░░░░░░ /v1/responses Streaming + Tool Calls (RESS-01..05)
   Phase 17: ░░░░░░░░░░ SessionStore + ContextProvider + SummaryProvider (SESS-01..06 + CTXP-01..04 + SUMP-01..03)
   Phase 18: ░░░░░░░░░░ MCP Client + RetrieverProvider + Pre-Completion Hook (MCPC-01..06 + RETR-01..06)
   Phase 19: ░░░░░░░░░░ EmbeddingProvider Formalization + Observability Hardening (EMBP-01..02 + OBSV-01..04)
 
-Overall v0.11.0:  █▓░░░░░░░░  6/48 requirements (POL-01..06)
+Overall v0.11.0:  ██▓░░░░░░░  12/48 requirements (POL-01..06 + MCPS-01..06)
 
 Milestone v0.10.0: ██████████ 100% — SHIPPED 2026-05-29 (archived)
 Milestone v0.9.0:  ██████████ 100% — SHIPPED 2026-05-28 (archived)

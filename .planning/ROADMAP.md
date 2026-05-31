@@ -14,7 +14,7 @@
 ### v0.11.0 Retrieval-Ready Infrastructure (Phases 14–19)
 
 - [ ] **Phase 14: Policy Primitives + Tenant/Project ID Foundation** — Additive zero-dep policy gate + tenant/project ID headers in logs and request_log; every later phase inherits correct observability context from this foundation.
-- [ ] **Phase 15: MCP Host (Router as MCP Server)** — Router exposes five MCP tools (chat, embeddings, rerank, responses, list_models) over Streamable HTTP at `/mcp`; any MCP-compatible client can consume the router as a tool server.
+- [x] **Phase 15: MCP Host (Router as MCP Server)** — Router exposes five MCP tools (chat, embeddings, rerank, responses, list_models) over Streamable HTTP at `/mcp`; any MCP-compatible client can consume the router as a tool server.
 - [ ] **Phase 16: `/v1/responses` Streaming + Tool Calls** — Full Responses API streaming with `OutputItemStateMachine`, tool-call events, and `response.completed` always last; closes v0.10.0 streaming debt.
 - [ ] **Phase 17: SessionStore + ContextProvider + SummaryProvider** — Postgres-backed session persistence, context window management, and SummaryProvider noop seam; routes gain stateful multi-turn capability without retrieval logic.
 - [ ] **Phase 18: MCP Client + RetrieverProvider + Pre-Completion Hook** — Generic MCP client capability (lazy-connect, tool namespace prefix, 60s Valkey cache), RetrieverProvider interface + pre-completion hook seam with explicit fail-open/closed, and EmbeddingProvider interface formalization.
@@ -106,7 +106,7 @@
 4. When the router receives `SIGTERM`, all active MCP sessions are closed cleanly within 5 seconds (verified by integration test triggering shutdown and asserting no leaked session entries in the session map).
 5. The `router_mcp_active_sessions` Prometheus gauge is present in `/metrics` output and reflects the current session count (0 when no MCP clients are connected).
 
-**Plans:** 11/12 plans executed
+**Plans:** 12/12 plans executed
 - [x] 15-01-PLAN.md — Install @modelcontextprotocol/sdk@^1.29.0 + extend EnvSchema with MCP_ENABLED/MCP_SESSION_TTL_SEC/MCP_GC_INTERVAL_MS [MCPS-01]
 - [x] 15-02-PLAN.md — applyPreflight helper (resolve + gate + breaker) + unit-test matrix [MCPS-01]
 - [x] 15-03-PLAN.md — Refactor 5 HTTP routes to call applyPreflight (chat/messages/embeddings/rerank/responses) [MCPS-01]
@@ -118,7 +118,7 @@
 - [x] 15-09-PLAN.md — rerank MCP tool [MCPS-03, MCPS-04]
 - [x] 15-10-PLAN.md — list_models MCP tool (D-10 allowlist filter + cloud_allowed annotation + T-3-A2 anti-leak) [MCPS-03, MCPS-04]
 - [x] 15-11-PLAN.md — Widen GET /v1/models + /v1/models/:id with allowlist filter + cloud_allowed (D-11) + integration tests for request_log + metrics + dual-surface filter parity [MCPS-03, MCPS-04, MCPS-05]
-- [ ] 15-12-PLAN.md — Golden snapshot drift gate (P1-03), MCPS-05 SIGTERM cleanup integration, D-15 disabled-mode integration, smoke section, DEPLOY/README docs, MCPS-06 stdio grep gate [MCPS-01, MCPS-02, MCPS-03, MCPS-05, MCPS-06]
+- [x] 15-12-PLAN.md — Golden snapshot drift gate (P1-03), MCPS-05 SIGTERM cleanup integration, D-15 disabled-mode integration, smoke section, DEPLOY/README docs, MCPS-06 stdio grep gate [MCPS-01, MCPS-02, MCPS-03, MCPS-05, MCPS-06]
 **UI hint**: no
 
 ---
