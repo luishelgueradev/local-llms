@@ -26,10 +26,10 @@ import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod/v4';
 import type { FastifyRequest } from 'fastify';
 
-import { registerCreateEmbeddingTool } from '../../../../src/mcp/host/tools/create-embedding.js';
-import { EmbeddingsRequestSchema } from '../../../../src/routes/v1/embeddings.js';
-import { AllowlistViolationError } from '../../../../src/errors/envelope.js';
-import type { ModelEntry } from '../../../../src/config/registry.js';
+import { registerCreateEmbeddingTool } from '../../../../../src/mcp/host/tools/create-embedding.js';
+import { EmbeddingsRequestSchema } from '../../../../../src/routes/v1/embeddings.js';
+import { AllowlistViolationError } from '../../../../../src/errors/envelope.js';
+import type { ModelEntry } from '../../../../../src/config/registry.js';
 
 /**
  * Capture the (config, handler) pair given to server.registerTool so tests

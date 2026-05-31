@@ -32,7 +32,8 @@ import {
   AllowlistViolationError,
   RegistryUnknownModelError,
 } from '../../../../../src/errors/envelope.js';
-import { registerCreateResponseTool } from '../../../../../src/mcp/host/tools/create-response.js';
+import { registerCreateResponseTool, JSON_SCHEMA_LOCK } from '../../../../../src/mcp/host/tools/create-response.js';
+import type { McpHostOpts } from '../../../../../src/mcp/host/plugin.js';
 
 // ── shared fixtures ────────────────────────────────────────────────────────────
 
@@ -125,6 +126,10 @@ function makeFakes() {
     log: baseLog,
   } as unknown as FastifyRequest;
 
+  // The fake `metrics` deliberately omits the heavy prom-client Registry
+  // surface — the tool handler never reads it. Cast through unknown so the
+  // tsc --noEmit gate stays clean while we keep tests focused on observable
+  // behavior (vi.fn() spies on individual metric handles).
   const deps = {
     registry: fakeRegistry,
     makeAdapter: vi.fn().mockReturnValue(fakeAdapter),
@@ -136,7 +141,7 @@ function makeFakes() {
       MCP_SESSION_TTL_SEC: 3600,
       MCP_GC_INTERVAL_MS: 1_800_000,
     },
-  };
+  } as unknown as McpHostOpts;
 
   return { deps, fakeReq, fakeAdapter, fakeRegistry, fakeBreaker, fakeBufferedWriter, fakeMetrics, childLog };
 }
@@ -155,7 +160,7 @@ function makeFakeServer(): { server: McpServer; calls: { name: string; def: { de
 // ── tests ──────────────────────────────────────────────────────────────────────
 
 describe('Phase 15 — registerCreateResponseTool', () => {
-  it('Test 1 (D-01): inputSchema deep-equals z.toJSONSchema(ResponsesRequestSchema)', () => {
+  it('Test 1 (D-01): inputSchema is the route Zod schema; JSON_SCHEMA_LOCK == z.toJSONSchema(ResponsesRequestSchema)', () => {
     const { deps, fakeReq } = makeFakes();
     const { server, calls } = makeFakeServer();
 
@@ -163,7 +168,17 @@ describe('Phase 15 — registerCreateResponseTool', () => {
 
     expect(calls).toHaveLength(1);
     expect(calls[0]?.name).toBe('create_response');
-    expect(calls[0]?.def.inputSchema).toStrictEqual(z.toJSONSchema(ResponsesRequestSchema));
+    // The SDK requires a Zod schema (not a JSON Schema object) — see
+    // node_modules/@modelcontextprotocol/sdk/.../server/mcp.js:868
+    // ("inputSchema must be a Zod schema or raw shape"). The tool registers
+    // ResponsesRequestSchema directly; SDK serialization runs
+    // toJsonSchemaCompat() internally when emitting tools/list.
+    expect(calls[0]?.def.inputSchema).toBe(ResponsesRequestSchema);
+    // P1-03 drift gate: JSON_SCHEMA_LOCK MUST deep-equal a freshly recomputed
+    // z.toJSONSchema(ResponsesRequestSchema). Schema drift between HTTP +
+    // MCP is impossible by construction — both flow from the single Zod
+    // source schema.
+    expect(JSON_SCHEMA_LOCK).toStrictEqual(z.toJSONSchema(ResponsesRequestSchema));
     // Description MUST document the no-MCP-streaming policy (D-12).
     expect(calls[0]?.def.description ?? '').toMatch(/stream/i);
   });
