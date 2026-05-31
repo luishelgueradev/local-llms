@@ -84,23 +84,30 @@ describe('GET /v1/models — D-C1 shape, auth, no-leak, liveness-decoupled, D-C3
         created: number;
         owned_by: string;
         capabilities: string[];
+        policy: { cloud_allowed: boolean };
       }>;
     }>();
     expect(body.object).toBe('list');
     expect(body.data).toHaveLength(2);
-    // First entry
-    const first = body.data[0]!;
-    expect(Object.keys(first).sort()).toEqual(['capabilities', 'created', 'id', 'object', 'owned_by'].sort());
+    // First entry — Phase 15 Plan 15-11 (D-11) adds `policy` to the projection.
+    const first = body.data[0]! as typeof body.data[0] & { policy: { cloud_allowed: boolean } };
+    expect(Object.keys(first).sort()).toEqual(
+      ['capabilities', 'created', 'id', 'object', 'owned_by', 'policy'].sort(),
+    );
     expect(first.id).toBe('llama3.2:3b-instruct-q4_K_M');
     expect(first.object).toBe('model');
     expect(first.owned_by).toBe('local-llms');
     expect(first.capabilities).toEqual(['chat']);
     expect(typeof first.created).toBe('number');
     expect(first.created).toBeGreaterThan(1_700_000_000); // sanity: after year 2023
+    // D-11 annotation: every projected entry MUST carry policy.cloud_allowed.
+    // YAML has no `policy` block on either entry → default true.
+    expect(first.policy).toEqual({ cloud_allowed: true });
     // Second entry
-    const second = body.data[1]!;
+    const second = body.data[1]! as typeof body.data[1] & { policy: { cloud_allowed: boolean } };
     expect(second.id).toBe('qwen2.5-7b-instruct-q4km');
     expect(second.capabilities).toEqual(['chat', 'tools']);
+    expect(second.policy).toEqual({ cloud_allowed: true });
   });
 
   // Case 2: Auth — no bearer
@@ -220,12 +227,23 @@ describe('GET /v1/models — D-C1 shape, auth, no-leak, liveness-decoupled, D-C3
       headers: { authorization: `Bearer ${TOKEN}` },
     });
     expect(res.statusCode).toBe(200);
-    const body = res.json<{ id: string; object: string; owned_by: string; capabilities: string[] }>();
-    expect(Object.keys(body).sort()).toEqual(['capabilities', 'created', 'id', 'object', 'owned_by'].sort());
+    const body = res.json<{
+      id: string;
+      object: string;
+      owned_by: string;
+      capabilities: string[];
+      policy: { cloud_allowed: boolean };
+    }>();
+    // Phase 15 Plan 15-11 (D-11) adds `policy` to the projection.
+    expect(Object.keys(body).sort()).toEqual(
+      ['capabilities', 'created', 'id', 'object', 'owned_by', 'policy'].sort(),
+    );
     expect(body.id).toBe('qwen2.5-7b-instruct-q4km');
     expect(body.object).toBe('model');
     expect(body.owned_by).toBe('local-llms');
     expect(body.capabilities).toEqual(['chat', 'tools']);
+    // YAML has no `policy` block → default cloud_allowed: true.
+    expect(body.policy).toEqual({ cloud_allowed: true });
     // T-3-A2: no backend leak on the retrieve route either
     expect(body).not.toHaveProperty('backend_url');
     expect(body).not.toHaveProperty('backend');
