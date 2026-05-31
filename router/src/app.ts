@@ -46,6 +46,7 @@ import { agentIdPreHandler as defaultAgentIdPreHandler } from './middleware/agen
 import { scopedIdsPreHandler as defaultScopedIdsPreHandler } from './middleware/scopedIds.js';
 import { makeRateLimitPreHandler } from './middleware/rateLimit.js';
 import { closeValkey, type ValkeyClient } from './clients/valkey.js';
+import { mcpHostPlugin } from './mcp/host/index.js';
 import { makeEmbeddingsCache } from './embeddings/cache.js';
 import { makeCircuitBreaker, type CircuitBreaker } from './resilience/circuitBreaker.js';
 import {
@@ -202,7 +203,16 @@ export interface BuildAppOpts {
     | 'CIRCUIT_COOLDOWN_MS'
     | 'ROUTER_RATE_LIMIT_RPM'
     | 'ROUTER_EMBED_CACHE_TTL_SEC'
-  >;
+  > &
+    // Phase 15 (v0.11.0 — MCPS-01..06 / D-15) — MCP host plugin tunables.
+    // Intersected as a Partial<Pick<...>> so existing fixtures that build
+    // env with the older 5-key Pick still satisfy the BuildAppOpts shape.
+    // When omitted, the buildApp call site below substitutes the schema
+    // defaults (MCP_ENABLED=true, MCP_SESSION_TTL_SEC=3600,
+    // MCP_GC_INTERVAL_MS=1_800_000). Production wiring (index.ts) always
+    // passes the full env so the optional path is exclusively a
+    // test-fixture concern.
+    Partial<Pick<Env, 'MCP_ENABLED' | 'MCP_SESSION_TTL_SEC' | 'MCP_GC_INTERVAL_MS'>>;
   /**
    * Plan 08-04 — test injection seam for the breaker's clock. Tests can pass
    * a custom `now` so they can advance fake-time without real timers. When
@@ -658,6 +668,38 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
     // settle before the pg drain runs.
     if (opts.valkey) await closeValkey(opts.valkey, app.log as Logger);
     await opts.bufferedWriter.drain(3_000);
+  });
+
+  // -------------------------------------------------------------------------
+  // Phase 15 (v0.11.0 — MCPS-01..06 / 15-CONTEXT D-15) — MCP host plugin
+  // -------------------------------------------------------------------------
+  //
+  // Registered AFTER FastifySSEPlugin (line 243) and AFTER the bearer
+  // onRequest hook + scopedIdsPreHandler + agentIdPreHandler (lines 268-311)
+  // so that requests to /mcp inherit the same auth + scoped-ID + pino-child
+  // pipeline as /v1/*. The plugin itself uses raw `req.raw`/`reply.raw`
+  // against `@modelcontextprotocol/sdk@^1.29.0`'s StreamableHTTPServerTransport.
+  //
+  // Registered AFTER the main onClose hook above so Fastify v5 fires that
+  // hook FIRST (liveness.stop → probeAdapters.clear → semaphoreMap.clear →
+  // usageDailyScheduler.stop → closeValkey → bufferedWriter.drain(3_000)),
+  // and the MCP plugin's own onClose hook fires AFTER (shutdownSessions
+  // with 5s Promise.race ceiling). This ordering matches the existing
+  // 10s Compose stop_grace_period budget: 3s drain + 5s MCP race ≈ 8s.
+  //
+  // When opts.env?.MCP_ENABLED is false (operator override), the plugin's
+  // body short-circuits before registering the /mcp route — /mcp then 404s.
+  await app.register(mcpHostPlugin, {
+    registry: opts.registry,
+    makeAdapter: opts.makeAdapter ?? makeAdapterWithCloudKey,
+    bufferedWriter: opts.bufferedWriter,
+    metrics: opts.metrics,
+    breaker,
+    env: {
+      MCP_ENABLED: opts.env?.MCP_ENABLED ?? true,
+      MCP_SESSION_TTL_SEC: opts.env?.MCP_SESSION_TTL_SEC ?? 3600,
+      MCP_GC_INTERVAL_MS: opts.env?.MCP_GC_INTERVAL_MS ?? 1_800_000,
+    },
   });
 
   // -------------------------------------------------------------------------
