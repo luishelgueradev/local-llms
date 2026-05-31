@@ -54,7 +54,7 @@ import {
   EmbeddingsDimsMismatchError,
   mapToHttpStatus,
 } from '../../errors/envelope.js';
-import { applyPolicyGate } from '../../policy/gate.js';
+import { applyPreflight } from '../../dispatch/preflight.js';
 import type { CircuitBreaker } from '../../resilience/circuitBreaker.js';
 import type { IdempotencyMultiplexer } from '../../resilience/idempotency.js';
 import { extractIdempotencyKey } from '../../middleware/idempotencyKey.js';
@@ -157,14 +157,26 @@ export function registerEmbeddingsRoute(
     async (req, reply) => {
       const body = req.body;
 
-      // Resolve model -> entry. resolve(unknown) throws RegistryUnknownModelError
-      // which the centralized error handler maps to 404 + OpenAI envelope.
-      // This throw is OUTSIDE the route's try/finally — the centralized
-      // app.setErrorHandler observes it (Plan 07-04 widens the handler's
-      // isRecordedRoute allowlist to include /v1/embeddings, so a request_log
-      // row is still produced for unknown-model errors).
-      const entry = opts.registry.resolve(body.model);
+      // Phase 15 (v0.11.0 — MCPS-01 / CONTEXT.md D-09): consolidated preflight.
+      // applyPreflight runs resolve → applyPolicyGate → breaker.check in one
+      // helper, shared with MCP tool handlers (Wave 4). Throws propagate to the
+      // centralized error handler (404 / 403 envelopes); breakerState='open' is
+      // RETURNED so the HTTP caller stamps Retry-After before the BreakerOpenError
+      // throw. POL-05 (gate-before-breaker) preserved structurally inside the
+      // helper. Plan 07-04 widens isRecordedRoute to include /v1/embeddings so
+      // pre-resolve / pre-policy errors still produce a request_log row via the
+      // centralized handler.
+      const { entry, breakerState } = await applyPreflight(body.model, {
+        registry: opts.registry,
+        breaker: opts.breaker,
+      });
       req.resolvedBackend = entry.backend;       // Plan 08-03 (ROUTE-10) — stamp for onSend hook
+      // Plan 08-04 (CLOUD-03) — sentinel-open branch. Same wire shape as before
+      // the refactor: Retry-After stamped BEFORE BreakerOpenError throws.
+      if (breakerState === 'open') {
+        void reply.header('Retry-After', String(opts.breakerCooldownSec));
+        throw new BreakerOpenError(entry.backend, opts.breakerCooldownSec);
+      }
 
       const adapter: BackendAdapter = opts.makeAdapter(entry);
 
@@ -229,19 +241,10 @@ export function registerEmbeddingsRoute(
           throw new CapabilityNotSupportedError(entry.name, 'embeddings');
         }
 
-        // Phase 14 (v0.11.0 — POL-01 / POL-02 / P8-01 BLOCK): policy gate fires
-        // AFTER capability gate, BEFORE the breaker check, so a policy 403 never
-        // mutates the breaker counter (P8-01). Snapshot fetched here — registry.get()
-        // is the existing seam; hot-reload swaps the snapshot atomically.
-        applyPolicyGate(opts.registry.get().policies, entry, body.model);
-
-        // Plan 08-04 (CLOUD-03) — circuit breaker gate. Fires AFTER capability
-        // gate, BEFORE semaphore acquire. Same pattern as chat-completions.ts.
-        const breakerResult = await opts.breaker.check(entry.backend);
-        if (breakerResult.state === 'open') {
-          void reply.header('Retry-After', String(opts.breakerCooldownSec));
-          throw new BreakerOpenError(entry.backend, opts.breakerCooldownSec);
-        }
+        // Plan 15 (v0.11.0 — MCPS-01 / CONTEXT.md D-09): the policy gate and
+        // breaker check were consolidated into applyPreflight() at the top of
+        // the handler (before this try block). The sentinel-open branch and
+        // Retry-After stamp moved alongside it.
 
         // Plan 08-07 (ROUTE-12 / D-D5 / D-D6) — Idempotency-Key acquire +
         // follower replay. Embeddings is always non-stream, so the follower

@@ -37,7 +37,7 @@ import {
   CapabilityNotSupportedError,
   mapToHttpStatus,
 } from '../../errors/envelope.js';
-import { applyPolicyGate } from '../../policy/gate.js';
+import { applyPreflight } from '../../dispatch/preflight.js';
 import type { CircuitBreaker } from '../../resilience/circuitBreaker.js';
 import type { IdempotencyMultiplexer } from '../../resilience/idempotency.js';
 import { extractIdempotencyKey } from '../../middleware/idempotencyKey.js';
@@ -85,8 +85,20 @@ export function registerRerankRoute(app: FastifyInstance, opts: RegisterRerankOp
     { schema: { body: RerankRequestSchema } },
     async (req, reply) => {
       const body = req.body;
-      const entry = opts.registry.resolve(body.model);
+      // Phase 15 (v0.11.0 — MCPS-01 / CONTEXT.md D-09): consolidated preflight.
+      // applyPreflight runs resolve → applyPolicyGate → breaker.check in one
+      // helper, shared with MCP tool handlers (Wave 4). breakerState='open' is
+      // RETURNED so the HTTP caller stamps Retry-After before BreakerOpenError.
+      const { entry, breakerState } = await applyPreflight(body.model, {
+        registry: opts.registry,
+        breaker: opts.breaker,
+      });
       req.resolvedBackend = entry.backend;
+      // Plan 08-04 (CLOUD-03) — sentinel-open branch.
+      if (breakerState === 'open') {
+        void reply.header('Retry-After', String(opts.breakerCooldownSec));
+        throw new BreakerOpenError(entry.backend, opts.breakerCooldownSec);
+      }
 
       const adapter: BackendAdapter = opts.makeAdapter(entry);
 
@@ -133,17 +145,10 @@ export function registerRerankRoute(app: FastifyInstance, opts: RegisterRerankOp
           throw new CapabilityNotSupportedError(entry.name, 'rerank');
         }
 
-        // Phase 14 (v0.11.0 — POL-01 / POL-02 / P8-01 BLOCK): policy gate fires
-        // AFTER capability gate, BEFORE the breaker check, so a policy 403 never
-        // mutates the breaker counter (P8-01). Snapshot fetched here — registry.get()
-        // is the existing seam; hot-reload swaps the snapshot atomically.
-        applyPolicyGate(opts.registry.get().policies, entry, body.model);
-
-        const breakerResult = await opts.breaker.check(entry.backend);
-        if (breakerResult.state === 'open') {
-          void reply.header('Retry-After', String(opts.breakerCooldownSec));
-          throw new BreakerOpenError(entry.backend, opts.breakerCooldownSec);
-        }
+        // Plan 15 (v0.11.0 — MCPS-01 / CONTEXT.md D-09): the policy gate and
+        // breaker check were consolidated into applyPreflight() at the top of
+        // the handler (before this try block). The sentinel-open branch and
+        // Retry-After stamp moved alongside it.
 
         if (idempotencyKey && opts.idempotency) {
           const acq = await opts.idempotency.acquire(idempotencyKey, req.id);
