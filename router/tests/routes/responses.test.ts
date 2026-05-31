@@ -297,23 +297,9 @@ describe('POST /v1/responses — capability gate (RESP-04)', () => {
   });
 });
 
-describe('POST /v1/responses — streaming explicitly rejected (v0.10.0 scope)', () => {
-  it('stream:true → 400 with responses_stream_unsupported code + helpful message', async () => {
-    const res = await app.inject({
-      method: 'POST',
-      url: '/v1/responses',
-      headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
-      payload: { model: LOCAL_CHAT, input: 'hola', stream: true },
-    });
-    expect(res.statusCode).toBe(400);
-    const env = res.json();
-    expect(env.error.code).toBe('responses_stream_unsupported');
-    expect(env.error.param).toBe('stream');
-    expect(env.error.message).toContain('/v1/chat/completions');
-    // Adapter NOT called.
-    expect(fakeCalls).toHaveLength(0);
-  });
-});
+// Phase 16 (v0.11.0 — RESS-01): the previous /v1/responses stream:true → 400
+// rejection (responses_stream_unsupported) was removed when streaming shipped.
+// Real-streaming integration tests live in router/tests/routes/responses-stream.test.ts.
 
 describe('POST /v1/responses — cost tracking (COST-01/02)', () => {
   it('cloud-priced model → X-Cost-Cents header + non-null cost_cents column', async () => {
