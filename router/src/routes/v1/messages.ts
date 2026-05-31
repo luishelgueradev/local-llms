@@ -52,7 +52,7 @@ import {
   mapToHttpStatus,
   toAnthropicErrorEnvelope,
 } from '../../errors/envelope.js';
-import { applyPolicyGate } from '../../policy/gate.js';
+import { applyPreflight } from '../../dispatch/preflight.js';
 import { CLOUD_MAX_TOKENS_CAP } from '../../config/constants.js';
 import type { CircuitBreaker } from '../../resilience/circuitBreaker.js';
 import type { IdempotencyMultiplexer } from '../../resilience/idempotency.js';
@@ -179,10 +179,28 @@ export function registerMessagesRoute(
         void reply.header('anthropic-version', echoed);
       }
 
-      // Resolve model → entry → adapter. resolve(unknown) throws RegistryUnknownModelError
-      // which the centralized error handler maps to 404 + Anthropic envelope.
-      const entry = opts.registry.resolve(body.model);
+      // Phase 15 (v0.11.0 — MCPS-01 / CONTEXT.md D-09): consolidated preflight.
+      // applyPreflight runs the canonical trio resolve → applyPolicyGate → breaker.check
+      // in a single helper shared with MCP tool handlers (Wave 4). It throws:
+      //   - RegistryUnknownModelError (404) on unknown model;
+      //   - AllowlistViolationError / CloudNotAllowedError (403) on policy gate;
+      // and RETURNS `breakerState` (Option A sentinel) so this HTTP caller can stamp
+      // `Retry-After` BEFORE raising BreakerOpenError. POL-05 (gate-before-breaker)
+      // is preserved structurally inside applyPreflight — a thrown gate never reaches
+      // the breaker.check step. (See dispatch/preflight.ts header comments.)
+      const { entry, breakerState } = await applyPreflight(body.model, {
+        registry: opts.registry,
+        breaker: opts.breaker,
+      });
       req.resolvedBackend = entry.backend;       // Plan 08-03 (ROUTE-10) — stamp for onSend hook
+      // Plan 08-04 (CLOUD-03) — circuit-breaker sentinel branch. On state='open',
+      // stamp Retry-After BEFORE the throw so the centralized error handler's envelope
+      // carries the back-off hint; on 'half-open', this caller IS the probe — fall
+      // through to the adapter call.
+      if (breakerState === 'open') {
+        void reply.header('Retry-After', String(opts.breakerCooldownSec));
+        throw new BreakerOpenError(entry.backend, opts.breakerCooldownSec);
+      }
 
       // Plan 08-05 (CLOUD-04 / D-C1, D-C2): cloud-served models hard-cap
       // max_tokens at CLOUD_MAX_TOKENS_CAP. Same guard as chat-completions.ts;
@@ -220,12 +238,6 @@ export function registerMessagesRoute(
       if (canonicalHasImage(canonical) && !entry.capabilities.includes('vision')) {
         throw new CapabilityNotSupportedError(entry.name, 'vision');
       }
-
-      // Phase 14 (v0.11.0 — POL-01 / POL-02 / P8-01 BLOCK): policy gate fires
-      // AFTER capability gate, BEFORE the breaker check, so a policy 403 never
-      // mutates the breaker counter (P8-01). Snapshot fetched here — registry.get()
-      // is the existing seam; hot-reload swaps the snapshot atomically.
-      applyPolicyGate(opts.registry.get().policies, entry, body.model);
 
       // ── AbortController plumbing (mirrors chat-completions.ts) ──────────────
       const controller = new AbortController();
@@ -278,16 +290,10 @@ export function registerMessagesRoute(
       let followerUpstreamMessageId: string | undefined;
 
       try {
-        // Plan 08-04 (CLOUD-03) — per-backend circuit breaker. Mirrors
-        // chat-completions.ts: fires AFTER capability gate, BEFORE semaphore
-        // acquire. On 'open' throws BreakerOpenError (503); on 'half-open'
-        // this caller is the probe — falls through.
-        const breakerResult = await opts.breaker.check(entry.backend);
-        if (breakerResult.state === 'open') {
-          void reply.header('Retry-After', String(opts.breakerCooldownSec));
-          throw new BreakerOpenError(entry.backend, opts.breakerCooldownSec);
-        }
-
+        // Plan 15 (v0.11.0 — MCPS-01 / CONTEXT.md D-09): the breaker gate now
+        // lives in applyPreflight() (called above before this try block). The
+        // sentinel-open branch and Retry-After stamp moved alongside it.
+        //
         // Plan 08-07 (ROUTE-12 / D-D5 / D-D6) — Idempotency-Key acquire +
         // follower replay. Same shape as chat-completions.ts.
         if (idempotencyKey && opts.idempotency) {

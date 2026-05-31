@@ -18,7 +18,7 @@ import {
   mapToHttpStatus,
   toOpenAIErrorEnvelope,
 } from '../../errors/envelope.js';
-import { applyPolicyGate } from '../../policy/gate.js';
+import { applyPreflight } from '../../dispatch/preflight.js';
 import {
   buildRepairMessage,
   validateJsonOutput,
@@ -156,10 +156,30 @@ export function registerChatCompletionsRoute(
     async (req, reply) => {
       const body = req.body;
 
-      // Resolve model -> entry -> adapter. resolve(unknown) throws RegistryUnknownModelError
-      // which the centralized error handler maps to 404 + OpenAI envelope (D-C3 row).
-      const entry = opts.registry.resolve(body.model);
+      // Phase 15 (v0.11.0 — MCPS-01 / CONTEXT.md D-09): consolidated preflight.
+      // applyPreflight runs the canonical trio resolve → applyPolicyGate → breaker.check
+      // in a single helper shared with MCP tool handlers (Wave 4). It throws:
+      //   - RegistryUnknownModelError (404) on unknown model;
+      //   - AllowlistViolationError / CloudNotAllowedError (403) on policy gate;
+      // and RETURNS `breakerState` (Option A sentinel) so this HTTP caller can stamp
+      // `Retry-After` BEFORE raising BreakerOpenError. POL-05 (gate-before-breaker)
+      // is preserved structurally inside applyPreflight — a thrown gate never reaches
+      // the breaker.check step. (See dispatch/preflight.ts header comments.)
+      const { entry, breakerState } = await applyPreflight(body.model, {
+        registry: opts.registry,
+        breaker: opts.breaker,
+      });
       req.resolvedBackend = entry.backend;       // Plan 08-03 (ROUTE-10) — stamp for onSend hook
+      // Plan 08-04 (CLOUD-03) — circuit-breaker sentinel branch. On state='open',
+      // stamp Retry-After BEFORE the throw so the centralized error handler's envelope
+      // carries the back-off hint; on 'half-open', this caller IS the probe — fall
+      // through to the adapter call. BreakerOpenError is excluded from
+      // recordFailure by the centralized handler's classifier (isBreakerTrip),
+      // so throwing here does not feed back into the breaker counter.
+      if (breakerState === 'open') {
+        void reply.header('Retry-After', String(opts.breakerCooldownSec));
+        throw new BreakerOpenError(entry.backend, opts.breakerCooldownSec);
+      }
 
       // Plan 08-05 (CLOUD-04 / D-C1, D-C2): cloud-served models hard-cap
       // max_tokens at CLOUD_MAX_TOKENS_CAP (Ollama Cloud documented ceiling).
@@ -217,12 +237,6 @@ export function registerChatCompletionsRoute(
       if (wantsJson && !entry.capabilities.includes('json_mode')) {
         throw new CapabilityNotSupportedError(entry.name, 'json_mode');
       }
-
-      // Phase 14 (v0.11.0 — POL-01 / POL-02 / P8-01 BLOCK): policy gate fires
-      // AFTER capability gate, BEFORE the breaker check, so a policy 403 never
-      // mutates the breaker counter (P8-01). Snapshot fetched here — registry.get()
-      // is the existing seam; hot-reload swaps the snapshot atomically.
-      applyPolicyGate(opts.registry.get().policies, entry, body.model);
 
       // ── AbortController: load-bearing for SC3 ──────────────────────────────
       // The signal is forwarded to undici by the openai SDK, which closes the
@@ -323,22 +337,12 @@ export function registerChatCompletionsRoute(
       let followerUpstreamMessageId: string | undefined;
 
       try {
-        // Plan 08-04 (CLOUD-03) — per-backend circuit breaker gate. Fires AFTER
-        // capability gating (above) and BEFORE semaphore acquire so a backend
-        // outage fails fast in <1ms without consuming a slot. On state='open',
-        // throw BreakerOpenError (503 + structured envelope); on 'half-open',
-        // this caller IS the probe — fall through to the adapter call.
-        const breakerResult = await opts.breaker.check(entry.backend);
-        if (breakerResult.state === 'open') {
-          // Stamp Retry-After header BEFORE throw so the centralized error
-          // handler's envelope ships with the back-off hint (mirror of
-          // BackendSaturatedError's Retry-After pattern below).
-          void reply.header('Retry-After', String(opts.breakerCooldownSec));
-          throw new BreakerOpenError(entry.backend, opts.breakerCooldownSec);
-        }
-
+        // Plan 15 (v0.11.0 — MCPS-01 / CONTEXT.md D-09): the breaker gate now
+        // lives in applyPreflight() (called above before this try block). The
+        // sentinel-open branch and Retry-After stamp moved alongside it.
+        //
         // Plan 08-07 (ROUTE-12 / D-D5 / D-D6) — Idempotency-Key acquire. Runs
-        // AFTER breaker.check (so a backend-out request fails fast and doesn't
+        // AFTER applyPreflight (so a backend-out request fails fast and doesn't
         // pollute the idempotency key) and BEFORE semaphore.acquire (followers
         // must NOT consume a slot — that's the cost-saving the multiplexer
         // provides).
