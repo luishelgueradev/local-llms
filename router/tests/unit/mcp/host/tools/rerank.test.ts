@@ -28,10 +28,10 @@ import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod/v4';
 import type { FastifyRequest } from 'fastify';
 
-import { registerRerankTool } from '../../../../src/mcp/host/tools/rerank.js';
-import { RerankRequestSchema } from '../../../../src/routes/v1/rerank.js';
-import { AllowlistViolationError } from '../../../../src/errors/envelope.js';
-import type { ModelEntry } from '../../../../src/config/registry.js';
+import { registerRerankTool } from '../../../../../src/mcp/host/tools/rerank.js';
+import { RerankRequestSchema } from '../../../../../src/routes/v1/rerank.js';
+import { AllowlistViolationError } from '../../../../../src/errors/envelope.js';
+import type { ModelEntry } from '../../../../../src/config/registry.js';
 
 /**
  * Capture the (config, handler) pair given to server.registerTool so tests
