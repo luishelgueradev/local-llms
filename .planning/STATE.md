@@ -3,19 +3,19 @@ gsd_state_version: 1.0
 milestone: v0.11.0
 milestone_name: Retrieval-Ready Infrastructure
 status: executing
-last_updated: "2026-05-31T06:05:15.760Z"
+last_updated: "2026-05-31T06:15:16Z"
 last_activity: 2026-05-31
 progress:
   total_phases: 6
   completed_phases: 1
   total_plans: 21
-  completed_plans: 19
-  percent: 17
+  completed_plans: 21
+  percent: 18
 ---
 
 # Project State: local-llms
 
-**Last Updated:** 2026-05-31 — Phase 15 Plan 10 shipped (registerListModelsTool + all-5-tools wired in buildServerForRequest; P1-05 hard-coded allowlist; integration Test 3 inverted to assert the 5-tool golden set sort-stably; Tests 6 + 7 added for tools/call list_models (T-3-A2 anti-leak end-to-end) + chat_completion (MCPS-01 #3 assistant-text round-trip closed); Rule-1 fix on rerank + create-embedding inputSchema from JSON Schema → Zod schema (SDK 1.29.0 mcp.js:868)). v0.11.0 progress: 1/6 phases + 10/12 Phase-15 plans complete.
+**Last Updated:** 2026-05-31 — Phase 15 Plan 11 shipped (HTTP /v1/models + /v1/models/:id mirror the MCP list_models tool: D-10 allowlist filter + D-11 cloud_allowed annotation + 404-on-allowlist-excluded single-lens semantics; T-3-A2 anti-leak preserved by inline filterAndProject helper. 3 new cross-cutting integration tests: list-models-policy-filter (5 tests, dual-surface parity), mcp-request-log (5 tests, D-05/D-06 row population + scoped-IDs propagation + Pitfall-8), mcp-metrics (6 tests, D-07 gauge+counter + POL-06 invariant at /metrics). 27/27 tests across all 4 plan-related files green; Plan 15-10's 7/7 integration tests still green — no regression). v0.11.0 progress: 1/6 phases + 11/12 Phase-15 plans complete.
 **Status:** Ready to execute
 
 ## Project Reference
@@ -29,7 +29,7 @@ progress:
 ## Current Position
 
 Phase: 15
-Plan: 10 of 12 complete (15-01..15-09 + 15-10 — Wave 5 done: list_models tool shipped, all 5 MCP tools wired into buildServerForRequest, integration suite locks the 5-tool golden set + end-to-end tools/call round-trips for list_models and chat_completion)
+Plan: 12 of 12 complete (15-01..15-10 + 15-11 — Wave 6 task 1 done: HTTP /v1/models surfaces share a single projection lens with MCP list_models; 3 cross-cutting integration tests lock D-05/D-06 request_log writes, D-07 /metrics observability, D-10/D-11 dual-surface parity)
 Status: Ready to execute
 Last activity: 2026-05-31
 
@@ -38,7 +38,7 @@ Last activity: 2026-05-31
 ```
 Milestone v0.11.0: █▓░░░░░░░░ 17% — Phase 14/6 shipped (POL-01..06)
   Phase 14: ██████████ Policy Primitives + Tenant/Project ID Foundation (POL-01..06) — SHIPPED 2026-05-30
-  Phase 15: ████████░░ MCP Host (MCPS-01..06) — Wave 1..5 done (15-01..15-10): env + applyPreflight helper + HTTP route refactor + metric surface + mcpHostPlugin shell + 5 tool handlers + 5-tool wiring; MCPS-01..05 verified end-to-end; 15-11 (HTTP /v1/models mirror) + 15-12 next
+  Phase 15: █████████░ MCP Host (MCPS-01..06) — Wave 1..6 task 1 done (15-01..15-11): env + applyPreflight helper + HTTP route refactor + metric surface + mcpHostPlugin shell + 5 tool handlers + 5-tool wiring + HTTP /v1/models single-lens mirror + 3 cross-cutting integration tests; MCPS-01..05 verified end-to-end; 15-12 (final phase wrap-up) next
   Phase 16: ░░░░░░░░░░ /v1/responses Streaming + Tool Calls (RESS-01..05)
   Phase 17: ░░░░░░░░░░ SessionStore + ContextProvider + SummaryProvider (SESS-01..06 + CTXP-01..04 + SUMP-01..03)
   Phase 18: ░░░░░░░░░░ MCP Client + RetrieverProvider + Pre-Completion Hook (MCPC-01..06 + RETR-01..06)
@@ -92,6 +92,7 @@ Milestone v0.9.0:  ██████████ 100% — SHIPPED 2026-05-28 (a
 - **15-05 onClose ordering**: MCP plugin registered AFTER main app.ts onClose body in buildApp — Fastify v5 fires main FIRST (3s bufferedWriter.drain), MCP onClose AFTER (5s Promise.race transport teardown ceiling). Fits 10s Compose stop_grace_period with 2s margin.
 - **Plan 15-06 chat_completion MCP tool ships (Wave 4 task 1 of 5)**: `router/src/mcp/host/tools/chat-completion.ts` + 8-case unit-test matrix. Registers `chat_completion` on the McpServer with `inputSchema = ChatCompletionRequestSchema` (Zod object passed directly — SDK 1.29.0 rejects raw JSON Schema input per `node_modules/@modelcontextprotocol/sdk/.../mcp.js:868`). Exported `JSON_SCHEMA_LOCK = z.toJSONSchema(ChatCompletionRequestSchema)` preserves the P1-03 drift gate at module load. Handler shape: applyPreflight → openAIRequestToCanonical(stream:false coerced) → adapter.chatCompletionsCanonical(signal) → dual-shape return; catch runs toOpenAIErrorEnvelope → isError:true (NO_ENVELOPE → 'client_disconnect'); finally pushes one `protocol:'mcp'` row + increments `routerMcpToolCallsTotal{tool:'chat_completion', status_class}`. D-14 abort wiring uses `extra.signal.addEventListener('abort', ...)` + finally removeEventListener. plugin.ts wiring deferred to Plan 15-10 per concurrency_warning (siblings 15-07/08/09 land their files in parallel; 15-10 wires all 5 atomically). Integration test extension (Task 3) also deferred to 15-10 because tool-call round-trip can only pass once the tool is wired.
 - **Plan 15-07 create_response MCP tool ships (Wave 4 task 2 of 5)**: `router/src/mcp/host/tools/create-response.ts` + 7-case unit-test matrix. Registers `create_response` on the McpServer with `inputSchema = ResponsesRequestSchema` (Zod, direct — same SDK constraint as 15-06). Exported `JSON_SCHEMA_LOCK = z.toJSONSchema(ResponsesRequestSchema)` preserves the P1-03 drift gate at module load (Rule-1 deviation from plan-as-written, identical reasoning to 15-06). Handler shape: ResponsesRequestSchema.parse(args) → applyPreflight → capability gate (chat) → responsesToCanonical(body, backend_model) [stream:false hard-coded inside, D-12 enforced by construction] → adapter.chatCompletionsCanonical(signal) → canonicalToResponses(canonicalResp, displayModel, echo) → dual-shape return where content[0].text = joined output_text blocks and structuredContent = full Responses-API wire body (incl. SDK-iteration safety fields: annotations:[], reasoning, text.format, tool_choice, parallel_tool_calls, truncation, usage.input_tokens_details, usage.output_tokens_details, output_text shortcut). Local `responsesToCanonical` + `canonicalToResponses` translators are byte-identical mirrors of responses.ts:132-284 (private helpers; reproduced locally to keep 15-07 decoupled from route-file edit; Plan 15-11 will add a wire-shape parity test). plugin.ts wiring deferred to Plan 15-10.
+- **Plan 15-11 HTTP /v1/models single-lens mirror + 3 cross-cutting integration tests ship (Wave 6 task 1)**: `router/src/routes/v1/models.ts` widened with inline `filterAndProject(reg, created)` helper applying D-10 allowlist filter + D-11 `policy.cloud_allowed` annotation; T-3-A2 anti-leak preserved (explicit field list, no spread of ModelEntry). GET /v1/models/:id 404 widened to include allowlist-excluded entries — single lens with the list endpoint. 3 new integration tests: (a) `list-models-policy-filter.integration.test.ts` (5 tests) verifies HTTP + MCP surfaces share the same filtered set, same projection shape, same cloud_allowed annotation, same anti-leak; (b) `mcp-request-log.integration.test.ts` (5 tests) verifies D-05 one-row-per-tool-call + D-06 scoped-IDs propagation + Pitfall-8 X-Agent-Id-absent → agent_id null (Test 3 asserts error_code='unknown_model' from mapErrorToCode → request_log internal taxonomy; OpenAI envelope code 'model_not_found' is a separate surface to clients); (c) `mcp-metrics.integration.test.ts` (6 tests) verifies `router_mcp_active_sessions` gauge live tracking + `router_mcp_tool_calls_total{tool,status_class}` counter increments + POL-06 invariant (no `_id`-suffixed label) re-validated against live /metrics text. Pre-existing 4 backend-adapter TS errors unchanged (verified by count). Inline projection chosen over a shared helper (each surface has a 10-line literal block; sharing would require an awkward import edge for almost no code savings).
 - **Plan 15-10 list_models tool + 5-tool wiring ships (Wave 5)**: `router/src/mcp/host/tools/list-models.ts` (NEW, 7-case unit-test matrix) + 5 explicit `register*Tool(server, opts, capturedReq)` calls in `buildServerForRequest` (alphabetical-by-tool-name order: chat_completion, create_embedding, create_response, list_models, rerank). list_models is the only READ-ONLY MCP tool: no applyPreflight, no adapter call, no bufferedWriter row (the unit Test 7 explicitly asserts no push). Emits D-07 counter + duration histogram with `backend='none'`/`model='none'` sentinels. inputSchema is the empty raw shape `{}` — SDK 1.29.0 (mcp.js:851-853) accepts as "no params"; chosen over `z.object({})` to avoid a Zod indirection layer. Projection mirrors HTTP `/v1/models` T-3-A2 anti-leak (explicit field list, no spread of ModelEntry) + adds the D-10 `policy.cloud_allowed` annotation (default true). [Rule 1] Sibling tools `rerank.ts` and `create-embedding.ts` were passing `z.toJSONSchema(...)` as inputSchema → SDK 1.29.0 (mcp.js:868) rejects with "inputSchema must be a Zod schema or raw shape"; latent bug because plans 15-08/15-09 deferred plugin.ts wiring to 15-10. Fix: pass Zod schemas directly; exported `JSON_SCHEMA_LOCK = z.toJSONSchema(...)` from both files preserves the P1-03 drift gate. Integration Test 3 inverted: tools/list MUST return the exact 5-tool golden set sort-stably. Tests 6 + 7 added: tools/call list_models (T-3-A2 anti-leak end-to-end) + tools/call chat_completion (MCPS-01 success-criterion #3 assistant-text round-trip closed via opts.makeAdapter fake).
 - MCP session GC: 30-min interval + SIGTERM handler 5s timeout + Fastify `onClose` hook
 - SessionStore writes: SYNC + 1s timeout + fail-open (different from async-buffered request_log)
@@ -105,4 +106,4 @@ Milestone v0.9.0:  ██████████ 100% — SHIPPED 2026-05-28 (a
 
 ### Active Todos
 
-- `/gsd:execute-phase 15` — Phase 15 execution: Waves 1..5 complete (15-01..15-10). Wave 6 remaining: 15-11 (HTTP /v1/models + /v1/models/:id mirror the D-10 filter + cloud_allowed annotation) + 15-12 (final phase wrap-up). MCPS-01..05 closed end-to-end through the MCP wire; MCPS-03/04 verified via the integration suite's 5-tool golden set + tools/call round-trips.
+- `/gsd:execute-phase 15` — Phase 15 execution: Waves 1..5 complete (15-01..15-10) + Wave 6 task 1 complete (15-11). Wave 6 remaining: 15-12 (final phase wrap-up). MCPS-01..05 closed end-to-end through the MCP wire; MCPS-03/04 verified via the integration suite's 5-tool golden set + tools/call round-trips; MCPS-05 verified via /metrics integration tests (gauge + counter live values + POL-06 invariant); HTTP and MCP surfaces now share a single projection lens (D-10/D-11).

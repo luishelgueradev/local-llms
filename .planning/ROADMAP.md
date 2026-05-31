@@ -106,7 +106,7 @@
 4. When the router receives `SIGTERM`, all active MCP sessions are closed cleanly within 5 seconds (verified by integration test triggering shutdown and asserting no leaked session entries in the session map).
 5. The `router_mcp_active_sessions` Prometheus gauge is present in `/metrics` output and reflects the current session count (0 when no MCP clients are connected).
 
-**Plans:** 10/12 plans executed
+**Plans:** 11/12 plans executed
 - [x] 15-01-PLAN.md — Install @modelcontextprotocol/sdk@^1.29.0 + extend EnvSchema with MCP_ENABLED/MCP_SESSION_TTL_SEC/MCP_GC_INTERVAL_MS [MCPS-01]
 - [x] 15-02-PLAN.md — applyPreflight helper (resolve + gate + breaker) + unit-test matrix [MCPS-01]
 - [x] 15-03-PLAN.md — Refactor 5 HTTP routes to call applyPreflight (chat/messages/embeddings/rerank/responses) [MCPS-01]
@@ -117,7 +117,7 @@
 - [x] 15-08-PLAN.md — create_embedding MCP tool (D-03 stamp + vector ride-along) [MCPS-03, MCPS-04]
 - [x] 15-09-PLAN.md — rerank MCP tool [MCPS-03, MCPS-04]
 - [x] 15-10-PLAN.md — list_models MCP tool (D-10 allowlist filter + cloud_allowed annotation + T-3-A2 anti-leak) [MCPS-03, MCPS-04]
-- [ ] 15-11-PLAN.md — Widen GET /v1/models + /v1/models/:id with allowlist filter + cloud_allowed (D-11) + integration tests for request_log + metrics + dual-surface filter parity [MCPS-03, MCPS-04, MCPS-05]
+- [x] 15-11-PLAN.md — Widen GET /v1/models + /v1/models/:id with allowlist filter + cloud_allowed (D-11) + integration tests for request_log + metrics + dual-surface filter parity [MCPS-03, MCPS-04, MCPS-05]
 - [ ] 15-12-PLAN.md — Golden snapshot drift gate (P1-03), MCPS-05 SIGTERM cleanup integration, D-15 disabled-mode integration, smoke section, DEPLOY/README docs, MCPS-06 stdio grep gate [MCPS-01, MCPS-02, MCPS-03, MCPS-05, MCPS-06]
 **UI hint**: no
 
@@ -242,7 +242,7 @@
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 14. Policy Primitives + Tenant ID Foundation | 9/9 | Complete    | 2026-05-30 |
-| 15. MCP Host (Router as MCP Server) | 10/12 | In Progress|  |
+| 15. MCP Host (Router as MCP Server) | 11/12 | In Progress|  |
 | 16. /v1/responses Streaming + Tool Calls | 0/TBD | Not started | - |
 | 17. SessionStore + ContextProvider + SummaryProvider | 0/TBD | Not started | - |
 | 18. MCP Client + RetrieverProvider + Pre-Completion Hook | 0/TBD | Not started | - |
