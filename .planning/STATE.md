@@ -3,19 +3,19 @@ gsd_state_version: 1.0
 milestone: v0.11.0
 milestone_name: Retrieval-Ready Infrastructure
 status: executing
-last_updated: "2026-05-31T05:41:35.284Z"
+last_updated: "2026-05-31T06:05:15.760Z"
 last_activity: 2026-05-31
 progress:
   total_phases: 6
   completed_phases: 1
   total_plans: 21
-  completed_plans: 18
+  completed_plans: 19
   percent: 17
 ---
 
 # Project State: local-llms
 
-**Last Updated:** 2026-05-31 — Phase 15 Plan 05 shipped (mcpHostPlugin shell: multi-method POST/GET/DELETE /mcp + in-process sessionMap + idle GC sweep + 5s Promise.race SIGTERM shutdown; buildServerForRequest is the SOLE Wave-4 tool-registration hook; MCPS-01/02/05 verified end-to-end). v0.11.0 progress: 1/6 phases + 5/12 Phase-15 plans complete (Wave 1: 15-01 env + 15-02 helper; Wave 2: 15-03 route refactor + 15-04 metric surface; Wave 3: 15-05 MCP plugin shell).
+**Last Updated:** 2026-05-31 — Phase 15 Plan 10 shipped (registerListModelsTool + all-5-tools wired in buildServerForRequest; P1-05 hard-coded allowlist; integration Test 3 inverted to assert the 5-tool golden set sort-stably; Tests 6 + 7 added for tools/call list_models (T-3-A2 anti-leak end-to-end) + chat_completion (MCPS-01 #3 assistant-text round-trip closed); Rule-1 fix on rerank + create-embedding inputSchema from JSON Schema → Zod schema (SDK 1.29.0 mcp.js:868)). v0.11.0 progress: 1/6 phases + 10/12 Phase-15 plans complete.
 **Status:** Ready to execute
 
 ## Project Reference
@@ -29,7 +29,7 @@ progress:
 ## Current Position
 
 Phase: 15
-Plan: 8 of 12 complete (15-01 EnvSchema widening; 15-02 applyPreflight helper; 15-03 HTTP route refactor; 15-04 MCP metric surface + protocol union; 15-05 mcpHostPlugin shell + sessionMap + GC + SIGTERM race) — Wave 3 task 1 of 4 done
+Plan: 10 of 12 complete (15-01..15-09 + 15-10 — Wave 5 done: list_models tool shipped, all 5 MCP tools wired into buildServerForRequest, integration suite locks the 5-tool golden set + end-to-end tools/call round-trips for list_models and chat_completion)
 Status: Ready to execute
 Last activity: 2026-05-31
 
@@ -38,7 +38,7 @@ Last activity: 2026-05-31
 ```
 Milestone v0.11.0: █▓░░░░░░░░ 17% — Phase 14/6 shipped (POL-01..06)
   Phase 14: ██████████ Policy Primitives + Tenant/Project ID Foundation (POL-01..06) — SHIPPED 2026-05-30
-  Phase 15: ████░░░░░░ MCP Host (MCPS-01..06) — Wave 1 done (15-01 env + 15-02 applyPreflight); Wave 2 done (15-03 HTTP route refactor + 15-04 metric surface); Wave 3 in-flight (15-05 mcpHostPlugin shell shipped — MCPS-01/02/05 end-to-end)
+  Phase 15: ████████░░ MCP Host (MCPS-01..06) — Wave 1..5 done (15-01..15-10): env + applyPreflight helper + HTTP route refactor + metric surface + mcpHostPlugin shell + 5 tool handlers + 5-tool wiring; MCPS-01..05 verified end-to-end; 15-11 (HTTP /v1/models mirror) + 15-12 next
   Phase 16: ░░░░░░░░░░ /v1/responses Streaming + Tool Calls (RESS-01..05)
   Phase 17: ░░░░░░░░░░ SessionStore + ContextProvider + SummaryProvider (SESS-01..06 + CTXP-01..04 + SUMP-01..03)
   Phase 18: ░░░░░░░░░░ MCP Client + RetrieverProvider + Pre-Completion Hook (MCPC-01..06 + RETR-01..06)
@@ -92,6 +92,7 @@ Milestone v0.9.0:  ██████████ 100% — SHIPPED 2026-05-28 (a
 - **15-05 onClose ordering**: MCP plugin registered AFTER main app.ts onClose body in buildApp — Fastify v5 fires main FIRST (3s bufferedWriter.drain), MCP onClose AFTER (5s Promise.race transport teardown ceiling). Fits 10s Compose stop_grace_period with 2s margin.
 - **Plan 15-06 chat_completion MCP tool ships (Wave 4 task 1 of 5)**: `router/src/mcp/host/tools/chat-completion.ts` + 8-case unit-test matrix. Registers `chat_completion` on the McpServer with `inputSchema = ChatCompletionRequestSchema` (Zod object passed directly — SDK 1.29.0 rejects raw JSON Schema input per `node_modules/@modelcontextprotocol/sdk/.../mcp.js:868`). Exported `JSON_SCHEMA_LOCK = z.toJSONSchema(ChatCompletionRequestSchema)` preserves the P1-03 drift gate at module load. Handler shape: applyPreflight → openAIRequestToCanonical(stream:false coerced) → adapter.chatCompletionsCanonical(signal) → dual-shape return; catch runs toOpenAIErrorEnvelope → isError:true (NO_ENVELOPE → 'client_disconnect'); finally pushes one `protocol:'mcp'` row + increments `routerMcpToolCallsTotal{tool:'chat_completion', status_class}`. D-14 abort wiring uses `extra.signal.addEventListener('abort', ...)` + finally removeEventListener. plugin.ts wiring deferred to Plan 15-10 per concurrency_warning (siblings 15-07/08/09 land their files in parallel; 15-10 wires all 5 atomically). Integration test extension (Task 3) also deferred to 15-10 because tool-call round-trip can only pass once the tool is wired.
 - **Plan 15-07 create_response MCP tool ships (Wave 4 task 2 of 5)**: `router/src/mcp/host/tools/create-response.ts` + 7-case unit-test matrix. Registers `create_response` on the McpServer with `inputSchema = ResponsesRequestSchema` (Zod, direct — same SDK constraint as 15-06). Exported `JSON_SCHEMA_LOCK = z.toJSONSchema(ResponsesRequestSchema)` preserves the P1-03 drift gate at module load (Rule-1 deviation from plan-as-written, identical reasoning to 15-06). Handler shape: ResponsesRequestSchema.parse(args) → applyPreflight → capability gate (chat) → responsesToCanonical(body, backend_model) [stream:false hard-coded inside, D-12 enforced by construction] → adapter.chatCompletionsCanonical(signal) → canonicalToResponses(canonicalResp, displayModel, echo) → dual-shape return where content[0].text = joined output_text blocks and structuredContent = full Responses-API wire body (incl. SDK-iteration safety fields: annotations:[], reasoning, text.format, tool_choice, parallel_tool_calls, truncation, usage.input_tokens_details, usage.output_tokens_details, output_text shortcut). Local `responsesToCanonical` + `canonicalToResponses` translators are byte-identical mirrors of responses.ts:132-284 (private helpers; reproduced locally to keep 15-07 decoupled from route-file edit; Plan 15-11 will add a wire-shape parity test). plugin.ts wiring deferred to Plan 15-10.
+- **Plan 15-10 list_models tool + 5-tool wiring ships (Wave 5)**: `router/src/mcp/host/tools/list-models.ts` (NEW, 7-case unit-test matrix) + 5 explicit `register*Tool(server, opts, capturedReq)` calls in `buildServerForRequest` (alphabetical-by-tool-name order: chat_completion, create_embedding, create_response, list_models, rerank). list_models is the only READ-ONLY MCP tool: no applyPreflight, no adapter call, no bufferedWriter row (the unit Test 7 explicitly asserts no push). Emits D-07 counter + duration histogram with `backend='none'`/`model='none'` sentinels. inputSchema is the empty raw shape `{}` — SDK 1.29.0 (mcp.js:851-853) accepts as "no params"; chosen over `z.object({})` to avoid a Zod indirection layer. Projection mirrors HTTP `/v1/models` T-3-A2 anti-leak (explicit field list, no spread of ModelEntry) + adds the D-10 `policy.cloud_allowed` annotation (default true). [Rule 1] Sibling tools `rerank.ts` and `create-embedding.ts` were passing `z.toJSONSchema(...)` as inputSchema → SDK 1.29.0 (mcp.js:868) rejects with "inputSchema must be a Zod schema or raw shape"; latent bug because plans 15-08/15-09 deferred plugin.ts wiring to 15-10. Fix: pass Zod schemas directly; exported `JSON_SCHEMA_LOCK = z.toJSONSchema(...)` from both files preserves the P1-03 drift gate. Integration Test 3 inverted: tools/list MUST return the exact 5-tool golden set sort-stably. Tests 6 + 7 added: tools/call list_models (T-3-A2 anti-leak end-to-end) + tools/call chat_completion (MCPS-01 success-criterion #3 assistant-text round-trip closed via opts.makeAdapter fake).
 - MCP session GC: 30-min interval + SIGTERM handler 5s timeout + Fastify `onClose` hook
 - SessionStore writes: SYNC + 1s timeout + fail-open (different from async-buffered request_log)
 - Token counting: `chars / 3` conservative heuristic + 20% ctx_size safety margin (no model-specific tokenizer)
@@ -104,4 +105,4 @@ Milestone v0.9.0:  ██████████ 100% — SHIPPED 2026-05-28 (a
 
 ### Active Todos
 
-- `/gsd:execute-phase 15` — Phase 15 execution underway (Wave 1 complete: 15-01, 15-02; Wave 2 complete: 15-03 HTTP route refactor + 15-04 metric surface; Wave 3 task 1/4 complete: 15-05 mcpHostPlugin shell). Wave 4 next: 15-06+ (5 tool registrations parallelizable on top of buildServerForRequest seam).
+- `/gsd:execute-phase 15` — Phase 15 execution: Waves 1..5 complete (15-01..15-10). Wave 6 remaining: 15-11 (HTTP /v1/models + /v1/models/:id mirror the D-10 filter + cloud_allowed annotation) + 15-12 (final phase wrap-up). MCPS-01..05 closed end-to-end through the MCP wire; MCPS-03/04 verified via the integration suite's 5-tool golden set + tools/call round-trips.
