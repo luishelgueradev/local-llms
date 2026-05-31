@@ -3,19 +3,19 @@ gsd_state_version: 1.0
 milestone: v0.11.0
 milestone_name: Retrieval-Ready Infrastructure
 status: executing
-last_updated: "2026-05-31T04:57:33.722Z"
+last_updated: "2026-05-31T05:04:15.414Z"
 last_activity: 2026-05-31
 progress:
   total_phases: 6
   completed_phases: 1
   total_plans: 21
-  completed_plans: 12
+  completed_plans: 13
   percent: 17
 ---
 
 # Project State: local-llms
 
-**Last Updated:** 2026-05-31 — Phase 15 Plan 04 shipped (MCP metric surface: router_mcp_tool_calls_total Counter + router_mcp_active_sessions Gauge + OutcomeContext.protocol widened to include 'mcp'). v0.11.0 progress: 1/6 phases + 3/12 Phase-15 plans complete (15-03 running in parallel).
+**Last Updated:** 2026-05-31 — Phase 15 Plan 03 shipped (5 HTTP routes refactored to call applyPreflight; HTTP wire shape preserved byte-identical; Phase 14 invariants green). v0.11.0 progress: 1/6 phases + 4/12 Phase-15 plans complete (Wave 1: 15-01 env + 15-02 helper; Wave 2: 15-03 route refactor + 15-04 metric surface).
 **Status:** Ready to execute
 
 ## Project Reference
@@ -29,7 +29,7 @@ progress:
 ## Current Position
 
 Phase: 15
-Plan: 4 of 12 complete (15-01 EnvSchema widening; 15-02 applyPreflight helper; 15-04 MCP metric surface + protocol union; 15-03 running in parallel)
+Plan: 5 of 12 complete (15-01 EnvSchema widening; 15-02 applyPreflight helper; 15-03 HTTP route refactor; 15-04 MCP metric surface + protocol union) — Wave 2 done
 Status: Ready to execute
 Last activity: 2026-05-31
 
@@ -38,7 +38,7 @@ Last activity: 2026-05-31
 ```
 Milestone v0.11.0: █▓░░░░░░░░ 17% — Phase 14/6 shipped (POL-01..06)
   Phase 14: ██████████ Policy Primitives + Tenant/Project ID Foundation (POL-01..06) — SHIPPED 2026-05-30
-  Phase 15: ██▓░░░░░░░ MCP Host (MCPS-01..06) — Wave 1 done (15-01 env + 15-02 applyPreflight); Wave 2 partial (15-04 metric surface shipped; 15-03 HTTP route refactor in parallel)
+  Phase 15: ███░░░░░░░ MCP Host (MCPS-01..06) — Wave 1 done (15-01 env + 15-02 applyPreflight); Wave 2 done (15-03 HTTP route refactor + 15-04 metric surface)
   Phase 16: ░░░░░░░░░░ /v1/responses Streaming + Tool Calls (RESS-01..05)
   Phase 17: ░░░░░░░░░░ SessionStore + ContextProvider + SummaryProvider (SESS-01..06 + CTXP-01..04 + SUMP-01..03)
   Phase 18: ░░░░░░░░░░ MCP Client + RetrieverProvider + Pre-Completion Hook (MCPC-01..06 + RETR-01..06)
@@ -85,6 +85,8 @@ Milestone v0.9.0:  ██████████ 100% — SHIPPED 2026-05-28 (a
 - **MCP metric naming (Phase 15 / Plan 15-04)**: MCP-specific Prometheus series use the `router_mcp_*` namespace — Counter `router_mcp_tool_calls_total{tool,status_class}` + Gauge `router_mcp_active_sessions` (no labels). Future MCP metrics must extend the same prefix for PromQL discoverability. Cardinality budget for the counter: 5 tools × ~5 status_classes ≈ 25 series.
 - **Plan 15-04 test placement convention**: registry assertions extend the canonical `router/tests/unit/metricsRegistry.test.ts`, NOT a new `router/tests/unit/metrics/registry.test.ts`. Keeps Pitfall 2 (no-double-register) coverage co-located with new-metric introspection.
 - **OutcomeContext.protocol union (Phase 15 / Plan 15-04)**: widened from `'openai' | 'anthropic'` to `'openai' | 'anthropic' | 'mcp'`. Strict superset; no migration needed (request_log.protocol is TEXT NOT NULL with no CHECK constraint). Wave 4 MCP tool handlers write `protocol: 'mcp'` rows without `as any` casts.
+- **Plan 15-03 HTTP route refactor**: All 5 HTTP routes (`chat-completions`, `messages`, `embeddings`, `rerank`, `responses`) call `applyPreflight()` at the top of the handler with structurally-identical stanza; `applyPolicyGate` + inline `breaker.check` removed from each route. Sentinel-open branch follows `req.resolvedBackend` stamp so `X-Model-Backend` header still flows on 503 responses. Phase 14 `policy-gate-integration.test.ts` 10/10 green; full vitest run 869 passed / 0 failed.
+- **15-03 capability check placement**: capability checks (vision/json_mode/embeddings/rerank/chat) kept in their pre-refactor location in each route — outside-try for chat/messages, inside-try for embeddings/rerank/responses — rather than moving them. This preserves the existing inner-try observability contract for capability-mismatch 400s without invasively reshaping each handler.
 - Migration numbering: Phase 14 gets next sequential number after 0004 (existing) — must read `_journal.json` as first task of Phase 14 plan
 - MCP session GC: 30-min interval + SIGTERM handler 5s timeout + Fastify `onClose` hook
 - SessionStore writes: SYNC + 1s timeout + fail-open (different from async-buffered request_log)
@@ -98,4 +100,4 @@ Milestone v0.9.0:  ██████████ 100% — SHIPPED 2026-05-28 (a
 
 ### Active Todos
 
-- `/gsd:execute-phase 15` — Phase 15 execution underway (Wave 1 complete: 15-01, 15-02; Wave 2: 15-04 metric surface SHIPPED; 15-03 HTTP route refactor running in parallel)
+- `/gsd:execute-phase 15` — Phase 15 execution underway (Wave 1 complete: 15-01, 15-02; Wave 2 complete: 15-03 HTTP route refactor + 15-04 metric surface). Wave 3 next: 15-05+ (MCP plugin scaffold).
