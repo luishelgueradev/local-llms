@@ -144,11 +144,11 @@
 4. The streaming path reuses the existing `fastify-sse-v2` plumbing, heartbeats (SSE comment lines), idempotency multiplexer replay, and the cost-recording machinery. Cost lands in `request_log.cost_cents` on stream completion (SSE headers seal before token counts are known, so `X-Cost-Cents` is NOT emitted on streamed responses — same behavior as chat-completions streaming today; non-streaming `/v1/responses` continues to emit the header). Verified by smoke confirming a streaming request produces a `request_log` row with `cost_cents > 0` for a cloud model.
 5. Each streaming event carries a `sequence_number` field and the stream never closes before `response.completed` under normal completion.
 
-**Plans:** 1/4 plans executed
+**Plans:** 2/4 plans executed
 
 Plans:
 - [x] 16-01-PLAN.md — Wave 0 scaffold (translator unit suite + 6 golden fixtures + route integration suite + P9-02 placeholder)
-- [ ] 16-02-PLAN.md — canonicalToResponsesSse translator + OutputItemStateMachine FSM + 25 unit tests + 6 populated golden fixtures
+- [x] 16-02-PLAN.md — canonicalToResponsesSse translator + OutputItemStateMachine FSM + 25 unit tests + 6 populated golden fixtures
 - [ ] 16-03-PLAN.md — /v1/responses route streaming branch (leader + follower) + 13+ integration tests RESS-01..05
 - [ ] 16-04-PLAN.md — P9-02 byte-identical golden snapshot lockdown + P3-04 heartbeat grep gate + smoke-test RESS section + STATE/ROADMAP/REQUIREMENTS update
 
@@ -249,7 +249,7 @@ Plans:
 |-------|----------------|--------|-----------|
 | 14. Policy Primitives + Tenant ID Foundation | 9/9 | Complete    | 2026-05-30 |
 | 15. MCP Host (Router as MCP Server) | 12/12 | Complete    | 2026-05-31 |
-| 16. /v1/responses Streaming + Tool Calls | 1/4 | In Progress|  |
+| 16. /v1/responses Streaming + Tool Calls | 2/4 | In Progress|  |
 | 17. SessionStore + ContextProvider + SummaryProvider | 0/TBD | Not started | - |
 | 18. MCP Client + RetrieverProvider + Pre-Completion Hook | 0/TBD | Not started | - |
 | 19. EmbeddingProvider Formalization + Observability Hardening | 0/TBD | Not started | - |

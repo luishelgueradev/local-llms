@@ -3,23 +3,25 @@ gsd_state_version: 1.0
 milestone: v0.11.0
 milestone_name: Retrieval-Ready Infrastructure
 status: executing
-last_updated: "2026-05-31T20:21:15.119Z"
+last_updated: "2026-05-31T20:42:00.000Z"
 last_activity: 2026-05-31
 progress:
   total_phases: 6
   completed_phases: 2
   total_plans: 25
-  completed_plans: 22
+  completed_plans: 23
   percent: 33
 ---
 
 # Project State: local-llms
 
-**Last Updated:** 2026-05-31 — Phase 16 Plan 16-01 SHIPPED (Wave 0 scaffold). 10 files landed (0 production-code touched): translator unit-suite skeleton (`router/tests/translation/responses-stream.test.ts`, 28 it.todo stubs across 6 describe blocks) + 6 golden-fixture placeholders (`router/tests/translation/golden/responses-stream/01..06-*.json`, locked shape `{ name, description, opts, canonical_events: [], expected_sse: [] }`) + route integration-suite skeleton (`router/tests/routes/responses-stream.test.ts`, 15 it.todo R1..R15 across 4 describes) + P9-02 regression fixture placeholder (`router/tests/routes/golden/responses-nonstream-v0.10.0.json`, `__placeholder: true` flag) + README documenting the new route-level golden convention. Wave-end gate green: translator suite exits non-zero on intentional missing-import signal (`canonicalToResponsesSse` path doesn't resolve yet — Plan 16-02 lands the translator), route suite reports 15 todo skipped (no failed assertions), all 7 JSON files parse, `git diff router/src/` empty. Establishes `tests/routes/golden/` as a NEW directory convention (first route-level golden snapshot in the repo). Phase 16 plan progress: 1/4.
+**Last Updated:** 2026-05-31 — Phase 16 Plan 16-02 SHIPPED (translator + FSM + golden fixtures). 8 files landed: 1 NEW production module (`router/src/translation/responses-stream.ts`, 511 LOC — `canonicalToResponsesSse` async generator + `OutputItemStateMachine` discriminated union + `makeResponseEnvelope` helper), unit-suite scaffold flipped from 28 it.todo to 32 real tests (26 unit + 6 golden), and all 6 golden fixtures populated with captured wire frames (canonical_events arrays + expected_sse arrays, 5–14 frames per fixture). Wire-shape decisions locked: tool-call terminator emits `status='incomplete'` + `incomplete_details.reason='tool_calls'` (NOT `'requires_action'`, per openai@6.37.0 SDK enum verification + orchestrator Q2 inline resolution); mid-stream upstream error → `response.failed` terminator with sanitized `{code, message}` envelope (T-16-02-T mitigation); abort path → no terminator (matches openai-out.ts:436-439). Plan-end gate green: 32/32 translator tests, typecheck clean, P9-02 BLOCK enforced (zero diff to canonical.ts/openai-out.ts/responses.ts), no `[DONE]` token in translator, no `openai-out` import. Full router suite: 995 passed / 0 failed / 7 skipped / 15 todo (the 15 todo are Plan 16-01's route integration scaffolds Plan 16-03 will flip). RESS-01..04 complete; RESS-05 (reuse + heartbeat) lands in Plan 16-03 (route streaming branch). Phase 16 plan progress: 2/4.
 
-(Previous: 2026-05-31 — Phase 15 COMPLETE (Plan 15-12 — final wrap-up shipped). Full vitest run: 949 passed / 7 skipped / 0 failed across 95 test files; typecheck green; all 6 MCPS requirements complete. v0.11.0 progress: 2/6 phases + 12/12 Phase-15 plans + 1/4 Phase-16 plans.)
+(Previous: 2026-05-31 — Phase 16 Plan 16-01 SHIPPED (Wave 0 scaffold). 10 test/fixture files; 0 production-code touched. Established `tests/routes/golden/` as NEW directory convention.)
 
-**Status:** Phase 16 in progress (Plan 16-01 shipped, 16-02 next)
+(Earlier: 2026-05-31 — Phase 15 COMPLETE. Full vitest run: 949 passed / 7 skipped / 0 failed; all 6 MCPS requirements complete.)
+
+**Status:** Phase 16 in progress (Plans 16-01 + 16-02 shipped, 16-03 next)
 
 ## Project Reference
 
@@ -27,27 +29,27 @@ progress:
 
 **Strategic frame (binding):** "Retrieval Interfaces, not Retrieval Logic" · "Memory Abstraction Layer, not Memory implementation" · local-llms = infraestructura; RAG/KB = consumidor downstream.
 
-**Current Focus:** Phase 16 — `/v1/responses` streaming + tool calls (in progress: Plan 16-01 shipped, 16-02 next)
+**Current Focus:** Phase 16 — `/v1/responses` streaming + tool calls (in progress: Plans 16-01 + 16-02 shipped, 16-03 next)
 
 ## Current Position
 
 Phase: 16 (Phase 15 SHIPPED 2026-05-31; Phase 16 in progress)
-Plan: 1/4 complete (16-01 — Wave 0 scaffold shipped 2026-05-31). Next: 16-02 (translator + FSM + populated golden fixtures).
+Plan: 2/4 complete (16-02 — translator + FSM + golden fixtures shipped 2026-05-31). Next: 16-03 (route streaming branch + RESS-01..05 integration tests).
 Status: In progress
 Last activity: 2026-05-31
 
 ### Progress
 
 ```
-Milestone v0.11.0: ███▓░░░░░░ 33% — Phase 14 + Phase 15 shipped (POL-01..06 + MCPS-01..06); Phase 16 1/4 plans
+Milestone v0.11.0: ████░░░░░░ 33% — Phase 14 + Phase 15 shipped (POL-01..06 + MCPS-01..06); Phase 16 2/4 plans (RESS-01..04 closed at translator level)
   Phase 14: ██████████ Policy Primitives + Tenant/Project ID Foundation (POL-01..06) — SHIPPED 2026-05-30
   Phase 15: ██████████ MCP Host (MCPS-01..06) — SHIPPED 2026-05-31 (all 12 plans + final gate green: golden snapshot drift gate, SIGTERM 5s race, D-15 disabled-mode, smoke section, DEPLOY+README docs, MCPS-06 stdio grep gate)
-  Phase 16: ██▓░░░░░░░ /v1/responses Streaming + Tool Calls (RESS-01..05) — 1/4 plans (16-01 Wave-0 scaffold shipped)
+  Phase 16: █████░░░░░ /v1/responses Streaming + Tool Calls (RESS-01..05) — 2/4 plans (16-02 translator + 6 golden fixtures shipped; RESS-01..04 closed at translator level)
   Phase 17: ░░░░░░░░░░ SessionStore + ContextProvider + SummaryProvider (SESS-01..06 + CTXP-01..04 + SUMP-01..03)
   Phase 18: ░░░░░░░░░░ MCP Client + RetrieverProvider + Pre-Completion Hook (MCPC-01..06 + RETR-01..06)
   Phase 19: ░░░░░░░░░░ EmbeddingProvider Formalization + Observability Hardening (EMBP-01..02 + OBSV-01..04)
 
-Overall v0.11.0:  ██▓░░░░░░░  12/48 requirements (POL-01..06 + MCPS-01..06)
+Overall v0.11.0:  ███░░░░░░░  16/48 requirements (POL-01..06 + MCPS-01..06 + RESS-01..04)
 
 Milestone v0.10.0: ██████████ 100% — SHIPPED 2026-05-29 (archived)
 Milestone v0.9.0:  ██████████ 100% — SHIPPED 2026-05-28 (archived)
@@ -81,6 +83,7 @@ Milestone v0.9.0:  ██████████ 100% — SHIPPED 2026-05-28 (a
 
 ### Active Decisions
 
+- **Plan 16-02 translator landed (Phase 16 / Wave 2)**: `router/src/translation/responses-stream.ts` (511 LOC, single new production file Phase 16 ships) exports `canonicalToResponsesSse` async generator + `CanonicalToResponsesSseOpts` interface. Internal: `OutputItemState` discriminated union (`idle | text | function_call`) encoding the 14-row FSM transition table; `makeResponseEnvelope` helper synthesizing `Response` shape for the four envelope-bearing events (created/in_progress/completed/failed). Sequence-number is monotonic `[0..N-1]` per stream (14 emit sites, each increments immediately before yield). Tool-call terminator: `response.completed.response.status='incomplete'` + `incomplete_details.reason='tool_calls'` (NOT `'requires_action'` — openai@6.37.0 ResponseStatus enum does not include it; Q2 inline resolution). Mid-stream error: `response.failed` with sanitized `{code,message}` envelope (no err.stack). Abort path: signal.aborted on upstream throw → return silently, no terminator (mirrors openai-out.ts:436-439). FSM violations swallowed (defense-in-depth). 32 tests green (26 unit + 6 golden); 6 golden fixtures populated with captured wire frames + scrubbed non-deterministic IDs (created_at, msg_<ulid>, fc_<ulid> → fixed sentinels via post-capture regex on JSON.stringify). [Rule-1 deviation] vi.useFakeTimers + setSystemTime(new Date(0)) hits a ulid library bug at Date.now()===0; switched to post-capture scrub which is more robust and avoids module-level mocks. P9-02 BLOCK: zero diff to canonical.ts/openai-out.ts/responses.ts. RESS-01..04 closed at translator level; RESS-05 (route reuse map) lands in Plan 16-03.
 - **Plan 16-01 Wave-0 scaffold conventions (Phase 16)**: (a) translator unit-suite imports `canonicalToResponsesSse` from a path that does not yet exist — intentional Wave-0 signal that the verification harness predates the code; vitest exits non-zero with "Cannot find module" rather than silently skipping. Plan 16-02 makes the import resolve. (b) Golden fixtures land with empty `canonical_events: []` and `expected_sse: []`; Plan 16-02 captures the live translator output and fills them in (avoids hard-coding placeholder values that would become a maintenance trap). (c) NEW directory convention: `router/tests/routes/golden/<scenario>.json` for captured wire-body snapshots; first instance is the P9-02 regression fixture (`responses-nonstream-v0.10.0.json`) with explicit `__placeholder: true` sentinel so Plan 16-04 can assert "not still a placeholder" as part of phase wrap-up (T-16-01-T mitigation). (d) Route integration suite imports `buildApp` + registry helpers + bearer constants eagerly and `void`s them — Plan 16-03 deletes the voids when `beforeEach` + assertions land (no import churn). (e) Every `it.todo` string is the exact test-matrix case name so Plans 16-02/16-03 flip todo → real test with zero rename churn.
 - **Plan 15-01 path corrections**: router/ uses npm (package-lock.json present, no pnpm-lock.yaml) — `npm install` not `pnpm install`. Env tests append to `router/tests/config/env.test.ts` (canonical) not `router/tests/unit/config/env.test.ts` (plan path, nonexistent). `.env.example` lives at repo root not `router/.env.example` — appending to root preserves single operator surface alongside CIRCUIT_*, ROUTER_RATE_LIMIT_RPM, ROUTER_EMBED_CACHE_TTL_SEC.
 - **MCP_ENABLED z.coerce.boolean quirk documented**: Zod v4 z.coerce.boolean() delegates to Boolean(value); any non-empty string is truthy. Operators disable by unsetting var (or `MCP_ENABLED=`). Documented inline in env.ts + .env.example so `MCP_ENABLED=false` doesn't silently leave plugin enabled.
@@ -110,8 +113,8 @@ Milestone v0.9.0:  ██████████ 100% — SHIPPED 2026-05-28 (a
 
 ### Active Todos
 
-- `/gsd:execute-phase 16` — Phase 16 execution: Plan 16-01 SHIPPED (Wave 0 scaffold). Next: Plan 16-02 (canonicalToResponsesSse translator + OutputItemStateMachine FSM + 25 unit tests + 6 populated golden fixtures). Remaining: 16-02 → 16-03 (route streaming branch + RESS-01..05 integration tests) → 16-04 (P9-02 byte-identical golden lockdown + P3-04 heartbeat grep gate + smoke RESS section + STATE/ROADMAP wrap-up).
+- `/gsd:execute-phase 16` — Phase 16 execution: Plans 16-01 + 16-02 SHIPPED (Wave 0 scaffold + Wave 2 translator + FSM + golden fixtures). Next: Plan 16-03 (route streaming branch — wire `canonicalToResponsesSse` into `/v1/responses` stream:true path, copy chat-completions.ts heartbeat/abort/idempotency/sseCleanup verbatim, flip the 15 it.todo route integration cases to real tests). Remaining: 16-03 → 16-04 (P9-02 byte-identical golden lockdown + P3-04 heartbeat grep gate + smoke RESS section + STATE/ROADMAP wrap-up).
 
 ### Last session
 
-- 2026-05-31T20:19:20Z — Stopped at: Completed 16-01-PLAN.md. Resume file: None.
+- 2026-05-31T20:38:36Z — Stopped at: Completed 16-02-PLAN.md (translator + FSM + 6 golden fixtures shipped). Resume file: None.

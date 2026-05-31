@@ -40,10 +40,10 @@ Phase 15 candidate. Router exposes its existing endpoints as MCP tools via Strea
 
 Phase 16 candidate. Closes v0.10.0 Phase 13 deferred work.
 
-- [ ] **RESS-01**: Caller can `POST /v1/responses` with `stream: true` and receives Server-Sent Events emitting the canonical Responses API event sequence: `response.created`, `response.in_progress`, `response.output_item.added`, `response.content_part.added`, `response.output_text.delta` (N times), `response.output_text.done`, `response.content_part.done`, `response.output_item.done`, `response.completed`.
-- [ ] **RESS-02**: Every streaming event carries `sequence_number` per the Responses API spec; `response.completed` is the last event on every successful stream (no premature connection close; verified by integration test asserting last-event invariant).
-- [ ] **RESS-03**: When the underlying model emits a function call, the stream surfaces `response.function_call_arguments.delta` (N times) + `response.function_call_arguments.done`, and the final `response.completed` includes `status: "incomplete"` with `incomplete_details: { reason: "tool_calls" }`. (Editorial note 2026-05-31 / Phase 16 research: an earlier draft of this requirement said `status: "requires_action"` — that value is Assistants-API-v2 vocabulary and is NOT part of the openai@6.x `ResponseStatus` enum for the Responses API; `incomplete + reason:tool_calls` is the spec-correct value the SDK emits when a function-calling stream pauses awaiting tool output.)
-- [ ] **RESS-04**: A new `responsesStreamTranslator` module converts the existing canonical chat-completions stream into Responses API events; golden round-trip fixtures verify wire shape against the openai-node SDK `Stream<ResponseStreamEvent>` types.
+- [x] **RESS-01**: Caller can `POST /v1/responses` with `stream: true` and receives Server-Sent Events emitting the canonical Responses API event sequence: `response.created`, `response.in_progress`, `response.output_item.added`, `response.content_part.added`, `response.output_text.delta` (N times), `response.output_text.done`, `response.content_part.done`, `response.output_item.done`, `response.completed`.
+- [x] **RESS-02**: Every streaming event carries `sequence_number` per the Responses API spec; `response.completed` is the last event on every successful stream (no premature connection close; verified by integration test asserting last-event invariant).
+- [x] **RESS-03**: When the underlying model emits a function call, the stream surfaces `response.function_call_arguments.delta` (N times) + `response.function_call_arguments.done`, and the final `response.completed` includes `status: "incomplete"` with `incomplete_details: { reason: "tool_calls" }`. (Editorial note 2026-05-31 / Phase 16 research: an earlier draft of this requirement said `status: "requires_action"` — that value is Assistants-API-v2 vocabulary and is NOT part of the openai@6.x `ResponseStatus` enum for the Responses API; `incomplete + reason:tool_calls` is the spec-correct value the SDK emits when a function-calling stream pauses awaiting tool output.)
+- [x] **RESS-04**: A new `responsesStreamTranslator` module converts the existing canonical chat-completions stream into Responses API events; golden round-trip fixtures verify wire shape against the openai-node SDK `Stream<ResponseStreamEvent>` types.
 - [ ] **RESS-05**: Streaming `/v1/responses` reuses the existing `fastify-sse-v2` plumbing, heartbeats (SSE comment lines), abort propagation, and idempotency multiplexer replay. Cost is recorded in `request_log.cost_cents` on stream completion (same as chat-completions streaming today — SSE headers seal before token counts are known, so `X-Cost-Cents` is NOT emitted on streamed responses; only non-streaming `/v1/responses` carries the header). Verified by piggyback on the existing chat-completions streaming smoke + a new `request_log.cost_cents > 0` assertion for the streaming path.
 
 ### Session storage (SESS)
@@ -190,10 +190,10 @@ The roadmap and plan-phase agents must reject any task that would:
 | MCPS-04 | Phase 15 | Complete |
 | MCPS-05 | Phase 15 | Complete |
 | MCPS-06 | Phase 15 | Complete |
-| RESS-01 | Phase 16 | Pending |
-| RESS-02 | Phase 16 | Pending |
-| RESS-03 | Phase 16 | Pending |
-| RESS-04 | Phase 16 | Pending |
+| RESS-01 | Phase 16 | Complete |
+| RESS-02 | Phase 16 | Complete |
+| RESS-03 | Phase 16 | Complete |
+| RESS-04 | Phase 16 | Complete |
 | RESS-05 | Phase 16 | Pending |
 | SESS-01 | Phase 17 | Pending |
 | SESS-02 | Phase 17 | Pending |
