@@ -249,7 +249,7 @@ Plans:
 |-------|----------------|--------|-----------|
 | 14. Policy Primitives + Tenant ID Foundation | 9/9 | Complete    | 2026-05-30 |
 | 15. MCP Host (Router as MCP Server) | 12/12 | Complete    | 2026-05-31 |
-| 16. /v1/responses Streaming + Tool Calls | 4/4 | Complete    | 2026-05-31 |
+| 16. /v1/responses Streaming + Tool Calls | 4/4 | Complete   | 2026-05-31 |
 | 17. SessionStore + ContextProvider + SummaryProvider | 0/TBD | Not started | - |
 | 18. MCP Client + RetrieverProvider + Pre-Completion Hook | 0/TBD | Not started | - |
 | 19. EmbeddingProvider Formalization + Observability Hardening | 0/TBD | Not started | - |
