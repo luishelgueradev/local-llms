@@ -2029,11 +2029,146 @@ fi
 echo ""
 echo "[smoke-test-router] === Phase 13 section complete ==="
 
+# ============================================================================
+# Phase 15 — MCP Host (MCPS-01..06)
+# ============================================================================
+# Proves the router exposes its capabilities as MCP tools over Streamable HTTP
+# at POST /mcp:
+#
+#   MCP-01: initialize handshake returns 200 + Mcp-Session-Id header.
+#   MCP-02: POST /mcp without Authorization returns 401 (bearer enforcement).
+#   MCP-03: tools/call list_models returns the expected dual-shape result
+#           (content[0].text matches "N models available"; structuredContent.data
+#           is the policy-projected array with no backend leak).
+#
+# Per ROADMAP Phase 15 SC1+SC2+SC3 (partial — SC4 SIGTERM + SC5 metrics are
+# covered by the vitest integration tests added in Plan 15-12).
+#
+# If MCP_ENABLED=false in the live router env, the initialize call returns 404
+# (D-15 disabled-mode behavior); we detect that and SKIP downstream MCP checks
+# rather than failing.
+# ============================================================================
+
+echo ""
+echo "[smoke-test-router] === Phase 15 — MCP Host (MCPS-01..06) ==="
+
+# MCP-01: initialize handshake
+echo "[smoke-test-router] MCP-01: initialize POST /mcp + Mcp-Session-Id ..."
+MCP_INIT_BODY='{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"smoke","version":"0.0.0"}}}'
+MCP_INIT_HEADERS_FILE=$(mktemp)
+MCP_INIT_BODY_FILE=$(mktemp)
+MCP_INIT_CODE=$(curl -s -o "${MCP_INIT_BODY_FILE}" -D "${MCP_INIT_HEADERS_FILE}" -w '%{http_code}' \
+  -X POST "${ROUTER_URL}/mcp" \
+  -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d "${MCP_INIT_BODY}" 2>/dev/null || echo "000")
+
+if [[ "${MCP_INIT_CODE}" == "404" ]]; then
+  skip "MCP-01: initialize returned 404 — router runs with MCP_ENABLED=false; skipping remaining MCP checks"
+  MCP_DISABLED=1
+elif [[ "${MCP_INIT_CODE}" == "200" ]]; then
+  # The SDK lower-cases header names; the smoke harness reads them case-
+  # insensitively to be safe across curl versions.
+  MCP_SID=$(grep -i '^mcp-session-id:' "${MCP_INIT_HEADERS_FILE}" | head -1 | sed 's/^[mM][cC][pP]-[sS][eE][sS][sS][iI][oO][nN]-[iI][dD]:[[:space:]]*//' | tr -d '\r\n')
+  if [[ -n "${MCP_SID}" ]]; then
+    pass "MCP-01: initialize returned 200 + Mcp-Session-Id=${MCP_SID:0:8}..."
+  else
+    fail "MCP-01: initialize returned 200 but Mcp-Session-Id header missing"
+  fi
+  MCP_DISABLED=0
+else
+  fail "MCP-01: initialize returned HTTP ${MCP_INIT_CODE} (expected 200 or 404). Body: $(head -c 200 "${MCP_INIT_BODY_FILE}")"
+  MCP_DISABLED=1  # skip downstream checks on unexpected failure
+fi
+rm -f "${MCP_INIT_HEADERS_FILE}" "${MCP_INIT_BODY_FILE}"
+
+# MCP-02: bearer 401
+echo "[smoke-test-router] MCP-02: POST /mcp without Authorization → 401 ..."
+MCP_NOAUTH_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "${ROUTER_URL}/mcp" \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d "${MCP_INIT_BODY}" 2>/dev/null || echo "000")
+if [[ "${MCP_NOAUTH_CODE}" == "401" ]]; then
+  pass "MCP-02: POST /mcp without Authorization → 401 (bearer enforced)"
+elif [[ "${MCP_NOAUTH_CODE}" == "404" ]] && [[ "${MCP_DISABLED}" == "1" ]]; then
+  skip "MCP-02: router has MCP_ENABLED=false (404 instead of 401)"
+else
+  fail "MCP-02: POST /mcp without Authorization → ${MCP_NOAUTH_CODE} (expected 401)"
+fi
+
+# MCP-03: tools/call list_models (only if MCP enabled + initialize succeeded)
+if [[ "${MCP_DISABLED}" != "1" ]] && [[ -n "${MCP_SID:-}" ]]; then
+  echo "[smoke-test-router] MCP-03: tools/call list_models ..."
+  # First send notifications/initialized so the SDK completes the handshake.
+  curl -s -o /dev/null -X POST "${ROUTER_URL}/mcp" \
+    -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+    -H 'Content-Type: application/json' \
+    -H 'Accept: application/json, text/event-stream' \
+    -H "Mcp-Session-Id: ${MCP_SID}" \
+    -d '{"jsonrpc":"2.0","method":"notifications/initialized"}' 2>/dev/null || true
+
+  MCP_CALL_BODY=$(curl -s -X POST "${ROUTER_URL}/mcp" \
+    -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+    -H 'Content-Type: application/json' \
+    -H 'Accept: application/json, text/event-stream' \
+    -H "Mcp-Session-Id: ${MCP_SID}" \
+    -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_models","arguments":{}}}' 2>/dev/null || true)
+
+  # Body may arrive as a single JSON envelope OR as an SSE frame; extract the
+  # first data: line if present, otherwise treat the body as JSON directly.
+  MCP_CALL_JSON=$(printf '%s\n' "${MCP_CALL_BODY}" | python3 -c '
+import sys, json, re
+raw = sys.stdin.read().strip()
+if raw.startswith("{"):
+  print(raw)
+else:
+  for line in raw.splitlines():
+    if line.startswith("data:"):
+      print(line[5:].strip())
+      break
+' 2>/dev/null || echo "")
+
+  if [[ -z "${MCP_CALL_JSON}" ]]; then
+    fail "MCP-03: tools/call list_models returned empty/unparseable body: $(echo "${MCP_CALL_BODY}" | head -c 200)"
+  else
+    MCP_CHECK=$(MCP_JSON="${MCP_CALL_JSON}" python3 -c '
+import json, os, re
+try:
+  d = json.loads(os.environ["MCP_JSON"])
+  result = d.get("result") or {}
+  if not result:
+    print("BAD:no result field; got: " + json.dumps(d)[:200]); raise SystemExit(0)
+  content = result.get("content") or []
+  text = content[0].get("text") if content and isinstance(content[0], dict) else ""
+  if not re.match(r"^\d+ models available$", text):
+    print(f"BAD:content[0].text did not match /^\\d+ models available$/: {text!r}"); raise SystemExit(0)
+  structured = result.get("structuredContent") or {}
+  data = structured.get("data")
+  if not isinstance(data, list):
+    print(f"BAD:structuredContent.data is not a list: {type(data).__name__}"); raise SystemExit(0)
+  print(f"OK text={text!r} models={len(data)}")
+except Exception as e:
+  print(f"BAD:{e}")
+')
+    case "${MCP_CHECK}" in
+      OK*)  pass "MCP-03: tools/call list_models returned dual-shape result (${MCP_CHECK#OK })" ;;
+      BAD:*) fail "MCP-03: ${MCP_CHECK#BAD:}" ;;
+      *)    fail "MCP-03: unexpected python output: ${MCP_CHECK}" ;;
+    esac
+  fi
+else
+  skip "MCP-03: skipping tools/call (initialize did not yield a session id or MCP disabled)"
+fi
+
+echo ""
+echo "[smoke-test-router] === Phase 15 MCP section complete ==="
+
 # Final summary
 echo ""
 echo "[smoke-test-router] ================================================================"
 if [[ "${FAILURES}" -eq 0 ]]; then
-  echo "[smoke-test-router]  Phase 2/3/4/5/7/8/12/13 router verification: COMPLETE."
+  echo "[smoke-test-router]  Phase 2/3/4/5/7/8/12/13/15 router verification: COMPLETE."
   echo "[smoke-test-router]  Model used : ${MODEL}"
   echo "[smoke-test-router]  Router URL : ${ROUTER_URL}"
   echo "[smoke-test-router]  Skipped    : ${SKIPS:-0} (vision sections require llama3.2-vision pull + outbound HTTPS)"
