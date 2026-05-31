@@ -24,6 +24,7 @@ cambias modelos/backends/quants/cuotas debajo sin tocar el codigo del cliente.
 
 - **Triple API:** OpenAI (`/v1/chat/completions`), Anthropic (`/v1/messages`), Responses (`/v1/responses`)
 - **Cinco surfaces:** chat, messages, embeddings, rerank, responses — con auth + breaker + rate-limit + idempotency uniformes
+- **MCP host (Phase 15 — v0.11.0):** expone 5 tools (`chat_completion`, `create_response`, `create_embedding`, `rerank`, `list_models`) sobre Streamable HTTP en `POST /mcp` — apuntá n8n MCP Server Trigger / Claude Desktop / Cursor con el mismo bearer token. Ver [DEPLOY.md § MCP Host](./DEPLOY.md#mcp-host-phase-15--v0110).
 - **JSON mode firme** — `response_format` validado con AJV + single-shot repair retry
 - **Reranker** — `/v1/rerank` Cohere/Jina-compat (bge-reranker-v2-m3 default via Ollama)
 - **Cache de embeddings** en Valkey con dims enforcement (rechaza vectores de dim incorrecta para proteger tu vector store)

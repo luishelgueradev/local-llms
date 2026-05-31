@@ -466,6 +466,114 @@ invocation needed.
 
 ---
 
+## MCP Host (Phase 15 — v0.11.0)
+
+The router exposes its existing capabilities as MCP (Model Context Protocol) tools over the
+Streamable HTTP transport at `POST /mcp`. The endpoint uses the **same bearer token** as `/v1/*`
+routes (`Authorization: Bearer ${ROUTER_BEARER_TOKEN}`) — there is no separate MCP credential.
+
+### Tools exposed
+
+| Tool | Wraps | inputSchema source |
+|------|-------|--------------------|
+| `chat_completion` | `POST /v1/chat/completions` | `ChatCompletionRequestSchema` (Zod → JSON Schema 2020-12) |
+| `create_response` | `POST /v1/responses` | `ResponsesRequestSchema` |
+| `create_embedding` | `POST /v1/embeddings` | `EmbeddingsRequestSchema` |
+| `rerank` | `POST /v1/rerank` | `RerankRequestSchema` |
+| `list_models` | `GET /v1/models` (read-only registry projection) | (no inputs) |
+
+`list_models` is the **single source of truth** for the policy-filtered model catalog —
+the same projection backs `GET /v1/models` (Plan 15-11 mirror), so HTTP and MCP clients
+see identical model lists with identical `policy.cloud_allowed` annotations and identical
+backend-leak protection (T-3-A2 — no `backend` / `backend_url` / `backend_model` /
+`vram_budget_gb` fields ever projected).
+
+### Streaming
+
+**Streaming is NOT supported inside MCP tool calls in v0.11.0.** The `chat_completion`
+and `create_response` tools silently coerce `stream: true` to `false` — the full response
+returns in `structuredContent`. For SSE streaming use the HTTP routes (`POST /v1/chat/completions`,
+`POST /v1/messages`, `POST /v1/responses`) directly. MCP-native streaming via progress
+notifications is deferred to a future MCPS-FUT item.
+
+### Configuration
+
+| Env var | Default | Effect |
+|---------|---------|--------|
+| `MCP_ENABLED` | `true` | When `false`, the `/mcp` route is NOT registered and returns 404. Used to disable MCP without rebuilding the router. |
+| `MCP_SESSION_TTL_SEC` | `3600` (1h) | Idle session GC threshold (seconds). Sessions with no activity for longer than this are closed on the next sweep. |
+| `MCP_GC_INTERVAL_MS` | `1800000` (30min) | Cadence of the idle-session GC sweep (ms). |
+
+All three are validated by the router's Zod env schema; invalid values fail boot fast.
+
+### Session lifecycle
+
+- `POST /mcp` with a JSON-RPC `initialize` body opens a new session; the SDK stamps a
+  random UUID on the `Mcp-Session-Id` response header.
+- All subsequent requests on that session MUST include the same `Mcp-Session-Id` header.
+- `DELETE /mcp` with the header explicitly terminates the session.
+- Idle sessions are reaped by the GC sweep after `MCP_SESSION_TTL_SEC` of inactivity.
+- On `SIGTERM` / `app.close()`, every active session's transport is closed via
+  `Promise.race(allSettled(transport.close()), 5s)` — the 5-second hard ceiling
+  guarantees the process exits within Compose's `stop_grace_period: 10s` budget even
+  when one transport is wedged (P1-04 mitigation, verified by
+  `router/tests/integration/mcp-shutdown.integration.test.ts`).
+
+### n8n MCP Server Trigger integration
+
+In n8n, add an MCP Server Trigger node pointing at `https://<your-router-host>/mcp` with
+the bearer token configured under the node's Authorization header. The handshake should
+return all 5 tools via `tools/list`; the most common invocation is `chat_completion`.
+
+For Claude Desktop / Cursor / Continue.dev, configure the MCP client section of the
+host application's config file with the same URL + bearer token. Each client's docs
+will explain the exact JSON path; the router's behavior is wire-identical regardless of
+client.
+
+### Observability
+
+- `router_mcp_active_sessions` (Prometheus gauge) — live count of MCP sessions; useful
+  as a leak canary. Should always trend toward 0 outside of active client traffic.
+- `router_mcp_tool_calls_total{tool, status_class}` — counter per tool invocation,
+  partitioned by status class (`2xx`, `4xx`, `5xx`, `aborted`).
+- The existing `router_requests_total{protocol, backend, model, status_class}` counter
+  is incremented with `protocol="mcp"` for every MCP tool call that touches a backend
+  (chat_completion / create_response / create_embedding / rerank — NOT list_models which
+  is a registry-only projection). Tokens / duration / TTFT histograms are also
+  observed under `protocol="mcp"`.
+- Pino log lines on tool calls carry flat keys: `tool_name`, `mcp_session_id`,
+  `mcp_request_id`, plus the existing scoped-ID keys (`agent_id`, `tenant_id`,
+  `project_id`, `workload_class`, `request_id`).
+- Each backend-touching MCP tool call writes ONE row to the `request_log` table with
+  `protocol='mcp'` and `route='/mcp'`.
+
+### Scoped IDs (X-Tenant-ID / X-Project-ID / X-Agent-ID / X-Workload-Class)
+
+Scoped IDs flow from the **OUTER** `POST /mcp` HTTP request via the existing
+`scopedIdsPreHandler` / `agentIdPreHandler`. All N tool calls within a JSON-RPC payload
+— and across the lifetime of an MCP session — share the same scoped identity (D-06).
+To get MCP tool calls into agent-scoped log queries, configure your MCP client to forward
+`X-Agent-Id` (and the other scoped headers if needed) on the initial `POST /mcp` request.
+
+### Verification
+
+The Phase 15 success criteria are gated by automated tests:
+
+| Criterion | Verified by |
+|-----------|-------------|
+| Initialize + tools/list returns 5 tools | `tests/integration/mcp-host.integration.test.ts` Test 3 |
+| Bearer 401 on missing Authorization | `tests/integration/mcp-host.integration.test.ts` Test 1 |
+| `chat_completion` round-trip returns assistant text | `tests/integration/mcp-host.integration.test.ts` Test 7 |
+| SIGTERM cleanup within 5s + gauge → 0 | `tests/integration/mcp-shutdown.integration.test.ts` |
+| `MCP_ENABLED=false` → /mcp 404 (no regression on /v1/*) | `tests/integration/mcp-disabled.integration.test.ts` |
+| Tool inputSchema drift gate | `tests/unit/mcp/host/tools-manifest.test.ts` + `tests/golden/mcp-tools-manifest.json` |
+| No stdio transport in `router/src/` (P1-01) | `tests/unit/mcp/host/stdio-grep-gate.test.ts` |
+
+The live-router smoke harness (`bin/smoke-test-router.sh`) covers the initialize + bearer-401
++ list_models call path against a running stack.
+
+---
+
 ## Backups + retencion
 
 **Diarios al disco** (sidecar `pg-backup` corre cada noche):
