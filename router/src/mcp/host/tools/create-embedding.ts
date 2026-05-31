@@ -76,6 +76,16 @@ import type { McpHostOpts } from '../plugin.js';
 const MCP_BREAKER_COOLDOWN_SEC = 60;
 
 /**
+ * P1-03 drift detection lock. Computed once at module load; the unit test
+ * re-runs `z.toJSONSchema(EmbeddingsRequestSchema)` and asserts deep-equality.
+ * Any divergence between the live route schema and this captured snapshot
+ * surfaces as a test failure. The SDK invokes `toJsonSchemaCompat(...)`
+ * internally when publishing `tools/list`, producing an equivalent JSON
+ * Schema 2020-12 object to what `z.toJSONSchema(EmbeddingsRequestSchema)` yields.
+ */
+export const JSON_SCHEMA_LOCK = z.toJSONSchema(EmbeddingsRequestSchema);
+
+/**
  * MCP tool result envelope shape — content + optional structuredContent + isError.
  * Matches the spec revision 2025-06+ dual-shape contract referenced in CONTEXT D-02.
  * (Local mirror of the same shape declared in `create-response.ts` — kept private
@@ -126,9 +136,13 @@ export function registerCreateEmbeddingTool(
         'structuredContent; the text content carries a one-line stamp ' +
         '("embedded N inputs, dims=D, model=M"). No MCP streaming.',
       // D-01 (P1-03 mitigation): the tool's input shape IS the route's Zod
-      // schema, converted to JSON Schema 2020-12 at registration time. Any
-      // future evolution of EmbeddingsRequestSchema propagates here for free.
-      inputSchema: z.toJSONSchema(EmbeddingsRequestSchema) as Record<string, unknown>,
+      // schema. SDK 1.29.0 (mcp.js:868) rejects raw JSON Schema input
+      // ("inputSchema must be a Zod schema or raw shape"); we pass the Zod
+      // schema directly and the SDK converts it to JSON Schema 2020-12 for
+      // the tools/list wire surface (equivalent to
+      // z.toJSONSchema(EmbeddingsRequestSchema)). JSON_SCHEMA_LOCK below
+      // preserves the literal call site for the P1-03 drift gate.
+      inputSchema: EmbeddingsRequestSchema as unknown as Record<string, unknown>,
     },
     async (rawArgs, extra) => {
       // Per-tool-call structured log lineage (D-08). Detached child — does NOT

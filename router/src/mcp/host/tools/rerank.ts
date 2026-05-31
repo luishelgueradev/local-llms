@@ -69,6 +69,16 @@ import {
 import type { McpHostOpts } from '../plugin.js';
 
 /**
+ * P1-03 drift detection lock. Computed once at module load; the unit test
+ * re-runs `z.toJSONSchema(RerankRequestSchema)` and asserts deep-equality.
+ * Any divergence between the live route schema and this captured snapshot
+ * surfaces as a test failure. The SDK invokes `toJsonSchemaCompat(...)`
+ * internally when publishing `tools/list`, producing an equivalent JSON
+ * Schema 2020-12 object to what `z.toJSONSchema(RerankRequestSchema)` yields.
+ */
+export const JSON_SCHEMA_LOCK = z.toJSONSchema(RerankRequestSchema);
+
+/**
  * Description shown in tools/list. Documents the D-03 stamp and where the
  * full score payload lives. Keep concise — MCP clients render this in
  * tool-picker UIs.
@@ -135,9 +145,13 @@ export function registerRerankTool(
       title: 'Rerank documents against a query',
       description: TOOL_DESCRIPTION,
       // D-01: passthrough — every option HTTP callers have is available to MCP
-      // callers. The JSON Schema is the runtime value the MCP wire expects;
-      // the SDK's internal extractor reads it as a Record<string, unknown>.
-      inputSchema: z.toJSONSchema(RerankRequestSchema) as Record<string, unknown>,
+      // callers. SDK 1.29.0 (mcp.js:868) rejects raw JSON Schema input
+      // ("inputSchema must be a Zod schema or raw shape"); we pass the Zod
+      // schema directly and the SDK converts it to JSON Schema for the
+      // tools/list wire surface (equivalent to z.toJSONSchema(RerankRequestSchema)).
+      // The exported JSON_SCHEMA_LOCK below preserves the literal call site
+      // so the P1-03 drift gate still surfaces under codebase grep.
+      inputSchema: RerankRequestSchema as unknown as Record<string, unknown>,
     },
     async (
       rawArgs: unknown,

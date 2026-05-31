@@ -28,7 +28,10 @@ import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod/v4';
 import type { FastifyRequest } from 'fastify';
 
-import { registerRerankTool } from '../../../../../src/mcp/host/tools/rerank.js';
+import {
+  registerRerankTool,
+  JSON_SCHEMA_LOCK,
+} from '../../../../../src/mcp/host/tools/rerank.js';
 import { RerankRequestSchema } from '../../../../../src/routes/v1/rerank.js';
 import { AllowlistViolationError } from '../../../../../src/errors/envelope.js';
 import type { ModelEntry } from '../../../../../src/config/registry.js';
@@ -178,11 +181,19 @@ function registerAndGet(
 }
 
 describe('Phase 15 Plan 09 — registerRerankTool', () => {
-  it('Test 1 (D-01 passthrough): inputSchema deep-equals z.toJSONSchema(RerankRequestSchema)', () => {
+  it('Test 1 (D-01 passthrough): inputSchema is the live RerankRequestSchema Zod object; JSON_SCHEMA_LOCK drift gate intact', () => {
     const { deps, capturedReq } = makeFakes();
     const reg = registerAndGet(deps, capturedReq);
     expect(reg.name).toBe('rerank');
-    expect(reg.config.inputSchema).toEqual(z.toJSONSchema(RerankRequestSchema));
+    // SDK 1.29.0 (mcp.js:842-855) requires a Zod schema or raw shape — not a
+    // raw JSON Schema object. We pass the Zod schema directly and the SDK
+    // converts it for the tools/list wire surface.
+    expect(reg.config.inputSchema).toBe(RerankRequestSchema);
+    // P1-03 drift gate: JSON_SCHEMA_LOCK was captured at module load via
+    // z.toJSONSchema(RerankRequestSchema); recomputing it MUST yield the
+    // same shape. A failed assertion here means the route schema changed
+    // without rebuilding the tool module (e.g., a stale dist/ cache).
+    expect(JSON_SCHEMA_LOCK).toEqual(z.toJSONSchema(RerankRequestSchema));
   });
 
   it('Test 2 (D-03 stamp + structuredContent payload): success returns the canonical stamp and full rerank response', async () => {

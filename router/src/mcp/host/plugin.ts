@@ -63,6 +63,16 @@ import type { CircuitBreaker } from '../../resilience/circuitBreaker.js';
 import type { MetricsRegistry } from '../../metrics/registry.js';
 import type { Env } from '../../config/env.js';
 import { startSessionGc, shutdownSessions, type SessionEntry } from './session-gc.js';
+// Wave 4 tool registrations (Plans 15-06..15-10). Each tool's `register*Tool`
+// helper closes over `opts` + the captured originating request and registers
+// itself onto the per-session McpServer. Plan 15-10 (this plan) is the SOLE
+// site that wires the 5 calls — siblings 15-06..15-09 only shipped the tool
+// files, not the wiring, to avoid Wave-4 file-overlap conflicts on plugin.ts.
+import { registerChatCompletionTool } from './tools/chat-completion.js';
+import { registerCreateEmbeddingTool } from './tools/create-embedding.js';
+import { registerCreateResponseTool } from './tools/create-response.js';
+import { registerListModelsTool } from './tools/list-models.js';
+import { registerRerankTool } from './tools/rerank.js';
 
 /**
  * Opts contract — provided by `app.ts` at registration time.
@@ -100,26 +110,25 @@ export interface McpHostOpts {
  * external API surface.
  */
 export function buildServerForRequest(
-  _capturedReq: FastifyRequest,
-  _deps: McpHostOpts,
+  capturedReq: FastifyRequest,
+  opts: McpHostOpts,
 ): McpServer {
   const server = new McpServer(
     { name: 'local-llms-router', version: '0.11.0' },
     { capabilities: { tools: {} } },
   );
 
-  // TODO(Wave 4 — Plans 15-06..15-10): register the five tools below. Each
-  // registration closes over `_capturedReq` + `_deps` and uses the same
-  // `applyPreflight` helper as the HTTP routes.
-  //
-  //   registerChatCompletionTool(server, _deps, _capturedReq);   // 15-06
-  //   registerCreateResponseTool(server, _deps, _capturedReq);   // 15-07
-  //   registerCreateEmbeddingTool(server, _deps, _capturedReq);  // 15-08
-  //   registerRerankTool(server, _deps, _capturedReq);           // 15-09
-  //   registerListModelsTool(server, _deps, _capturedReq);       // 15-10
-  //
-  // Wave 3 leaves the list empty so the plugin shell can be smoke-tested
-  // end-to-end with a passing initialize + an empty tools/list response.
+  // P1-05 mitigation: hard-coded explicit allowlist of the 5 MCP tools served
+  // by the router. NO `for (const ...)` loop; NO dynamic discovery. Adding a
+  // 6th tool requires a code change AND a passing tools/list assertion in the
+  // integration test (mcp-host.integration.test.ts Test 3) — both surface in
+  // code review. Alphabetical-by-tool-name order to keep the integration
+  // assertion sort-stable.
+  registerChatCompletionTool(server, opts, capturedReq);   // 15-06 → chat_completion
+  registerCreateEmbeddingTool(server, opts, capturedReq);  // 15-08 → create_embedding
+  registerCreateResponseTool(server, opts, capturedReq);   // 15-07 → create_response
+  registerListModelsTool(server, opts, capturedReq);       // 15-10 → list_models
+  registerRerankTool(server, opts, capturedReq);           // 15-09 → rerank
 
   return server;
 }

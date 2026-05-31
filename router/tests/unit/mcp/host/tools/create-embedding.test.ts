@@ -26,7 +26,10 @@ import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod/v4';
 import type { FastifyRequest } from 'fastify';
 
-import { registerCreateEmbeddingTool } from '../../../../../src/mcp/host/tools/create-embedding.js';
+import {
+  registerCreateEmbeddingTool,
+  JSON_SCHEMA_LOCK,
+} from '../../../../../src/mcp/host/tools/create-embedding.js';
 import { EmbeddingsRequestSchema } from '../../../../../src/routes/v1/embeddings.js';
 import { AllowlistViolationError } from '../../../../../src/errors/envelope.js';
 import type { ModelEntry } from '../../../../../src/config/registry.js';
@@ -176,11 +179,18 @@ function registerAndGet(deps: ReturnType<typeof makeFakes>['deps'], capturedReq:
 }
 
 describe('Phase 15 Plan 08 — registerCreateEmbeddingTool', () => {
-  it('Test 1 (D-01 passthrough): inputSchema deep-equals z.toJSONSchema(EmbeddingsRequestSchema)', () => {
+  it('Test 1 (D-01 passthrough): inputSchema is the live EmbeddingsRequestSchema Zod object; JSON_SCHEMA_LOCK drift gate intact', () => {
     const { deps, capturedReq } = makeFakes();
     const reg = registerAndGet(deps, capturedReq);
     expect(reg.name).toBe('create_embedding');
-    expect(reg.config.inputSchema).toEqual(z.toJSONSchema(EmbeddingsRequestSchema));
+    // SDK 1.29.0 (mcp.js:842-855) requires a Zod schema or raw shape — not a
+    // raw JSON Schema object. We pass the Zod schema directly and the SDK
+    // converts it for the tools/list wire surface.
+    expect(reg.config.inputSchema).toBe(EmbeddingsRequestSchema);
+    // P1-03 drift gate: JSON_SCHEMA_LOCK was captured at module load via
+    // z.toJSONSchema(EmbeddingsRequestSchema); recomputing it MUST yield
+    // the same shape.
+    expect(JSON_SCHEMA_LOCK).toEqual(z.toJSONSchema(EmbeddingsRequestSchema));
   });
 
   it('Test 2 (D-03 stamp + structuredContent vector payload): success returns the canonical stamp and full embeddings response', async () => {

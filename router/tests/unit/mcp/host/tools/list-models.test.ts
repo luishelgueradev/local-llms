@@ -182,12 +182,11 @@ describe('Phase 15 Plan 10 — registerListModelsTool', () => {
     const { deps, capturedReq } = makeFakes();
     const reg = registerAndGet(deps, capturedReq);
     expect(reg.name).toBe('list_models');
-    // Empty JSON Schema object — no properties, no required.
-    expect(reg.config.inputSchema).toEqual({
-      type: 'object',
-      properties: {},
-      additionalProperties: false,
-    });
+    // The SDK accepts an empty raw shape `{}` as a "no params" tool input
+    // (mcp.js:842-855). On the wire (tools/list), the SDK converts this to
+    // `{ type:'object', properties:{}, additionalProperties:false }`, but
+    // at registration time the value the SDK sees IS the empty object.
+    expect(reg.config.inputSchema).toEqual({});
   });
 
   it('Test 2 (allow-all default): empty/unset allowlist returns ALL registered models', async () => {
