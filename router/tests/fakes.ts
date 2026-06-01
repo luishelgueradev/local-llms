@@ -339,11 +339,16 @@ export function makeFakeMcpClientRegistry(
 ): McpClientRegistry {
   const callTrace = opts.callTrace ?? [];
   return {
-    async getOrConnect(alias: string): Promise<unknown> {
+    // The SDK's `Client` type is heavily generic; tests assert against
+    // structural shape (`{ name }`) not type-identity. The double-cast
+    // through `unknown` matches the Phase 17 `makeFakeSessionStore` pattern
+    // where the production interface is intentionally loose.
+    async getOrConnect(alias: string) {
       if (opts.shouldFailOn?.alias === alias && opts.shouldFailOn.on === 'connect') {
         throw new Error(`fake-fail: connect ${alias}`);
       }
-      return { name: `fake-client-${alias}` };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return { name: `fake-client-${alias}` } as any;
     },
     async getOrFetchTools(alias: string): Promise<CanonicalTool[]> {
       if (opts.shouldFailOn?.alias === alias && opts.shouldFailOn.on === 'list') {

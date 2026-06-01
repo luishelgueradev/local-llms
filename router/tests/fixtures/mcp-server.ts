@@ -31,7 +31,7 @@
  * It is imported by integration tests that own their own vitest scaffolding.
  */
 import { http, HttpResponse } from 'msw';
-import { setupServer, type SetupServerApi } from 'msw/node';
+import { setupServer, type SetupServer } from 'msw/node';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Public constants
@@ -119,7 +119,7 @@ export interface SetupMcpMswServerOpts {
  * additional GET / DELETE requests for SSE-stream open / session-delete
  * that we want to scope to this fixture's listener only.
  */
-export function setupMcpMswServer(opts: SetupMcpMswServerOpts = {}): SetupServerApi {
+export function setupMcpMswServer(opts: SetupMcpMswServerOpts = {}): SetupServer {
   const baseUrl = opts.baseUrl ?? MCP_FIXTURE_BASE_URL;
   const tools = opts.tools ?? DEFAULT_TOOLS;
   const callResultText = JSON.stringify(opts.callResult ?? { ok: true });

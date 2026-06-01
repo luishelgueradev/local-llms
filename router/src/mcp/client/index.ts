@@ -1,8 +1,10 @@
 /**
  * Phase 18 (v0.11.0 — MCPC-01..06): mcp/client/ barrel.
  *
- * Re-exports the public utilities. Plans 18-04 + 18-05 add registry +
- * tool-loop exports.
+ * Single import surface for the MCP client subsystem. Production wiring
+ * (Plan 18-07's composition root) imports the registry factory + types
+ * from here; route helpers (Plan 18-05's tool-loop, Plan 18-06's hook
+ * runner) import the prefix/sanitize utilities from here.
  */
 
 export {
@@ -19,5 +21,17 @@ export {
   PREFIX_SEPARATOR,
 } from './prefix.js';
 
-// Plan 18-04 adds: makeMcpClientRegistry + type McpClientRegistry + type McpServerConfig
+// Plan 18-04: registry factory + types + outbound auth/transport factory.
+export {
+  makeMcpClientRegistry,
+  type McpClientRegistry,
+  type McpServerConfig,
+  type MakeMcpClientRegistryOpts,
+} from './registry.js';
+
+export {
+  buildClient,
+  buildOutboundHeaders,
+} from './transport.js';
+
 // Plan 18-05 adds: runMcpToolLoop + MCP_TOOL_LOOP_MAX + type RunMcpToolLoopOpts
