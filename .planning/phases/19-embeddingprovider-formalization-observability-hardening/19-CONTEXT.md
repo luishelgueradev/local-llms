@@ -96,7 +96,7 @@ Phase 19 is the final phase of v0.11.0 — after this lands, the milestone is CO
 
   Phase 19 smoke section adds a one-line banner cite: `Phase 19 OBSV-01: MCP slice satisfied by Phase 15 MCP-01..03`. No new MCP gates.
 
-- **D-17:** **`tools/list` explicit gate: NOT added** — Phase 15 MCP-03 invokes `tools/call list_models` which exercises the same tools-routing path as `tools/list`. Adding a `tools/list` gate would be defensive duplication. Decision logged here so future audits don't flag it as a gap. (If a real consumer reports `tools/list` working but `tools/call` broken — which would be very unusual — we add the gate then.)
+- **D-17 [informational]:** **`tools/list` explicit gate: NOT added** — Phase 15 MCP-03 invokes `tools/call list_models` which exercises the same tools-routing path as `tools/list`. Adding a `tools/list` gate would be defensive duplication. Decision logged here so future audits don't flag it as a gap. (If a real consumer reports `tools/list` working but `tools/call` broken — which would be very unusual — we add the gate then.)
 
 - **D-18:** **`/v1/responses` streaming WITH tools: NEW live smoke gate.** Phase 16 smoke covers stream-no-tools (lines 2194–2287). OBSV-01 literally says "with and without tools" — Phase 19 adds a new gate `RESS-WITH-TOOLS` to `bin/smoke-test-router.sh`:
   - POST to `/v1/responses` with `{ stream: true, model: '<cloud-function-calling-model>', input: '<deterministic-tool-trigger-prompt>', tools: [...] }`.
@@ -142,7 +142,7 @@ Phase 19 is the final phase of v0.11.0 — after this lands, the milestone is CO
 
 ### Phase 19 Plan Structure (planner guidance)
 
-- **D-23:** **Expected plan count: 5–7 plans.** Tentative breakdown (planner refines):
+- **D-23 [informational]:** **Expected plan count: 5–7 plans.** Tentative breakdown (planner refines):
   1. Wave 0 scaffold — test placeholders (provider unit test + cardinality-live integration test + smoke gate stubs)
   2. `EmbeddingProvider` interface + types/fastify.d.ts augmentation + `OpenAIEmbeddingProvider` impl (with cache moved in)
   3. `/v1/embeddings` route refactor — delegate to provider, preserve wire shape (P7-01 gate)

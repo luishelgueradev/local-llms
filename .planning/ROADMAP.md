@@ -56,6 +56,7 @@
 **Requirements**: POL-01, POL-02, POL-03, POL-04, POL-05, POL-06
 
 **Design constraints (BLOCK-severity from PITFALLS.md):**
+
 - Policy gate fires BEFORE circuit breaker check (P8-01 BLOCK) — same position as existing capability gate; allowlist violations must NOT count as backend failures
 - `cloud_allowed: false` checked against `entry.backend === 'ollama-cloud'` (P8-02 BLOCK) — no per-request override; route Zod schemas use `.strict()`
 - Prometheus metric labels NEVER include `tenant_id`, `project_id`, `agent_id`, `session_id` (P8-03 BLOCK) — these IDs live only in Postgres + pino; CI check validates `/metrics` output against `_id` suffix
@@ -63,6 +64,7 @@
 - `X-Workload-Class: sensitive` is opaque metadata only — no content classification (Frame-04 BLOCK)
 
 **Success Criteria** (what must be TRUE):
+
 1. An operator who adds `model_allowlist: ["chat-local"]` to a registry entry sees any request for a different model return `403 { code: "model_not_in_allowlist", model }` before the circuit breaker is consulted (verified by integration test asserting breaker counter unchanged after the 403).
 2. An operator who sets `policy.cloud_allowed: false` for a registry entry sees requests routed to `backend: ollama-cloud` return `403 { code: "cloud_not_allowed", model }`, with no cloud request emitted to Ollama Cloud.
 3. A caller sending `X-Tenant-ID: acme` and `X-Project-ID: agents` sees both values appear in the Postgres `request_log` row for that request (verified by integration test querying the DB row).
@@ -70,6 +72,7 @@
 5. Existing smoke test suite passes unchanged (policy defaults to allow-all with no config declared).
 
 **Plans:** 9/9 plans complete
+
 - [x] 14-01-PLAN.md — Migration 0005 atomic tuple (SQL + Drizzle schema + journal entry) [POL-04]
 - [x] 14-02-PLAN.md — Extend RegistrySchema with `policies` + per-entry `policy.cloud_allowed` [POL-01, POL-02]
 - [x] 14-03-PLAN.md — Add AllowlistViolationError, CloudNotAllowedError, InvalidScopedIdError + envelope mappings [POL-01, POL-02, POL-05]
@@ -91,6 +94,7 @@
 **Requirements**: MCPS-01, MCPS-02, MCPS-03, MCPS-04, MCPS-05, MCPS-06
 
 **Design constraints (BLOCK-severity from PITFALLS.md):**
+
 - Streamable HTTP ONLY — no stdio transport (P1-01 BLOCK) — n8n production compatibility; stdio is explicitly NOT exposed (MCPS-06)
 - Bearer auth inherited from app-level `onRequest` hook (P1-02 BLOCK) — MCP plugin registered under the same Fastify scope; no separate auth mechanism; unauthenticated access returns 401 before any MCP-level handling
 - MCP tool JSON Schemas generated programmatically from existing Zod schemas via `z.toJSONSchema()` (P1-03 BLOCK) — no hand-authored duplicate schemas; prevents drift
@@ -100,6 +104,7 @@
 - Exactly five tools exposed: `chat_completion`, `create_response`, `create_embedding`, `rerank`, `list_models` — explicit allowlist, no auto-discovery of routes (P1-05 FLAG)
 
 **Success Criteria** (what must be TRUE):
+
 1. A caller using the `@modelcontextprotocol/sdk` TypeScript `Client` connects to `POST /mcp` with `Authorization: Bearer <token>` and successfully calls `tools/list`, receiving at least the five declared tools (`chat_completion`, `create_response`, `create_embedding`, `rerank`, `list_models`).
 2. A caller who omits the `Authorization` header on `POST /mcp` receives `401` before any MCP-level JSON-RPC handling occurs.
 3. A caller invokes the `chat_completion` MCP tool with `{ model: "chat-local", messages: [...] }` and receives a non-error MCP tool result containing the model's text response — verified by integration test using the `@modelcontextprotocol/sdk` Client.
@@ -107,6 +112,7 @@
 5. The `router_mcp_active_sessions` Prometheus gauge is present in `/metrics` output and reflects the current session count (0 when no MCP clients are connected).
 
 **Plans:** 12/12 plans executed
+
 - [x] 15-01-PLAN.md — Install @modelcontextprotocol/sdk@^1.29.0 + extend EnvSchema with MCP_ENABLED/MCP_SESSION_TTL_SEC/MCP_GC_INTERVAL_MS [MCPS-01]
 - [x] 15-02-PLAN.md — applyPreflight helper (resolve + gate + breaker) + unit-test matrix [MCPS-01]
 - [x] 15-03-PLAN.md — Refactor 5 HTTP routes to call applyPreflight (chat/messages/embeddings/rerank/responses) [MCPS-01]
@@ -119,6 +125,7 @@
 - [x] 15-10-PLAN.md — list_models MCP tool (D-10 allowlist filter + cloud_allowed annotation + T-3-A2 anti-leak) [MCPS-03, MCPS-04]
 - [x] 15-11-PLAN.md — Widen GET /v1/models + /v1/models/:id with allowlist filter + cloud_allowed (D-11) + integration tests for request_log + metrics + dual-surface filter parity [MCPS-03, MCPS-04, MCPS-05]
 - [x] 15-12-PLAN.md — Golden snapshot drift gate (P1-03), MCPS-05 SIGTERM cleanup integration, D-15 disabled-mode integration, smoke section, DEPLOY/README docs, MCPS-06 stdio grep gate [MCPS-01, MCPS-02, MCPS-03, MCPS-05, MCPS-06]
+
 **UI hint**: no
 
 ---
@@ -132,12 +139,14 @@
 **Requirements**: RESS-01, RESS-02, RESS-03, RESS-04, RESS-05
 
 **Design constraints (BLOCK-severity from PITFALLS.md):**
+
 - Dedicated `responsesStreamTranslator` module with explicit `OutputItemStateMachine` (P3-01 BLOCK, P3-02 BLOCK) — states: `idle | text | function_call`; never re-use chat-completions SSE events
 - `response.completed` is always the final event on every successful stream (P3-03 BLOCK) — verified by integration test asserting last-event invariant
 - Heartbeats MUST use SSE comment lines (`: keep-alive`) not data events (P3-04 FLAG) — same existing pattern; regression risk on copy-paste
 - Golden fixture for non-streaming `/v1/responses` shape from v0.10.0 must pass unchanged (P9-02 BLOCK) — streaming addition must not alter non-streaming wire shape
 
 **Success Criteria** (what must be TRUE):
+
 1. A caller sends `POST /v1/responses` with `{ stream: true, model: "chat-local", input: "hello" }` and receives an SSE stream whose events in order are: `response.created`, `response.in_progress`, `response.output_item.added`, `response.content_part.added`, one or more `response.output_text.delta`, `response.output_text.done`, `response.content_part.done`, `response.output_item.done`, `response.completed` — and `response.completed` is the final non-comment event.
 2. A caller sends the same request with a function-calling model and tool definitions; the stream surfaces `response.function_call_arguments.delta` events and the final `response.completed` includes `status: "incomplete"` with `incomplete_details: { reason: "tool_calls" }`. (Editorial note 2026-05-31: corrected from `"requires_action"` — that value belongs to Assistants-API-v2; the Responses-API `ResponseStatus` enum in openai@6.x uses `incomplete + reason:tool_calls` for the pause-awaiting-tools state.)
 3. The existing non-streaming `POST /v1/responses` golden fixture (v0.10.0) passes unchanged — wire shape, `usage`, and `output` fields are byte-identical to the v0.10.0 fixture.
@@ -147,6 +156,7 @@
 **Plans:** 4/4 plans complete
 
 Plans:
+
 - [x] 16-01-PLAN.md — Wave 0 scaffold (translator unit suite + 6 golden fixtures + route integration suite + P9-02 placeholder) [RESS-01..05]
 - [x] 16-02-PLAN.md — canonicalToResponsesSse translator + OutputItemStateMachine FSM + 25 unit tests + 6 populated golden fixtures [RESS-01, RESS-02, RESS-03, RESS-04]
 - [x] 16-03-PLAN.md — /v1/responses route streaming branch (leader + follower) + 13+ integration tests RESS-01..05 [RESS-01..05]
@@ -165,6 +175,7 @@ Plans:
 **Phase 17 split rationale (kept whole):** SESS-01..06 (SessionStore + DB), CTXP-01..04 (ContextProvider strategies), and SUMP-01..03 (SummaryProvider seam) all wire into the same route integration point at the same time — splitting would leave routes half-integrated (session loading without window management) and double the integration overhead. 13 REQs with clear internal sequencing (SESS → CTXP → SUMP) fit a single coherent delivery boundary.
 
 **Design constraints (BLOCK-severity from PITFALLS.md):**
+
 - `sessions.expires_at TIMESTAMPTZ NOT NULL` in migration from day one (P4-01 BLOCK) — no unbounded retention path; default TTL 7 days
 - `pg_advisory_xact_lock(hashtext(session_id))` inside transaction wrapping turn append (P4-02 BLOCK) — prevents concurrent write race for same session_id
 - `SessionStore.loadHistory()` requires `agent_id` as mandatory parameter (P4-03 BLOCK) — cross-agent leakage prevented at query layer; WHERE clause always includes `agent_id`
@@ -176,6 +187,7 @@ Plans:
 - Migration journal: assign number as first task; consult `_journal.json` before writing any SQL (P9-01 BLOCK)
 
 **Success Criteria** (what must be TRUE):
+
 1. A caller sends `POST /v1/chat/completions` twice with the same `X-Session-ID: <id>` header; the second request's model response demonstrates awareness of the first turn's content (the history was loaded and injected into the second request's message array).
 2. A caller sends `X-Session-ID` with one `agent_id` and attempts to load that session with a different `agent_id`; they receive an empty history (cross-tenant leakage prevention verified by integration test).
 3. A model entry declaring `context_strategy: sliding-window` with `ctx_size: 4096` receives a long session; the ContextProvider trims the history to fit, the system message is always present at index 0 in the trimmed context, and no 400 "context length exceeded" error occurs from the backend.
@@ -185,6 +197,7 @@ Plans:
 **Plans:** 7/7 plans complete
 
 Plans:
+
 - [x] 17-01-PLAN.md — Wave 0 scaffold (9 test files + tests/fakes.ts extension; `it.todo` placeholders + SESS-01 expectTypeOf assertions) [SESS-01..06 + CTXP-01..04 + SUMP-01..03] — SHIPPED 2026-06-01
 - [x] 17-02-PLAN.md — Migration 0006 indivisible tuple (SQL + Drizzle schema + journal + barrel re-export) [SESS-02] — SHIPPED 2026-06-01
 - [x] 17-03-PLAN.md — SessionStore interface + 4 error classes + PostgresSessionStore (advisory lock + 1s fail-open + sliding TTL + agent_id mandatory) [SESS-01, SESS-02, SESS-03, SESS-04] — SHIPPED 2026-06-01
@@ -204,6 +217,7 @@ Plans:
 **Requirements**: MCPC-01, MCPC-02, MCPC-03, MCPC-04, MCPC-05, MCPC-06, RETR-01, RETR-02, RETR-03, RETR-04, RETR-05, RETR-06
 
 **Design constraints (BLOCK-severity from PITFALLS.md):**
+
 - MCP clients connect LAZILY on first use (P2-01 BLOCK) — router boot MUST NOT block on external MCP server availability; `/readyz` does not check MCP client connectivity
 - Tool names namespace-prefixed `{server_alias}__{tool_name}` on ingestion; stripped on dispatch (P2-02 BLOCK) — prevents collision across multiple MCP servers
 - External MCP tool descriptions validated: name must match `[a-z0-9_]{1,64}`, description truncated at 512 chars with warning (P2-03 BLOCK) — defense-in-depth against tool poisoning
@@ -217,6 +231,7 @@ Plans:
 - No in-process retriever implementation shipped (Frame-01 BLOCK) — `NoopRetrieverProvider` exists only in tests via `msw` fixture server
 
 **Success Criteria** (what must be TRUE):
+
 1. An operator declares an external MCP server in `mcp_servers:` in `models.yaml`; the router starts cleanly even if that server is unreachable at boot time, and only fails at request time when an MCP-tool-enabled request is made (integration test: unresponsive MCP server during boot, router `/readyz` returns 200).
 2. Two external MCP servers each register a tool named `search`; after tool injection the model's tool list contains `serverA__search` and `serverB__search` with no collision, and calling `serverA__search` routes to server A while `serverB__search` routes to server B.
 3. A request with a pre-completion hook configured with `on_timeout: fail-open` continues to completion when the hook times out (request succeeds, `X-Hook-Error` response header is set, hook timeout is logged); a request with `on_timeout: fail-closed` returns 502 when the hook times out.
@@ -227,6 +242,7 @@ Plans:
 **Plans:** 8/8 plans complete
 
 Plans:
+
 - [x] 18-01-PLAN.md — Wave 0 scaffold (22+ test files + MSW MCP fixture + tests/fakes.ts extension) [MCPC-01..06 + RETR-01..06] — SHIPPED 2026-06-01
 - [x] 18-02-PLAN.md — Migration 0007 indivisible tuple (SQL + Drizzle + journal idx=7 + barrel) + 4 envelope errors + 2 Prometheus metrics + registry Zod widening + models.yaml stanza [MCPC-01, MCPC-04, MCPC-05, RETR-03, RETR-04] — SHIPPED 2026-06-01
 - [x] 18-03-PLAN.md — RetrieverProvider interface + inject.ts (P5-03 fence) + sanitize.ts (P2-03) + prefix.ts (MCPC-03) + barrels [RETR-01, RETR-05, MCPC-03] — SHIPPED 2026-06-01
@@ -247,11 +263,13 @@ Plans:
 **Requirements**: EMBP-01, EMBP-02, OBSV-01, OBSV-02, OBSV-03, OBSV-04
 
 **Design constraints (BLOCK-severity from PITFALLS.md):**
+
 - Prometheus cardinality CI check (`scripts/check-prometheus-cardinality.ts`) FAILS on any label containing `_id` suffix (P8-03 BLOCK) — enforcement of zero-cardinality-explosion guarantee for `tenant_id`, `agent_id`, etc.
 - `OBSV-04`: If `hook_log` JSONB column on `request_log` was not added in Phase 18, migration 0007 adds it here as safety net — migration journal must be consulted first (P9-01 BLOCK)
 - Smoke test extension is not optional (P9-03 BLOCK) — new PASS entries required for `/mcp` initialize + tools/list + tools/call, streaming `/v1/responses` with and without tools, session round-trip, hook invocation, policy enforcement
 
 **Success Criteria** (what must be TRUE):
+
 1. `bin/smoke-test-router.sh` runs end-to-end against the live stack with new sections covering: `/mcp` (initialize + tools/list + `list_models` tool call), streaming `/v1/responses` (with and without function calls), `X-Session-ID` round-trip, pre-completion hook invocation, and policy `model_allowlist` enforcement — all printing PASS.
 2. The `scripts/check-prometheus-cardinality.ts` CI check passes against the live `/metrics` output, confirming no label contains an `_id` suffix.
 3. `README.md` and `DEPLOY.md` contain sections documenting: MCP host endpoint + five tools + auth header requirement; `mcp_servers:` config schema; `X-Session-ID` lifecycle and `SESSION_TTL_DAYS` env; pre-completion hook registration and `on_timeout` field; `model_allowlist` and `cloud_allowed` policy stanza; `X-Tenant-ID`/`X-Project-ID` headers.
@@ -261,12 +279,23 @@ Plans:
 **Plans:** 7 plans
 
 Plans:
+**Wave 1**
+
 - [ ] 19-01-PLAN.md — Wave 0 scaffold (2 test placeholders + tests/fakes.ts makeFakeEmbeddingProvider + src/types/fastify.d.ts augmentation) [EMBP-01, OBSV-02]
 - [ ] 19-02-PLAN.md — EmbeddingProvider interface + makeOpenAIEmbeddingProvider factory (Frame-01 — object literal, not class); cache + dims + base64-decode moved INTO provider [EMBP-01]
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 19-03-PLAN.md — /v1/embeddings route delegates to provider; P7-01 SHA-256 baseline atomically rotated in the SAME commit (D-24 — never split) [EMBP-02]
 - [ ] 19-04-PLAN.md — Composition-root construction in router/src/index.ts + BuildAppOpts widening + app.decorate('embeddingProvider') in router/src/app.ts [EMBP-01]
 - [ ] 19-05-PLAN.md — checkCardinalityLive parser + dual-mode CLI (--source | --live) + CI integration test (in-band /metrics scrape) [OBSV-02]
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
 - [ ] 19-06-PLAN.md — Smoke Phase 19 section: OBSV-02-LIVE + RESS-WITH-TOOLS (gpt-oss:20b-cloud, soft-skip on missing OLLAMA_API_KEY) + 4 cite lines [OBSV-01, OBSV-02]
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
 - [ ] 19-07-PLAN.md — OBSV-03 docs (DEPLOY + README EmbeddingProvider sections + v0.11.0 SHIPPED banner) + OBSV-04 re-verify describe block (extend 0007-hook-log.test.ts — D-22 NO new migration) + STATE/ROADMAP/REQUIREMENTS milestone wrap-up [OBSV-03, OBSV-04]
 
 ---
@@ -285,10 +314,12 @@ Plans:
 ---
 
 *Phase-level details (success criteria, requirements, plan breakdowns) preserved per milestone:*
+
 - v0.9.0 — [`milestones/v0.9.0-ROADMAP.md`](./milestones/v0.9.0-ROADMAP.md)
 - v0.10.0 — [`milestones/v0.10.0-ROADMAP.md`](./milestones/v0.10.0-ROADMAP.md)
 
 *Requirements traceability per milestone:*
+
 - v0.9.0 — [`milestones/v0.9.0-REQUIREMENTS.md`](./milestones/v0.9.0-REQUIREMENTS.md)
 - v0.10.0 — [`milestones/v0.10.0-REQUIREMENTS.md`](./milestones/v0.10.0-REQUIREMENTS.md)
 - v0.11.0 — REQUIREMENTS.md (active, this milestone)
