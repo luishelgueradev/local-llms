@@ -72,7 +72,58 @@ export const ModelEntrySchema = z.object({
   // without `?? 8192` fallback at the call site.
   ctx_size: z.number().int().positive().default(8192),
   context_strategy: z.enum(['truncate', 'sliding-window']).default('sliding-window'),
+  // Phase 18 (v0.11.0 — MCPC-03): which top-level mcp_servers[] aliases inject
+  // their tools into this model's tool-call surface. Cross-field validated by
+  // RegistrySchema.superRefine — each alias MUST resolve to a declared
+  // mcp_servers[].alias. Default: undefined → no external MCP tools for this entry.
+  mcp_servers_enabled: z.array(z.string()).optional(),
+  // Phase 18 (v0.11.0 — RETR-02): pre-completion hook NAME references. Hook
+  // implementations are registered programmatically via BuildAppOpts.preCompletionHooks
+  // Map (RETR-02/03 — Plan 18-07). NOT cross-field validated at registry parse
+  // time — hook-name validation happens at buildApp time via HookConfigError.
+  // Default: undefined → no hooks for this entry.
+  pre_completion_hooks: z.array(z.string()).optional(),
 });
+
+/**
+ * Phase 18 (v0.11.0 — MCPC-01): external MCP server config. One entry per
+ * upstream MCP server the router can consume as a tool-provider.
+ *
+ * Auth model lock for v0.11.0:
+ *   - auth_type: 'none' → no auth header sent.
+ *   - auth_type: 'bearer' → `Authorization: Bearer <auth_value>` on every request.
+ *   - auth_value is a LITERAL STRING; env-var interpolation is Open Question #9.
+ *   - cross-field refinement: bearer requires auth_value (path:['auth_value']).
+ *
+ * Transport is locked to 'streamable-http' for v0.11.0 (no stdio, no
+ * legacy-SSE-only). Tool filter defaults to ['*'] (all tools allowed); operators
+ * can pass an explicit list for allowlisting.
+ *
+ * Alias regex `/^[a-z0-9_]{1,32}$/` is intentionally narrow — aliases become
+ * tool-name prefixes via MCPC-03 and a Prometheus label (server_alias) per
+ * MCPC-04. The 32-char ceiling keeps tool names + metric series bounded.
+ */
+export const McpServerConfigSchema = z
+  .object({
+    alias: z.string().regex(/^[a-z0-9_]{1,32}$/, 'alias must match /^[a-z0-9_]{1,32}$/'),
+    url: z.string().url(),
+    transport: z.literal('streamable-http'),
+    auth_type: z.enum(['none', 'bearer']),
+    auth_value: z.string().optional(),
+    timeout_ms: z.number().int().positive().default(10_000),
+    tool_filter: z.array(z.string()).default(['*']),
+  })
+  .superRefine((cfg, ctx) => {
+    if (cfg.auth_type === 'bearer' && !cfg.auth_value) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['auth_value'],
+        message: 'auth_value is required when auth_type is "bearer"',
+      });
+    }
+  });
+
+export type McpServerConfig = z.infer<typeof McpServerConfigSchema>;
 
 /**
  * Optional top-level backends: section — forward-compat for Plan 04 semaphore wiring.
@@ -108,6 +159,13 @@ export const RegistrySchema = z.object({
         .optional(),
     })
     .optional(),
+  // Phase 18 (v0.11.0 — MCPC-01): top-level external MCP server catalog.
+  // Each entry declares an upstream MCP server the router connects to LAZILY
+  // (P2-01 BLOCK — boot must never block on external availability). Aliases
+  // are unique (P2-02) and referenced by per-model `mcp_servers_enabled`.
+  // Empty / absent = no external MCP servers (Frame-01 default — the router
+  // ships with zero retrievers / MCP servers wired in production).
+  mcp_servers: z.array(McpServerConfigSchema).optional(),
 }).superRefine((reg, ctx) => {
   // Read env at refinement time (not module load) — allows operators to change VRAM_ENVELOPE_GB
   // via `docker compose restart router` without rebundling, AND lets tests toggle per-case
@@ -172,6 +230,29 @@ export const RegistrySchema = z.object({
         path: ['models'],
         message: `Config error: model "${m.name}" declares capability "embeddings" but is missing the required \`dims: <number>\` field. Add the integer output dimensions (e.g. bge-m3 is 1024) so the router can refuse vectors of unexpected size.`,
       });
+    }
+  }
+
+  // Phase 18 (v0.11.0 — MCPC-01 / MCPC-03): cross-field validation that each
+  // model's `mcp_servers_enabled` reference resolves to a declared
+  // `mcp_servers[].alias`. Catches typos at boot rather than at first request.
+  //
+  // NOTE: `pre_completion_hooks` references are NOT validated here. Hook
+  // implementations are programmatic (registered via BuildAppOpts.preCompletionHooks
+  // Map at buildApp time — RETR-02/03 lands the wiring in Plan 18-07). Hook-name
+  // validation happens via HookConfigError at buildApp time, not at registry
+  // parse time. This intentional split keeps models.yaml declarative (data) and
+  // app.ts wiring imperative (code).
+  const declaredAliases = new Set((reg.mcp_servers ?? []).map((s) => s.alias));
+  for (const m of reg.models) {
+    for (const ref of m.mcp_servers_enabled ?? []) {
+      if (!declaredAliases.has(ref)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['models'],
+          message: `Config error: model "${m.name}" references mcp_servers_enabled: "${ref}" but no such alias is declared in mcp_servers[]`,
+        });
+      }
     }
   }
 });

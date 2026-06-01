@@ -59,6 +59,49 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ─────────────────────────────────────────────────────────────────────────────
+# EXTERNAL MCP SERVERS (Phase 18 — v0.11.0 — MCPC-01)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Declare external MCP servers the router can consume as tool-providers.
+# Each alias is a UNIQUE key (regex /^[a-z0-9_]{1,32}$/) referenced by per-model
+# `mcp_servers_enabled:`. The router connects LAZILY on first use (MCPC-02 /
+# P2-01 BLOCK) — boot never blocks on external availability. `tools/list` is
+# cached in Valkey for 60s under `mcp:tools:{alias}` (MCPC-06).
+#
+# Hot-reload: editing this block requires the SAME Valkey-DEL + force-recreate
+# dance documented under POLICY PRIMITIVES above (project memory
+# project_models_yaml_hot_edit.md):
+#
+#   docker compose exec -T valkey valkey-cli -a "$VALKEY_PASSWORD" \
+#     --no-auth-warning DEL 'mcp:tools:*'
+#   docker compose up -d --force-recreate router
+#
+# Auth model (v0.11.0 LOCK):
+#   - auth_type: none   → no auth header sent
+#   - auth_type: bearer → Authorization: Bearer <auth_value> on every request
+#                          auth_value is a LITERAL STRING; env-var interpolation
+#                          is Open Question #9 (FUT).
+#
+# Transport: 'streamable-http' is the v0.11.0 lock — no stdio, no legacy SSE-only.
+#
+# tool_filter: ['*'] (default) means "all tools allowed"; explicit list = allowlist.
+#
+# Frame-01 invariant: production ships with NO mcp_servers declared. Operators
+# OPT IN by uncommenting + populating the block below. The block is REJECTED if
+# any per-model `mcp_servers_enabled` references an alias not declared here.
+#
+# Example (all lines `#`-prefixed — uncomment to enable):
+# mcp_servers:
+#   - alias: qdrant_retrieval              # MUST match /^[a-z0-9_]{1,32}$/
+#     url: https://qdrant-mcp.internal/mcp # absolute https URL of external /mcp endpoint
+#     transport: streamable-http           # v0.11.0 lock
+#     auth_type: bearer                    # 'none' | 'bearer'
+#     auth_value: '<token-string>'         # required when auth_type='bearer'
+#     timeout_ms: 10000                    # optional; default 10_000
+#     tool_filter: ['*']                   # optional; default ['*']
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ─────────────────────────────────────────────────────────────────────────────
 # CONTEXT WINDOW (Phase 17 — v0.11.0 — CTXP-04)
 # ─────────────────────────────────────────────────────────────────────────────
 #
@@ -250,6 +293,15 @@ models:
     concurrency: 2
     max_model_len: 8192
     profile: ollama
+    # ── Phase 18 (v0.11.0 — MCPC-03 / RETR-02) per-entry fields (both optional) ──
+    # Frame-01 invariant: production ships with these EMPTY. Operators opt-in by
+    # uncommenting and providing implementations via the composition root.
+    #
+    # mcp_servers_enabled:                # aliases declared in top-level `mcp_servers:`
+    #   - qdrant_retrieval                # cross-field validated at registry parse time
+    #
+    # pre_completion_hooks:               # name references to BuildAppOpts.preCompletionHooks Map
+    #   - doc_retriever                   # NOT validated at parse time — buildApp checks at boot
 
   - name: vision-local
     backend: ollama
