@@ -165,6 +165,37 @@ export function makeMetricsRegistry() {
   routerSessionAppendFailedTotal.labels({ reason: 'timeout' }).inc(0);
   routerSessionAppendFailedTotal.labels({ reason: 'error' }).inc(0);
 
+  // Phase 18 (v0.11.0 — RETR-03 / P5-02 BLOCK): pre-completion hook execution
+  // latency. Labels: hook_name (operator-declared bounded enum) + status (taxonomy
+  // enum: ok | timeout | error). ms-scale buckets — hooks are sub-second per
+  // design (default timeout_ms 2000). Cardinality: ~N_hooks × 3 statuses; bounded.
+  // POL-06 invariant: labelNames contain no element ending in '_id'.
+  const routerHookDurationMs = new Histogram({
+    name: 'router_hook_duration_ms',
+    help: 'Pre-completion hook execution latency (ms) by hook_name + status',
+    labelNames: ['hook_name', 'status'] as const,
+    buckets: [10, 50, 100, 250, 500, 1000, 2000, 5000],
+    registers: [register],
+  });
+
+  // Phase 18 (v0.11.0 — MCPC-04): external MCP tool calls observed by
+  // server_alias + status_class. Distinct from routerMcpToolCallsTotal (Phase
+  // 15 — the SERVER surface, when local-llms IS the MCP server). This counter
+  // measures the CLIENT surface — when local-llms calls OUT to an external MCP
+  // server. Labels: server_alias (operator-declared in models.yaml mcp_servers[];
+  // small cardinality) + status_class (taxonomy enum). POL-06 invariant: no
+  // element ending in '_id'.
+  //
+  // Force-init note: aliases are operator-declared at boot (and may change on
+  // hot-reload), so we cannot pre-warm specific label values. Each alias's
+  // series lands on first call.
+  const routerMcpToolCallsExternalTotal = new Counter({
+    name: 'router_mcp_tool_calls_external_total',
+    help: 'External MCP tool calls observed by server_alias + status_class',
+    labelNames: ['server_alias', 'status_class'] as const,
+    registers: [register],
+  });
+
   return {
     register,
     requestsTotal,
@@ -179,6 +210,8 @@ export function makeMetricsRegistry() {
     routerMcpToolCallsTotal,
     routerMcpActiveSessions,
     routerSessionAppendFailedTotal,
+    routerHookDurationMs,
+    routerMcpToolCallsExternalTotal,
   };
 }
 

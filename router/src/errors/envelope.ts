@@ -361,6 +361,79 @@ export class InvalidScopedIdError extends Error {
   }
 }
 
+// ─── Phase 18 (v0.11.0 — MCPC-04 / MCPC-05 / RETR-03) ─────────────────────────
+// External MCP client + pre-completion hook error surface. Four classes, three
+// of which reach HTTP via mapToHttpStatus + toOpenAIErrorEnvelope (server
+// unreachable, tool-loop exceeded, hook timeout). HookConfigError is thrown at
+// buildApp time and never reaches HTTP — see RESEARCH §"envelope additions".
+
+/**
+ * Phase 18 (v0.11.0 — MCPC-04 / MCPC-05): external MCP server is unreachable
+ * (connect refused, timeout, TLS, DNS, …). Wraps the original `cause` for
+ * structured-log forensics. Maps to 502 (upstream-error bucket — same as
+ * APIConnectionError) with code='mcp_server_unreachable'.
+ */
+export class McpServerUnreachableError extends Error {
+  readonly code = 'mcp_server_unreachable';
+  constructor(
+    public readonly alias: string,
+    public readonly url: string,
+    public readonly cause: unknown,
+  ) {
+    super(`MCP server "${alias}" at ${url} unreachable`);
+    this.name = 'McpServerUnreachableError';
+  }
+}
+
+/**
+ * Phase 18 (v0.11.0 — MCPC-04): the tool-call resolution loop (model emits
+ * tool_calls → router dispatches → model emits more tool_calls → …) exceeded
+ * the 10-iteration cap. Defensive bound against runaway agents. Maps to 502.
+ */
+export class McpToolLoopExceededError extends Error {
+  readonly code = 'mcp_tool_loop_exceeded';
+  constructor(public readonly maxIter: number) {
+    super(`MCP tool-call loop exceeded ${maxIter} iterations`);
+    this.name = 'McpToolLoopExceededError';
+  }
+}
+
+/**
+ * Phase 18 (v0.11.0 — RETR-03 / P5-02 BLOCK): a pre-completion hook exceeded
+ * its `timeout_ms`. The default fail-closed behavior surfaces this as 502;
+ * fail-open hooks (configured `on_timeout: 'continue'`) suppress this throw
+ * locally in runHookChain. Carries hookName + timeoutMs for the audit trail.
+ */
+export class HookTimeoutError extends Error {
+  readonly code = 'hook_timeout';
+  constructor(
+    public readonly hookName: string,
+    public readonly timeoutMs: number,
+  ) {
+    super(`pre-completion hook "${hookName}" exceeded ${timeoutMs}ms`);
+    this.name = 'HookTimeoutError';
+  }
+}
+
+/**
+ * Phase 18 (v0.11.0 — RETR-03 / P5-01 BLOCK): a hook was registered without a
+ * required field (typically `on_timeout`). Thrown at buildApp time, NEVER
+ * reaches HTTP — so no envelope branch is required and no mapToHttpStatus
+ * entry exists. The startup crash IS the signal: misconfigured hooks fail-fast
+ * rather than reaching a request that would then fail-open with audit-trail
+ * silence.
+ */
+export class HookConfigError extends Error {
+  readonly code = 'hook_config_error';
+  constructor(
+    public readonly hookName: string,
+    public readonly reason: string,
+  ) {
+    super(`pre-completion hook "${hookName}" misconfigured: ${reason}`);
+    this.name = 'HookConfigError';
+  }
+}
+
 /**
  * Plan 04-04 T-04-02 mitigation: thrown by openai-in.ts when an OpenAI assistant
  * `tool_calls[i].function.arguments` string is not valid JSON. Maps to 400 +
@@ -442,6 +515,13 @@ export function mapToHttpStatus(err: unknown): number {
   if (err instanceof APIConnectionTimeoutError) return 504;
   if (err instanceof APIConnectionError) return 502;
   if (err instanceof APIUserAbortError) return 499; // client closed — never actually sent
+  // Phase 18 (v0.11.0 — MCPC-04 / MCPC-05 / RETR-03 / P5-02): external MCP +
+  // pre-completion hook upstream failures. All collapse to 502 (upstream-error
+  // bucket — parity with APIConnectionError). HookConfigError is startup-only
+  // and has NO branch here by design.
+  if (err instanceof McpServerUnreachableError) return 502;
+  if (err instanceof McpToolLoopExceededError) return 502;
+  if (err instanceof HookTimeoutError) return 502;
   return 500;
 }
 
@@ -680,6 +760,44 @@ export function toOpenAIErrorEnvelope(err: unknown): EnvelopeOrSkip {
   if (err instanceof APIConnectionError) {
     return { error: { message: err.message || 'upstream connection error', type: 'upstream_error', code: 'econnrefused', param: null } };
   }
+  // Phase 18 (v0.11.0 — MCPC-04 / MCPC-05): MCP upstream failures collapse to
+  // type='mcp_error' on the OpenAI surface (new wire-type, distinct from the
+  // upstream_error / api_error split used elsewhere) so clients can branch on
+  // "the MCP transport tripped" specifically.
+  if (err instanceof McpServerUnreachableError) {
+    return {
+      error: {
+        message: err.message,
+        type: 'mcp_error',
+        code: err.code,
+        param: null,
+      },
+    };
+  }
+  if (err instanceof McpToolLoopExceededError) {
+    return {
+      error: {
+        message: err.message,
+        type: 'mcp_error',
+        code: err.code,
+        param: null,
+      },
+    };
+  }
+  // Phase 18 (v0.11.0 — RETR-03 / P5-02 BLOCK): pre-completion hook timeout.
+  // type='hook_error' is a new wire-type — keeps the hook surface distinct from
+  // mcp_error so observability dashboards can group/alert on the two surfaces
+  // independently. HookConfigError has NO envelope branch (startup-only).
+  if (err instanceof HookTimeoutError) {
+    return {
+      error: {
+        message: err.message,
+        type: 'hook_error',
+        code: err.code,
+        param: null,
+      },
+    };
+  }
   const msg = err instanceof Error ? err.message : 'internal error';
   return { error: { message: msg, type: 'internal_error', code: 'internal_error', param: null } };
 }
@@ -843,6 +961,18 @@ export function toAnthropicErrorEnvelope(err: unknown): AnthropicEnvelopeOrSkip 
       type: 'error',
       error: { type: 'api_error', message: err.message || 'upstream connection error' },
     };
+  }
+  // Phase 18 (v0.11.0 — MCPC-04 / MCPC-05 / RETR-03): MCP + hook upstream
+  // failures collapse to Anthropic's `api_error` taxonomy bucket (Anthropic's
+  // wire taxonomy reserves no specific MCP/hook surfaces). The OpenAI envelope
+  // above carries the per-class `code` field that distinguishes them on tools
+  // that inspect both surfaces. HookConfigError is startup-only — no branch.
+  if (
+    err instanceof McpServerUnreachableError ||
+    err instanceof McpToolLoopExceededError ||
+    err instanceof HookTimeoutError
+  ) {
+    return { type: 'error', error: { type: 'api_error', message: err.message } };
   }
   const msg = err instanceof Error ? err.message : 'internal error';
   return { type: 'error', error: { type: 'api_error', message: msg } };
