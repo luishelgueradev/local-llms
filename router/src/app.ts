@@ -959,6 +959,10 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
     breaker,
     breakerCooldownSec,
     idempotency,
+    // Phase 17 (v0.11.0 — SESS-01..06 / CTXP-01..03 / SUMP-02): pass-through.
+    sessionStore: opts.sessionStore,
+    contextProvider: opts.contextProvider,
+    summaryProvider: opts.summaryProvider,
   });
 
   // Plan 05-04 — start the usage_daily scheduler last, after all routes are
