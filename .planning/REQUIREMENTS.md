@@ -54,8 +54,8 @@ Phase 17 candidate. `SessionStore` interface + Postgres-backed default implement
 - [x] **SESS-02**: A `PostgresSessionStore` default implementation persists sessions to two new tables (`sessions`, `conversation_turns`) created by Drizzle migration **0006** (editorial fix 2026-05-31: original draft cited `0005`, which was actually taken by Phase 14 `request_log_scoped_ids`; the next sequential journal slot is `0006`); `sessions.expires_at TIMESTAMPTZ NOT NULL` is required (no unbounded retention path).
 - [x] **SESS-03**: `SessionStore.loadHistory(session_id)` requires `agent_id` in the lookup; cross-tenant leakage is prevented at the query layer (verified by integration test asserting empty result when agent_id mismatches).
 - [x] **SESS-04**: `SessionStore.appendTurn` is a **synchronous** durable write (not async-buffered like `request_log`); the call returns only after the turn is committed, with fail-open behavior under 1s timeout (returns turn anyway with `persisted: false` flag).
-- [ ] **SESS-05**: `X-Session-ID` response header is set on responses when a session is created or used; stateless callers can discover the session_id without parsing the body.
-- [ ] **SESS-06**: Session persistence is **optional** — callers that do not set `X-Session-ID` or include a `session_id` in the request body operate stateless without any SessionStore involvement.
+- [x] **SESS-05**: `X-Session-ID` response header is set on responses when a session is created or used; stateless callers can discover the session_id without parsing the body.
+- [x] **SESS-06**: Session persistence is **optional** — callers that do not set `X-Session-ID` or include a `session_id` in the request body operate stateless without any SessionStore involvement.
 
 ### Context provider (CTXP)
 
@@ -64,15 +64,15 @@ Phase 17 candidate. Sits between SessionStore and the model call.
 - [x] **CTXP-01**: A TypeScript interface `ContextProvider` is exported from `src/providers/context-provider.ts` with `provideContext(history: Turn[], incomingMessages: CanonicalMessage[], incomingSystem: string | undefined, opts: { entry: ModelEntry; ... }) → { messages: CanonicalMessage[], system?: string, dropped_count: number, estimated_tokens: number, has_pending_tool_call: boolean }`. (Editorial note 2026-05-31 / Phase 17 research: the original draft proposed `buildContext(session, incoming_message, opts)` with a flatter return; the live shape is operationally stronger — `system` is returned separately because the canonical wire schema only accepts `role: 'user' | 'assistant'` and system lives at top-level `CanonicalRequest.system`; `estimated_tokens` exposes the window math for observability; `has_pending_tool_call` is needed for the SUMP-03 gate. RESEARCH §SessionStore Interface documents the signature in detail.)
 - [x] **CTXP-02**: Two default strategies ship: `sliding-window` (default — keeps the most recent turns that fit within `ctx_size` minus a safety margin, pinning all system turns at the head) and `truncate` (drop oldest non-system turns when over `ctx_size`). `ContextProvider` is model-aware via a new `ctx_size: integer` field in each `models.yaml` entry (default `8192` when omitted) and a `context_strategy: enum('sliding-window' | 'truncate')` field (default `sliding-window` when omitted).
 - [x] **CTXP-03**: System messages are **always** preserved by every strategy (silent dropping of system prompts breaks agent behavior); preservation is verified by unit test against both strategies. System turns are concatenated in turn_index ascending order with `\n\n` separator and returned in the `result.system` field (NOT injected into `result.messages` — the canonical wire schema only accepts `role: 'user' | 'assistant'` per `router/src/translation/canonical.ts:108`).
-- [ ] **CTXP-04**: Token estimation uses `countTokens()` from `router/src/translation/count-tokens.ts` (gpt-tokenizer/cl100k_base — already installed, zero new deps). cl100k_base over-estimates qwen/llama by ~10–20%, which is a conservative safety margin (the right direction for window math). (Editorial note 2026-05-31 / Phase 17 research: an earlier draft specified a fixed 4-chars-per-token approximation to avoid a tokenizer dependency, but `gpt-tokenizer` is already in `router/package.json` for embeddings cost math, so reusing it is zero-cost AND more accurate than a char-count heuristic.)
+- [x] **CTXP-04**: Token estimation uses `countTokens()` from `router/src/translation/count-tokens.ts` (gpt-tokenizer/cl100k_base — already installed, zero new deps). cl100k_base over-estimates qwen/llama by ~10–20%, which is a conservative safety margin (the right direction for window math). (Editorial note 2026-05-31 / Phase 17 research: an earlier draft specified a fixed 4-chars-per-token approximation to avoid a tokenizer dependency, but `gpt-tokenizer` is already in `router/package.json` for embeddings cost math, so reusing it is zero-cost AND more accurate than a char-count heuristic.)
 
 ### Summary provider (SUMP)
 
 Phase 17 candidate. Seam only — no behavior shipped.
 
-- [ ] **SUMP-01**: A TypeScript interface `SummaryProvider` is exported with `summarize(turns, opts) → { summary, replaced_turn_ids }`.
-- [ ] **SUMP-02**: A `NoopSummaryProvider` default returns `{ summary: "", replaced_turn_ids: [] }` when invoked (or `null` when SUMP-03's `has_pending_tool_call: true` guard fires — defense-in-depth, since the call site is also expected to gate per SUMP-03). The Noop never calls any model. This degrades `ContextProvider`'s future `summarize-hook` strategy gracefully to `truncate` when no real summarizer is plugged in.
-- [ ] **SUMP-03**: `SummaryProvider.summarize` is NEVER invoked when the session has a pending tool call (verified by `session.has_pending_tool_call` check; protects `tool_call_id` pairing).
+- [x] **SUMP-01**: A TypeScript interface `SummaryProvider` is exported with `summarize(turns, opts) → { summary, replaced_turn_ids }`.
+- [x] **SUMP-02**: A `NoopSummaryProvider` default returns `{ summary: "", replaced_turn_ids: [] }` when invoked (or `null` when SUMP-03's `has_pending_tool_call: true` guard fires — defense-in-depth, since the call site is also expected to gate per SUMP-03). The Noop never calls any model. This degrades `ContextProvider`'s future `summarize-hook` strategy gracefully to `truncate` when no real summarizer is plugged in.
+- [x] **SUMP-03**: `SummaryProvider.summarize` is NEVER invoked when the session has a pending tool call (verified by `session.has_pending_tool_call` check; protects `tool_call_id` pairing).
 
 ### MCP client (MCPC)
 
@@ -199,15 +199,15 @@ The roadmap and plan-phase agents must reject any task that would:
 | SESS-02 | Phase 17 | Complete |
 | SESS-03 | Phase 17 | Complete |
 | SESS-04 | Phase 17 | Complete |
-| SESS-05 | Phase 17 | Pending |
-| SESS-06 | Phase 17 | Pending |
+| SESS-05 | Phase 17 | Complete |
+| SESS-06 | Phase 17 | Complete |
 | CTXP-01 | Phase 17 | Complete |
 | CTXP-02 | Phase 17 | Complete |
 | CTXP-03 | Phase 17 | Complete |
-| CTXP-04 | Phase 17 | Pending |
-| SUMP-01 | Phase 17 | Pending |
-| SUMP-02 | Phase 17 | Pending |
-| SUMP-03 | Phase 17 | Pending |
+| CTXP-04 | Phase 17 | Complete |
+| SUMP-01 | Phase 17 | Complete |
+| SUMP-02 | Phase 17 | Complete |
+| SUMP-03 | Phase 17 | Complete |
 | MCPC-01 | Phase 18 | Pending |
 | MCPC-02 | Phase 18 | Pending |
 | MCPC-03 | Phase 18 | Pending |
