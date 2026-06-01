@@ -51,7 +51,7 @@ Phase 16 candidate. Closes v0.10.0 Phase 13 deferred work.
 Phase 17 candidate. `SessionStore` interface + Postgres-backed default implementation.
 
 - [ ] **SESS-01**: A TypeScript interface `SessionStore` is exported from `src/providers/session-store.ts` with operations: `createSession(metadata) → session_id`, `appendTurn(session_id, role, content, metadata) → turn_id`, `loadHistory(session_id, opts?) → Turn[]`, `deleteSession(session_id) → void`, `listSessions(filter) → Session[]`, `replaceTurns(session_id, turns) → void`.
-- [ ] **SESS-02**: A `PostgresSessionStore` default implementation persists sessions to two new tables (`sessions`, `conversation_turns`) created by Drizzle migration **0006** (editorial fix 2026-05-31: original draft cited `0005`, which was actually taken by Phase 14 `request_log_scoped_ids`; the next sequential journal slot is `0006`); `sessions.expires_at TIMESTAMPTZ NOT NULL` is required (no unbounded retention path).
+- [x] **SESS-02**: A `PostgresSessionStore` default implementation persists sessions to two new tables (`sessions`, `conversation_turns`) created by Drizzle migration **0006** (editorial fix 2026-05-31: original draft cited `0005`, which was actually taken by Phase 14 `request_log_scoped_ids`; the next sequential journal slot is `0006`); `sessions.expires_at TIMESTAMPTZ NOT NULL` is required (no unbounded retention path).
 - [ ] **SESS-03**: `SessionStore.loadHistory(session_id)` requires `agent_id` in the lookup; cross-tenant leakage is prevented at the query layer (verified by integration test asserting empty result when agent_id mismatches).
 - [ ] **SESS-04**: `SessionStore.appendTurn` is a **synchronous** durable write (not async-buffered like `request_log`); the call returns only after the turn is committed, with fail-open behavior under 1s timeout (returns turn anyway with `persisted: false` flag).
 - [ ] **SESS-05**: `X-Session-ID` response header is set on responses when a session is created or used; stateless callers can discover the session_id without parsing the body.
@@ -196,7 +196,7 @@ The roadmap and plan-phase agents must reject any task that would:
 | RESS-04 | Phase 16 | Complete |
 | RESS-05 | Phase 16 | Complete |
 | SESS-01 | Phase 17 | Pending |
-| SESS-02 | Phase 17 | Pending |
+| SESS-02 | Phase 17 | Complete |
 | SESS-03 | Phase 17 | Pending |
 | SESS-04 | Phase 17 | Pending |
 | SESS-05 | Phase 17 | Pending |

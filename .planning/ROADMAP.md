@@ -182,11 +182,11 @@ Plans:
 4. A session created without `X-Session-ID` in the request operates fully stateless — no `sessions` or `conversation_turns` rows are written, and the response is identical to pre-Phase-17 behavior.
 5. The `X-Session-ID` response header is set on responses when a session is active; the `NoopSummaryProvider` is the default and never calls any model.
 
-**Plans:** 1/7 plans executed
+**Plans:** 2/7 plans executed
 
 Plans:
 - [x] 17-01-PLAN.md — Wave 0 scaffold (9 test files + tests/fakes.ts extension; `it.todo` placeholders + SESS-01 expectTypeOf assertions) [SESS-01..06 + CTXP-01..04 + SUMP-01..03] — SHIPPED 2026-06-01
-- [ ] 17-02-PLAN.md — Migration 0006 indivisible tuple (SQL + Drizzle schema + journal + barrel re-export) [SESS-02]
+- [x] 17-02-PLAN.md — Migration 0006 indivisible tuple (SQL + Drizzle schema + journal + barrel re-export) [SESS-02] — SHIPPED 2026-06-01
 - [ ] 17-03-PLAN.md — SessionStore interface + 4 error classes + PostgresSessionStore (advisory lock + 1s fail-open + sliding TTL + agent_id mandatory) [SESS-01, SESS-02, SESS-03, SESS-04]
 - [ ] 17-04-PLAN.md — ContextProvider interface + sliding-window default + truncate + system pin + Pitfall 17-G incoming-privilege invariant [CTXP-01, CTXP-02, CTXP-03]
 - [ ] 17-05-PLAN.md — SummaryProvider + Noop + sessionIdPreHandler + EnvSchema (SESSION_TTL_DAYS) + ModelEntrySchema widening (ctx_size, context_strategy) + models.yaml banner + BuildAppOpts widening + countTokens warmup [SUMP-01, SUMP-02, SUMP-03, CTXP-04, SESS-05, SESS-06]
