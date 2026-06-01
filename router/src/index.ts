@@ -20,6 +20,9 @@ import { NoopSummaryProvider } from './providers/summary-provider.js';
 // + EMPTY pre-completion hooks map (Frame-01 BLOCK — no retrievers in production).
 import { makeMcpClientRegistry } from './mcp/client/registry.js';
 import type { PreCompletionHook } from './hooks/pre-completion.js';
+// Phase 19 (v0.11.0 — EMBP-01): production-wired EmbeddingProvider factory.
+import { makeOpenAIEmbeddingProvider } from './providers/embedding-provider.js';
+import { makeAdapter as makeAdapterFactory } from './backends/factory.js';
 
 /**
  * Plan 08-02 (CLOUD-01 + D-A2) — refuses boot when the registry declares any
@@ -219,6 +222,31 @@ async function main(): Promise<void> {
     'Phase 18 providers initialized — mcpClientRegistry + empty preCompletionHooks (Frame-01: production ships no retrievers)',
   );
 
+  // Phase 19 (v0.11.0 — EMBP-01): production-wired EmbeddingProvider.
+  // Risk #1 resolution: build a composition-root-level makeAdapterWithCloudKey closure
+  // (same pattern as buildApp's internal closure on line ~402 of app.ts) so the provider
+  // can be constructed BEFORE buildApp is called. This closure is parallel to the one
+  // inside buildApp — each independently closes over the same env values.
+  // Frame-01 BLOCK: makeOpenAIEmbeddingProvider returns an object literal, not a class.
+  const makeAdapterWithCloudKey = (entry: Parameters<typeof makeAdapterFactory>[0]) =>
+    makeAdapterFactory(entry, {
+      cloudApiKey: env.OLLAMA_API_KEY ?? '',
+      backendTimeoutMs: env.ROUTER_BACKEND_TIMEOUT_MS,
+    });
+
+  const embeddingProvider = makeOpenAIEmbeddingProvider({
+    registry,
+    makeAdapter: makeAdapterWithCloudKey,
+    valkey,
+    env: { ROUTER_EMBED_CACHE_TTL_SEC: env.ROUTER_EMBED_CACHE_TTL_SEC },
+    metrics: {
+      embeddingsCacheTotal: metrics.embeddingsCacheTotal,
+      embeddingsDimsTotal: metrics.embeddingsDimsTotal,
+    },
+    log: bootLog,
+  });
+  bootLog.info({ defaultModel: 'embed-local' }, 'Phase 19 EmbeddingProvider initialized');
+
   const app = await buildApp({
     registry,
     bearerToken: env.ROUTER_BEARER_TOKEN,
@@ -239,6 +267,9 @@ async function main(): Promise<void> {
     // (literal empty). Operators add hook implementations downstream.
     mcpClientRegistry,
     preCompletionHooks,
+    // Phase 19 (v0.11.0 — EMBP-01): production-wired EmbeddingProvider.
+    // fastify.embeddingProvider is decorated inside buildApp when this field is present.
+    embeddingProvider,
     // Plan 08-02 (CLOUD-01) — pre-bind OLLAMA_API_KEY into the AdapterFactory
     // closure. Empty string when the operator runs local-only — assertCloudEnvIfConfigured
     // (above) refused to boot if cloud entries existed without a real key.
