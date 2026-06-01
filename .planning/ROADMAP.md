@@ -276,7 +276,7 @@ Plans:
 4. A caller can call `fastify.embeddingProvider.embed(input, opts)` directly (Fastify decorator injected) and receive the same embedding output as `POST /v1/embeddings` — verified by unit test asserting interface conformance (EMBP-01); the `/v1/embeddings` wire shape is byte-identical to pre-Phase-19 (EMBP-02 regression).
 5. Vitest full suite passes with 0 failures; `tsc --noEmit` reports 0 errors.
 
-**Plans:** 5/7 plans executed
+**Plans:** 6/7 plans executed
 
 Plans:
 **Wave 1**
@@ -292,7 +292,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 19-06-PLAN.md — Smoke Phase 19 section: OBSV-02-LIVE + RESS-WITH-TOOLS (gpt-oss:20b-cloud, soft-skip on missing OLLAMA_API_KEY) + 4 cite lines [OBSV-01, OBSV-02]
+- [x] 19-06-PLAN.md — Smoke Phase 19 section: OBSV-02-LIVE + RESS-WITH-TOOLS (gpt-oss:20b-cloud, soft-skip on missing OLLAMA_API_KEY) + 4 cite lines [OBSV-01, OBSV-02]
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
@@ -309,7 +309,7 @@ Plans:
 | 16. /v1/responses Streaming + Tool Calls | 4/4 | Complete   | 2026-05-31 |
 | 17. SessionStore + ContextProvider + SummaryProvider | 7/7 | Complete    | 2026-06-01 |
 | 18. MCP Client + RetrieverProvider + Pre-Completion Hook | 8/8 | Complete    | 2026-06-01 |
-| 19. EmbeddingProvider Formalization + Observability Hardening | 5/7 | In Progress|  |
+| 19. EmbeddingProvider Formalization + Observability Hardening | 6/7 | In Progress|  |
 
 ---
 
