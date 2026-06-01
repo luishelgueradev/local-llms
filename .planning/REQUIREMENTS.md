@@ -61,9 +61,9 @@ Phase 17 candidate. `SessionStore` interface + Postgres-backed default implement
 
 Phase 17 candidate. Sits between SessionStore and the model call.
 
-- [ ] **CTXP-01**: A TypeScript interface `ContextProvider` is exported from `src/providers/context-provider.ts` with `provideContext(history: Turn[], incomingMessages: CanonicalMessage[], incomingSystem: string | undefined, opts: { entry: ModelEntry; ... }) → { messages: CanonicalMessage[], system?: string, dropped_count: number, estimated_tokens: number, has_pending_tool_call: boolean }`. (Editorial note 2026-05-31 / Phase 17 research: the original draft proposed `buildContext(session, incoming_message, opts)` with a flatter return; the live shape is operationally stronger — `system` is returned separately because the canonical wire schema only accepts `role: 'user' | 'assistant'` and system lives at top-level `CanonicalRequest.system`; `estimated_tokens` exposes the window math for observability; `has_pending_tool_call` is needed for the SUMP-03 gate. RESEARCH §SessionStore Interface documents the signature in detail.)
-- [ ] **CTXP-02**: Two default strategies ship: `sliding-window` (default — keeps the most recent turns that fit within `ctx_size` minus a safety margin, pinning all system turns at the head) and `truncate` (drop oldest non-system turns when over `ctx_size`). `ContextProvider` is model-aware via a new `ctx_size: integer` field in each `models.yaml` entry (default `8192` when omitted) and a `context_strategy: enum('sliding-window' | 'truncate')` field (default `sliding-window` when omitted).
-- [ ] **CTXP-03**: System messages are **always** preserved by every strategy (silent dropping of system prompts breaks agent behavior); preservation is verified by unit test against both strategies. System turns are concatenated in turn_index ascending order with `\n\n` separator and returned in the `result.system` field (NOT injected into `result.messages` — the canonical wire schema only accepts `role: 'user' | 'assistant'` per `router/src/translation/canonical.ts:108`).
+- [x] **CTXP-01**: A TypeScript interface `ContextProvider` is exported from `src/providers/context-provider.ts` with `provideContext(history: Turn[], incomingMessages: CanonicalMessage[], incomingSystem: string | undefined, opts: { entry: ModelEntry; ... }) → { messages: CanonicalMessage[], system?: string, dropped_count: number, estimated_tokens: number, has_pending_tool_call: boolean }`. (Editorial note 2026-05-31 / Phase 17 research: the original draft proposed `buildContext(session, incoming_message, opts)` with a flatter return; the live shape is operationally stronger — `system` is returned separately because the canonical wire schema only accepts `role: 'user' | 'assistant'` and system lives at top-level `CanonicalRequest.system`; `estimated_tokens` exposes the window math for observability; `has_pending_tool_call` is needed for the SUMP-03 gate. RESEARCH §SessionStore Interface documents the signature in detail.)
+- [x] **CTXP-02**: Two default strategies ship: `sliding-window` (default — keeps the most recent turns that fit within `ctx_size` minus a safety margin, pinning all system turns at the head) and `truncate` (drop oldest non-system turns when over `ctx_size`). `ContextProvider` is model-aware via a new `ctx_size: integer` field in each `models.yaml` entry (default `8192` when omitted) and a `context_strategy: enum('sliding-window' | 'truncate')` field (default `sliding-window` when omitted).
+- [x] **CTXP-03**: System messages are **always** preserved by every strategy (silent dropping of system prompts breaks agent behavior); preservation is verified by unit test against both strategies. System turns are concatenated in turn_index ascending order with `\n\n` separator and returned in the `result.system` field (NOT injected into `result.messages` — the canonical wire schema only accepts `role: 'user' | 'assistant'` per `router/src/translation/canonical.ts:108`).
 - [ ] **CTXP-04**: Token estimation uses `countTokens()` from `router/src/translation/count-tokens.ts` (gpt-tokenizer/cl100k_base — already installed, zero new deps). cl100k_base over-estimates qwen/llama by ~10–20%, which is a conservative safety margin (the right direction for window math). (Editorial note 2026-05-31 / Phase 17 research: an earlier draft specified a fixed 4-chars-per-token approximation to avoid a tokenizer dependency, but `gpt-tokenizer` is already in `router/package.json` for embeddings cost math, so reusing it is zero-cost AND more accurate than a char-count heuristic.)
 
 ### Summary provider (SUMP)
@@ -201,9 +201,9 @@ The roadmap and plan-phase agents must reject any task that would:
 | SESS-04 | Phase 17 | Complete |
 | SESS-05 | Phase 17 | Pending |
 | SESS-06 | Phase 17 | Pending |
-| CTXP-01 | Phase 17 | Pending |
-| CTXP-02 | Phase 17 | Pending |
-| CTXP-03 | Phase 17 | Pending |
+| CTXP-01 | Phase 17 | Complete |
+| CTXP-02 | Phase 17 | Complete |
+| CTXP-03 | Phase 17 | Complete |
 | CTXP-04 | Phase 17 | Pending |
 | SUMP-01 | Phase 17 | Pending |
 | SUMP-02 | Phase 17 | Pending |
