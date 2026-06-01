@@ -2537,11 +2537,86 @@ fi
 echo ""
 echo "[smoke-test-router] === Phase 18 MCP-CLIENT + HOOK section complete ==="
 
+echo ""
+echo "[smoke-test-router] === Phase 19 — EmbeddingProvider + Observability hardening (EMBP-01..02 + OBSV-01..04) ==="
+
+# Cite-only banners — prior phases satisfy slices of OBSV-01
+echo "[smoke-test-router] OBSV-01 MCP slice: satisfied by Phase 15 MCP-01..03 (cited)"
+echo "[smoke-test-router] OBSV-01 Session slice: satisfied by Phase 17 SESSION SC-1..SC-4 (cited)"
+echo "[smoke-test-router] OBSV-01 RESS-no-tools slice: satisfied by Phase 16 RESS-01..05 (cited)"
+echo "[smoke-test-router] EMBP-02 regression: Phase 7 EMBED-01 + Phase 12 EMB-H01..06 gates re-asserted (above)"
+echo "[smoke-test-router] EMBP-01 conformance: validated by router/tests/providers/embedding-provider.test.ts (vitest)"
+
+# ─── OBSV-02-LIVE (D-15) ─────────────────────────────────────────────
+# Live /metrics cardinality scrape catches runtime-only label drift
+# (CI in-band test catches static + import-time drift; smoke catches
+# runtime drift in the deployed image).
+if curl -sS --max-time 10 "${ROUTER_URL}/metrics" \
+  | node router/scripts/check-prometheus-cardinality.ts --live - >/dev/null 2>&1
+then
+  pass "OBSV-02-LIVE: /metrics exposition has no /_id\$/ labels (live parser)"
+else
+  fail "OBSV-02-LIVE: /metrics exposition contains _id labels OR script unavailable"
+fi
+
+# ─── RESS-WITH-TOOLS (D-18) ──────────────────────────────────────────
+# Live SSE round-trip with a function-calling cloud model verifying
+# Phase 16 SC-2 contract end-to-end. gpt-oss:20b-cloud picked per
+# RESEARCH §1 — 5× cheaper than 120b sibling, same tools capability.
+if [[ -z "${OLLAMA_API_KEY:-}" ]]; then
+  skip "RESS-WITH-TOOLS: OLLAMA_API_KEY absent — skipping cloud function-call smoke"
+elif ! grep -q "^[[:space:]]*-[[:space:]]*name:[[:space:]]*gpt-oss:20b-cloud" router/models.yaml; then
+  skip "RESS-WITH-TOOLS: gpt-oss:20b-cloud not declared in models.yaml — skipping"
+else
+  RESS_TOOLS_FILE=$(mktemp /tmp/ress-tools-XXXXXX.txt)
+  trap 'rm -f "${RESS_TOOLS_FILE}"' EXIT
+  curl -sS -N --max-time 60 \
+    -X POST "${ROUTER_URL}/v1/responses" \
+    -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -d '{
+      "stream": true,
+      "model": "gpt-oss:20b-cloud",
+      "input": "Call get_time to fetch the current UTC time.",
+      "tools": [{
+        "type": "function",
+        "name": "get_time",
+        "description": "Get the current UTC time in ISO-8601 format.",
+        "parameters": {"type":"object","properties":{},"required":[]}
+      }]
+    }' > "${RESS_TOOLS_FILE}" 2>/dev/null || true
+
+  # Assert response.function_call_arguments.delta events present
+  if grep -q "event: response.function_call_arguments.delta" "${RESS_TOOLS_FILE}"; then
+    DELTA_OK=1
+  else
+    DELTA_OK=0
+  fi
+
+  # Assert final response.completed event present
+  # Phase 16 SC-2: status=incomplete + incomplete_details.reason=tool_calls
+  if grep -q "event: response.completed" "${RESS_TOOLS_FILE}" \
+    && grep -q '"status":"incomplete"' "${RESS_TOOLS_FILE}" \
+    && grep -q '"reason":"tool_calls"' "${RESS_TOOLS_FILE}"; then
+    COMPLETED_OK=1
+  else
+    COMPLETED_OK=0
+  fi
+
+  if [[ "${DELTA_OK}" -eq 1 && "${COMPLETED_OK}" -eq 1 ]]; then
+    pass "RESS-WITH-TOOLS: live SSE with gpt-oss:20b-cloud emits function_call_arguments.delta + completed{incomplete:tool_calls}"
+  else
+    fail "RESS-WITH-TOOLS: missing delta or completed event (DELTA_OK=${DELTA_OK} COMPLETED_OK=${COMPLETED_OK}; body head: $(head -c 400 "${RESS_TOOLS_FILE}"))"
+  fi
+fi
+
+echo "[smoke-test-router] === Phase 19 section complete ==="
+
 # Final summary
 echo ""
 echo "[smoke-test-router] ================================================================"
 if [[ "${FAILURES}" -eq 0 ]]; then
-  echo "[smoke-test-router]  Phase 2/3/4/5/7/8/12/13/15/16/17/18 router verification: COMPLETE."
+  echo "[smoke-test-router]  Phase 2/3/4/5/7/8/12/13/15/16/17/18/19 router verification: COMPLETE."
   echo "[smoke-test-router]  Model used : ${MODEL}"
   echo "[smoke-test-router]  Router URL : ${ROUTER_URL}"
   echo "[smoke-test-router]  Skipped    : ${SKIPS:-0} (vision sections require llama3.2-vision pull + outbound HTTPS)"
