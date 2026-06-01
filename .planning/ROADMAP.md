@@ -224,12 +224,12 @@ Plans:
 5. The existing `/v1/embeddings` smoke test passes byte-identical to pre-Phase-18 (no wire shape change from EmbeddingProvider formalization).
 6. When both a pre-completion hook and an MCP tool are configured for the same route, both execute independently on the same request — the hook fires before the model call, the MCP tool fires via the model's tool-call loop after the first model response.
 
-**Plans:** 2/8 plans executed
+**Plans:** 3/8 plans executed
 
 Plans:
 - [x] 18-01-PLAN.md — Wave 0 scaffold (22+ test files + MSW MCP fixture + tests/fakes.ts extension) [MCPC-01..06 + RETR-01..06]
 - [x] 18-02-PLAN.md — Migration 0007 indivisible tuple (SQL + Drizzle + journal idx=7 + barrel) + 4 envelope errors + 2 Prometheus metrics + registry Zod widening + models.yaml stanza [MCPC-01, MCPC-04, MCPC-05, RETR-03, RETR-04]
-- [ ] 18-03-PLAN.md — RetrieverProvider interface + inject.ts (P5-03 fence) + sanitize.ts (P2-03) + prefix.ts (MCPC-03) + barrels [RETR-01, RETR-05, MCPC-03]
+- [x] 18-03-PLAN.md — RetrieverProvider interface + inject.ts (P5-03 fence) + sanitize.ts (P2-03) + prefix.ts (MCPC-03) + barrels [RETR-01, RETR-05, MCPC-03]
 - [ ] 18-04-PLAN.md — McpClientRegistry impl + transport.ts + Valkey cache + sanitize-on-ingest + dispose lifecycle [MCPC-01..03, MCPC-05, MCPC-06]
 - [ ] 18-05-PLAN.md — runMcpToolLoop + MCP_TOOL_LOOP_MAX=10 + abort propagation [MCPC-04]
 - [ ] 18-06-PLAN.md — runHookChain + Promise.race timeout helper + SHA256 hook_log producer + redactBearer [RETR-02, RETR-03, RETR-04, RETR-05, RETR-06]
@@ -261,8 +261,8 @@ Plans:
 **Plans:** 0/8 plans complete
 
 Plans:
-- [ ] 18-01-PLAN.md — Wave 0 scaffold (22+ test files + MSW MCP fixture + tests/fakes.ts extension) [MCPC-01..06 + RETR-01..06]
-- [ ] 18-02-PLAN.md — Migration 0007 indivisible tuple (SQL + Drizzle + journal idx=7 + barrel) + 4 envelope errors + 2 Prometheus metrics + registry Zod widening + models.yaml stanza [MCPC-01, MCPC-04, MCPC-05, RETR-03, RETR-04]
+- [x] 18-01-PLAN.md — Wave 0 scaffold (22+ test files + MSW MCP fixture + tests/fakes.ts extension) [MCPC-01..06 + RETR-01..06]
+- [x] 18-02-PLAN.md — Migration 0007 indivisible tuple (SQL + Drizzle + journal idx=7 + barrel) + 4 envelope errors + 2 Prometheus metrics + registry Zod widening + models.yaml stanza [MCPC-01, MCPC-04, MCPC-05, RETR-03, RETR-04]
 - [ ] 18-03-PLAN.md — RetrieverProvider interface + inject.ts (P5-03 fence) + sanitize.ts (P2-03) + prefix.ts (MCPC-03) + barrels [RETR-01, RETR-05, MCPC-03]
 - [ ] 18-04-PLAN.md — McpClientRegistry impl + transport.ts + Valkey cache + sanitize-on-ingest + dispose lifecycle [MCPC-01..03, MCPC-05, MCPC-06]
 - [ ] 18-05-PLAN.md — runMcpToolLoop + MCP_TOOL_LOOP_MAX=10 + abort propagation [MCPC-04]
@@ -280,7 +280,7 @@ Plans:
 | 15. MCP Host (Router as MCP Server) | 12/12 | Complete    | 2026-05-31 |
 | 16. /v1/responses Streaming + Tool Calls | 4/4 | Complete   | 2026-05-31 |
 | 17. SessionStore + ContextProvider + SummaryProvider | 7/7 | Complete    | 2026-06-01 |
-| 18. MCP Client + RetrieverProvider + Pre-Completion Hook | 1/8 | In Progress|  |
+| 18. MCP Client + RetrieverProvider + Pre-Completion Hook | 3/8 | In Progress|  |
 | 19. EmbeddingProvider Formalization + Observability Hardening | 0/TBD | Not started | - |
 
 ---
