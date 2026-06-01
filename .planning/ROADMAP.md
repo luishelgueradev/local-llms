@@ -309,7 +309,7 @@ Plans:
 | 16. /v1/responses Streaming + Tool Calls | 4/4 | Complete   | 2026-05-31 |
 | 17. SessionStore + ContextProvider + SummaryProvider | 7/7 | Complete    | 2026-06-01 |
 | 18. MCP Client + RetrieverProvider + Pre-Completion Hook | 8/8 | Complete    | 2026-06-01 |
-| 19. EmbeddingProvider Formalization + Observability Hardening | 7/7 | Complete | 2026-06-01 |
+| 19. EmbeddingProvider Formalization + Observability Hardening | 7/7 | Complete   | 2026-06-01 |
 
 ---
 
