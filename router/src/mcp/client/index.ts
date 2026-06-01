@@ -34,4 +34,9 @@ export {
   buildOutboundHeaders,
 } from './transport.js';
 
-// Plan 18-05 adds: runMcpToolLoop + MCP_TOOL_LOOP_MAX + type RunMcpToolLoopOpts
+// Plan 18-05: tool-call dispatch loop (MCPC-04 — 10-iter cap, parallel within iter).
+export {
+  runMcpToolLoop,
+  MCP_TOOL_LOOP_MAX,
+  type RunMcpToolLoopOpts,
+} from './tool-loop.js';
