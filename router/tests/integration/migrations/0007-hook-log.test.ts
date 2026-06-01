@@ -154,3 +154,36 @@ describeMaybe('Migration 0007: request_log.hook_log JSONB column', () => {
     expect(col.dataType).toBe('json');
   });
 });
+
+// ── Phase 19 OBSV-04 re-verification ─────────────────────────────────
+// D-22: NO new migration in Phase 19. This describe block re-verifies
+// the Plan 18-02 migration 0007 still holds in the live Postgres.
+// If the column is missing or its type drifted, OBSV-04 fails — the
+// safety-net REQ text ("if not already added in Phase 18, migration
+// 0007 adds it here") is satisfied by structural verification, not
+// by a redundant migration.
+describeMaybe('Migration 0007: re-verified by Phase 19 (OBSV-04)', () => {
+  let pool: Pool;
+
+  beforeAll(async () => {
+    // biome-ignore lint/style/noNonNullAssertion: PG_TESTS_ENABLED implies PG_URL is defined
+    pool = new Pool({ connectionString: PG_URL! });
+  });
+
+  afterAll(async () => {
+    await pool.end();
+  });
+
+  it('Phase 19 OBSV-04: hook_log column still present + still JSONB + still nullable', async () => {
+    const r = await pool.query(
+      `SELECT data_type, is_nullable
+         FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'request_log'
+          AND column_name = 'hook_log'`,
+    );
+    expect(r.rowCount).toBe(1);
+    expect(r.rows[0].data_type).toBe('jsonb');
+    expect(r.rows[0].is_nullable).toBe('YES');
+  });
+});
