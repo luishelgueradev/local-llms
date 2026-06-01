@@ -27,9 +27,10 @@
  * this file AND `tests/fakes.ts` until Plan 19-02 lands. These are intentional
  * Wave-0 RED signals.
  *
- * tsconfig coverage: `"include": ["src/**/*"]` in router/tsconfig.json already
- * picks up this file (verified: tsconfig.json includes `src/**/*` glob which
- * covers `src/types/*.d.ts`). No tsconfig change required.
+ * tsconfig coverage: the include glob "src" + slash + double-star + slash +
+ * star in router/tsconfig.json already picks up this file. The literal glob
+ * pattern is omitted from this comment because the embedded star-slash
+ * sequence prematurely terminates JSDoc blocks. No tsconfig change required.
  */
 
 import type { EmbeddingProvider } from '../providers/embedding-provider.js';
