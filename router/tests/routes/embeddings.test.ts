@@ -171,9 +171,10 @@ describe('POST /v1/embeddings — happy path (OAI-02, EMBED-01)', () => {
     expect(body.usage).toEqual({ prompt_tokens: 3, total_tokens: 3 });
 
     // Adapter was called with backend_model (not registry name) and the original input.
+    // Phase 19 (EMBP-02): provider coerces string input to string[] before adapter call.
     expect(fakeCalls.length).toBe(1);
     expect(fakeCalls[0].model).toBe('bge-m3');
-    expect(fakeCalls[0].input).toBe('hola');
+    expect(fakeCalls[0].input).toEqual(['hola']);
 
     // bufferedWriter observed exactly one row with success / tokens_out=0.
     expect(pushed.length).toBe(1);
@@ -376,7 +377,10 @@ describe('POST /v1/embeddings — schema passthrough (07-REVIEW CR-01 + WR-05)',
     // shape catches regressions where the route accidentally forwards
     // `null` or `""` as a value.
     expect(fakeCalls[0].opts).toBeDefined();
-    expect(fakeCalls[0].opts?.encoding_format).toBeUndefined();
+    // Phase 19 (EMBP-02 / D-02): EmbeddingProvider always passes encoding_format='float'
+    // to the upstream adapter regardless of what the client requested. The route
+    // re-encodes to base64 at the wire boundary when the client asked for base64.
+    expect(fakeCalls[0].opts?.encoding_format).toBe('float');
     expect(fakeCalls[0].opts?.dimensions).toBeUndefined();
     expect(fakeCalls[0].opts?.user).toBeUndefined();
   });
@@ -391,6 +395,7 @@ describe('POST /v1/embeddings — schema passthrough (07-REVIEW CR-01 + WR-05)',
 
 import { registerEmbeddingsRoute } from '../../src/routes/v1/embeddings.js';
 import type { EmbeddingsCache, CachedVector } from '../../src/embeddings/cache.js';
+import { makeOpenAIEmbeddingProvider } from '../../src/providers/embedding-provider.js';
 import Fastify, { type FastifyInstance as FI } from 'fastify';
 import { FastifySSEPlugin } from 'fastify-sse-v2';
 import {
@@ -401,6 +406,13 @@ import { makeBearerHook } from '../../src/auth/bearer.js';
 import { makeRecordRequestOutcome } from '../../src/metrics/recordOutcome.js';
 
 interface MakeP12AppOpts {
+  /**
+   * Phase 19 (EMBP-02 / Plan 19-03 Rule 3 fix): pass an optional pre-built
+   * EmbeddingsCache that will be injected into the EmbeddingProvider via
+   * makeOpenAIEmbeddingProvider({ cacheOverride: ... }). This replaces the
+   * old `cache?: EmbeddingsCache` that was passed directly to the route before
+   * the EMBP-02 refactor moved cache ownership into the provider.
+   */
   cache?: EmbeddingsCache;
   adapter?: BackendAdapter;
   yaml?: string;
@@ -411,6 +423,11 @@ interface MakeP12AppOpts {
  * instance so we can wire arbitrary cache + adapter combinations without
  * dragging the full buildApp() liveness/breaker/idempotency surface — those
  * are already exercised by the Phase 7/8 tests above.
+ *
+ * Phase 19 (EMBP-02): fixture now constructs an EmbeddingProvider via
+ * makeOpenAIEmbeddingProvider and passes it to registerEmbeddingsRoute.
+ * The cacheOverride field allows injecting the in-memory test cache so
+ * EMB-H01..04 cache behavior tests continue to work.
  */
 async function makeP12App(opts: MakeP12AppOpts = {}): Promise<{
   app: FI;
@@ -455,6 +472,20 @@ async function makeP12App(opts: MakeP12AppOpts = {}): Promise<{
       return a;
     })();
 
+  // Phase 19 (EMBP-02 / Plan 19-03): construct the EmbeddingProvider here so
+  // the route can delegate to it. cacheOverride threads the in-memory test cache
+  // into the provider so EMB-H01..04 cache behavior is exercised without Valkey.
+  const embeddingProvider = makeOpenAIEmbeddingProvider({
+    registry,
+    makeAdapter: () => adapter,
+    cacheOverride: opts.cache,
+    metrics: {
+      embeddingsCacheTotal: metrics.embeddingsCacheTotal,
+      embeddingsDimsTotal: metrics.embeddingsDimsTotal,
+    },
+    log: { warn: () => {}, error: () => {}, info: () => {}, debug: () => {}, trace: () => {}, fatal: () => {}, child: () => ({ warn: () => {}, error: () => {}, info: () => {}, debug: () => {}, trace: () => {}, fatal: () => {} }) } as never,
+  });
+
   const app = Fastify({ logger: false });
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
@@ -476,11 +507,12 @@ async function makeP12App(opts: MakeP12AppOpts = {}): Promise<{
       reset: async () => {},
     },
     breakerCooldownSec: 60,
-    cache: opts.cache,
+    embeddingProvider,
     metrics: {
+      // Route owns batch_size (D-07) and cache bypass counter (Risk #2 Option A).
+      // embeddingsDimsTotal removed — now owned by the provider (D-03 / Plan 19-03).
       embeddingsCacheTotal: metrics.embeddingsCacheTotal,
       embeddingsBatchSize: metrics.embeddingsBatchSize,
-      embeddingsDimsTotal: metrics.embeddingsDimsTotal,
     },
   });
 
@@ -619,7 +651,10 @@ describe('POST /v1/embeddings — Phase 12 cache bypass + fail-open (EMB-H04)', 
       });
       expect(r.statusCode).toBe(200);
       expect(calls.length).toBe(1);
-      expect(cache.store.size).toBe(0); // nothing cached
+      // Phase 19 (EMBP-02): provider always works in float; float result IS cached
+      // even for base64 client requests. Subsequent float requests for the same
+      // input will be cache hits (improved behavior vs Phase 12).
+      // The bypass metric is still incremented by the route (Risk #2 Option A).
       const text = await metrics.register.metrics();
       expect(text).toMatch(/router_embeddings_cache_total\{result="bypass"\}\s+1/);
     } finally {

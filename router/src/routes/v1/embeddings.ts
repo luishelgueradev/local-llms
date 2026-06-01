@@ -1,57 +1,39 @@
 /**
  * embeddings.ts — POST /v1/embeddings route (Plan 07-04, OAI-02 + EMBED-01).
  *
+ * Phase 19 (v0.11.0 — EMBP-02): route refactored to delegate the
+ * upstream-call + cache + dims-enforcement triad to
+ * req.server.embeddingProvider.embed(...) (D-09 / D-10).
+ *
+ * The route is now a thin wrapper:
+ *   applyPreflight → idempotency leader/follower
+ *   → batch-size observe (D-07 — wire metric stays in route)
+ *   → base64-bypass-increment (Risk #2 Option A — route owns this)
+ *   → provider.embed(inputs, opts)
+ *   → re-encode base64 if requested (D-02 — provider always returns number[][])
+ *   → OpenAI list re-wrap
+ *   → stamp cost BEFORE reply.send() (project_fastify_onsend_timing.md)
+ *   → recordOutcome (finally)
+ *
  * Wire surface: OpenAI Embeddings API (non-streaming). The Anthropic protocol
  * has no embeddings analog, so this surface is single-protocol unlike
  * /v1/chat/completions + /v1/messages.
  *
- * Pipeline (Phase 7 baseline):
- *   zod-validated body → registry.resolve(model) → capability gate
- *   ('embeddings' in entry.capabilities) → semaphore acquire →
- *   adapter.embeddings(input, backend_model, signal) → response back to wire.
- *
- * Phase 12 (v0.10.0 — EMB-H01..06) additions:
- *
- *   - Per-input-item Valkey cache keyed by (backend, backend_model, encoding_format,
- *     dimensions, input). Batch inputs are looked up item-by-item; misses go to the
- *     adapter as a sub-batch preserving order; the response is reassembled into the
- *     original input order. (EMB-H01, EMB-H05)
- *
- *   - Dims enforcement: when entry.dims is declared (now required for any
- *     embeddings-capability model — see registry.ts superRefine), the route refuses
- *     any vector whose length does not match. Throws EmbeddingsDimsMismatchError →
- *     500 + structured log. (EMB-H02)
- *
- *   - Three new metrics: router_embeddings_cache_total{result=hit|miss|bypass},
- *     router_embeddings_batch_size (histogram), router_embeddings_dims_total{model,dims}.
- *     (EMB-H03)
- *
- *   - Fail-open on Valkey errors: cache.get()/set() throws are caught per-call, the
- *     route logs warn and falls through to upstream. The contract is "no metric
- *     increment on Valkey error" (EMB-H04) so the cache_total counter labels remain
- *     a faithful representation of real cache outcomes.
- *
  * Bearer auth: gated automatically by makeBearerHook (auth/bearer.ts) because
- * `/v1/embeddings` is NOT in PUBLIC_PATHS. No route-level auth wiring needed.
+ * /v1/embeddings is NOT in PUBLIC_PATHS. No route-level auth wiring needed.
  *
  * Centralized error handler (app.ts): maps thrown errors to the OpenAI envelope.
- * Plan 07-04 widens the handler's `isRecordedRoute` allowlist to include
- * `/v1/embeddings` so pre-resolve errors (RegistryUnknownModelError, etc.) still
- * produce a request_log row. Inside the route, the outer finally block calls
- * safeRecord on both success and error paths via the same idempotency closure
- * pattern used by chat-completions.ts.
  */
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from '@bram-dc/fastify-type-provider-zod';
 import { z } from 'zod/v4';
 import type { RegistryStore } from '../../config/registry.js';
-import type { AdapterFactory, BackendAdapter } from '../../backends/adapter.js';
+import type { AdapterFactory } from '../../backends/adapter.js';
 import type { BackendSemaphore } from '../../concurrency/semaphore.js';
 import { BackendSaturatedError } from '../../concurrency/semaphore.js';
 import {
   BreakerOpenError,
   CapabilityNotSupportedError,
-  EmbeddingsDimsMismatchError,
   mapToHttpStatus,
 } from '../../errors/envelope.js';
 import { applyPreflight } from '../../dispatch/preflight.js';
@@ -64,12 +46,8 @@ import {
   type OutcomeContext,
   type RecordRequestOutcome,
 } from '../../metrics/recordOutcome.js';
-import {
-  embeddingsCacheKey,
-  type CachedVector,
-  type EmbeddingsCache,
-} from '../../embeddings/cache.js';
 import { computeCostCents } from '../../cost/computeCostCents.js';
+import type { EmbeddingProvider } from '../../providers/embedding-provider.js';
 
 /**
  * OpenAI Embeddings request body. Pitfall E-1: `input` MUST be a non-empty
@@ -118,31 +96,46 @@ export interface RegisterEmbeddingsOpts {
    * Plan 08-07 (ROUTE-12 / D-D5 / D-D6) — optional idempotency multiplexer.
    * Embeddings is non-streaming, so the wiring is simpler than chat /
    * messages: leader runs the adapter and publishes the response body;
-   * followers replay the cached body. EMBED requests are typically
-   * idempotent by nature (same input → same embedding) but PITFALLS
-   * Pitfall 14 (SDK retry-storms) still applies — the multiplexer
-   * collapses N concurrent retries into 1 upstream call.
+   * followers replay the cached body.
    */
   idempotency?: IdempotencyMultiplexer;
   /**
-   * Phase 12 (v0.10.0 — EMB-H01) — optional Valkey-backed per-item cache.
-   * When undefined (no Valkey wired — test fixtures, dev), the route behaves
-   * exactly as Phase 7 (all items hit the adapter, dims still enforced if
-   * declared). When defined, cacheable items are looked up + populated.
+   * Phase 19 (v0.11.0 — EMBP-02 / D-10): optional EmbeddingProvider for
+   * test injection (option-bag fallback when fastify.embeddingProvider
+   * decorator is absent). Production composition root (index.ts — Plan 19-04)
+   * wires the provider via BuildAppOpts.embeddingProvider → app.decorate.
+   * Test fixtures that exercise cache behavior construct a provider via
+   * makeOpenAIEmbeddingProvider({ cacheOverride, ... }) and pass it here.
    */
-  cache?: EmbeddingsCache;
+  embeddingProvider?: EmbeddingProvider;
   /**
-   * Phase 12 (v0.10.0 — EMB-H03) — narrow metrics surface the route reads.
-   * Mirrors chat-completions.ts.metrics: tests can pass undefined and the
-   * route still functions (no metric observation).
+   * Phase 19 (v0.11.0 — EMBP-02 / D-07) — narrow metrics surface the route
+   * reads. Mirrors chat-completions.ts.metrics: tests can pass undefined and
+   * the route still functions (no metric observation). Route only reads
+   * embeddingsBatchSize (D-07) and embeddingsCacheTotal for the base64 bypass
+   * counter (Risk #2 Option A). The provider owns cache hit/miss and dims
+   * metrics.
    */
   metrics?: {
     embeddingsCacheTotal: { inc(labels: { result: 'hit' | 'miss' | 'bypass' }): void };
     embeddingsBatchSize: { observe(value: number): void };
-    embeddingsDimsTotal: {
-      inc(labels: { model: string; dims: string }, value?: number): void;
-    };
   };
+}
+
+/**
+ * Encode a number[] vector to a base64 string using little-endian float32
+ * representation (matches the OpenAI Embeddings API base64 encoding convention
+ * used by sentence-transformer servers).
+ *
+ * D-02: Provider always returns number[][]; when the client requests
+ * encoding_format='base64', the route re-encodes at the wire boundary.
+ */
+function encodeBase64(vec: number[]): string {
+  const buf = Buffer.allocUnsafe(vec.length * 4);
+  for (let i = 0; i < vec.length; i++) {
+    buf.writeFloatLE(vec[i] as number, i * 4);
+  }
+  return buf.toString('base64');
 }
 
 export function registerEmbeddingsRoute(
@@ -163,22 +156,16 @@ export function registerEmbeddingsRoute(
       // centralized error handler (404 / 403 envelopes); breakerState='open' is
       // RETURNED so the HTTP caller stamps Retry-After before the BreakerOpenError
       // throw. POL-05 (gate-before-breaker) preserved structurally inside the
-      // helper. Plan 07-04 widens isRecordedRoute to include /v1/embeddings so
-      // pre-resolve / pre-policy errors still produce a request_log row via the
-      // centralized handler.
+      // helper.
       const { entry, breakerState } = await applyPreflight(body.model, {
         registry: opts.registry,
         breaker: opts.breaker,
       });
       req.resolvedBackend = entry.backend;       // Plan 08-03 (ROUTE-10) — stamp for onSend hook
-      // Plan 08-04 (CLOUD-03) — sentinel-open branch. Same wire shape as before
-      // the refactor: Retry-After stamped BEFORE BreakerOpenError throws.
       if (breakerState === 'open') {
         void reply.header('Retry-After', String(opts.breakerCooldownSec));
         throw new BreakerOpenError(entry.backend, opts.breakerCooldownSec);
       }
-
-      const adapter: BackendAdapter = opts.makeAdapter(entry);
 
       // AbortController plumbing — mirrors chat-completions.ts (SC3 client-disconnect
       // propagation). Non-streaming, so no heartbeat / sseCleanup wiring needed.
@@ -216,15 +203,15 @@ export function registerEmbeddingsRoute(
 
       let caughtErr: Error | undefined;
       let result:
-        | Awaited<ReturnType<BackendAdapter['embeddings']>>
+        | {
+            object: 'list';
+            data: Array<{ object: 'embedding'; index: number; embedding: number[] | string }>;
+            model: string;
+            usage: { prompt_tokens: number; total_tokens: number };
+          }
         | undefined;
 
       // Plan 08-07 (ROUTE-12 / D-D5) — extract + validate Idempotency-Key.
-      // Outside the try block because extractIdempotencyKey throws an
-      // InvalidIdempotencyKeyError that the centralized handler maps to 400
-      // — we want the standard path, not the route's safeRecord (which would
-      // populate the backend/model labels). With no socket listener attached
-      // yet, this is safe.
       const idempotencyKey = extractIdempotencyKey(req.headers);
       let idempotencyRole: 'leader' | 'follower' | undefined;
       let followerUpstreamMessageId: string | undefined;
@@ -235,16 +222,10 @@ export function registerEmbeddingsRoute(
         // resolved entry's backend/model labels (rather than 'unknown' which
         // the centralized setErrorHandler emits on pre-route throws). Fires
         // BEFORE semaphore acquire so a chat-only model gets a clean 400
-        // without consuming a slot. CapabilityNotSupportedError →
-        // 400 / model_capability_mismatch via the centralized error handler.
+        // without consuming a slot.
         if (!entry.capabilities.includes('embeddings')) {
           throw new CapabilityNotSupportedError(entry.name, 'embeddings');
         }
-
-        // Plan 15 (v0.11.0 — MCPS-01 / CONTEXT.md D-09): the policy gate and
-        // breaker check were consolidated into applyPreflight() at the top of
-        // the handler (before this try block). The sentinel-open branch and
-        // Retry-After stamp moved alongside it.
 
         // Plan 08-07 (ROUTE-12 / D-D5 / D-D6) — Idempotency-Key acquire +
         // follower replay. Embeddings is always non-stream, so the follower
@@ -263,194 +244,74 @@ export function registerEmbeddingsRoute(
 
         // Phase 12 (EMB-H03): observe batch size before any cache work — we want
         // the histogram to reflect what the client SENT, not what we ended up
-        // fetching after cache deduplication.
+        // fetching after cache deduplication. D-07: wire-shape metric stays in route.
         const inputs = Array.isArray(body.input) ? body.input : [body.input];
         opts.metrics?.embeddingsBatchSize.observe(inputs.length);
 
-        // Phase 12 (EMB-H01 + EMB-H04): per-item Valkey cache. The cache is skipped
-        // entirely for encoding_format='base64' (the wire shape is a string the route
-        // would have to round-trip through JSON anyway, and base64 callers are typically
-        // dimension-reducing pipelines that don't benefit from caching). Skipped when
-        // opts.cache is undefined (no Valkey wired — Phase 7 behavior preserved).
-        const cacheable = opts.cache !== undefined && body.encoding_format !== 'base64';
-        const slots: Array<CachedVector | null> = new Array(inputs.length).fill(null);
-        const missIndices: number[] = [];
-
-        for (let i = 0; i < inputs.length; i++) {
-          const item = inputs[i] as string;
-          if (!cacheable) {
-            missIndices.push(i);
-            // bypass: cache exists but is being skipped intentionally (base64).
-            // When opts.cache is undefined entirely, no metric event is emitted —
-            // there's nothing to bypass; the route is operating in pre-cache mode.
-            if (opts.cache !== undefined) {
-              opts.metrics?.embeddingsCacheTotal.inc({ result: 'bypass' });
-            }
-            continue;
-          }
-          const key = embeddingsCacheKey({
-            backend: entry.backend,
-            backend_model: entry.backend_model,
-            encoding_format: body.encoding_format,
-            dimensions: body.dimensions,
-            input: item,
-          });
-          try {
-            const cached = await opts.cache!.get(key);
-            if (cached !== null) {
-              slots[i] = cached;
-              opts.metrics?.embeddingsCacheTotal.inc({ result: 'hit' });
-            } else {
-              missIndices.push(i);
-              opts.metrics?.embeddingsCacheTotal.inc({ result: 'miss' });
-            }
-          } catch (err) {
-            // EMB-H04 — fail-open. Treat as if cache were absent for this item;
-            // do NOT increment the metric (the contract is "metric stays a
-            // faithful representation of real cache outcomes"). The item still
-            // goes to upstream below.
-            req.log.warn(
-              { err, key },
-              'embeddings cache: get failed; falling through to upstream (fail-open)',
-            );
-            missIndices.push(i);
+        // Risk #2 Option A: route owns the base64 bypass metric because the
+        // provider always works in float (D-02). When the client requests base64
+        // AND a provider is wired (meaning cache would be present if this were
+        // a float request), increment bypass for each input item.
+        // The predicate uses opts.metrics?.embeddingsCacheTotal presence as the
+        // "cache is wired" signal — mirrors the pre-refactor `opts.cache !== undefined`
+        // semantic (only apps/fixtures that wired cache also wire the metric).
+        if (body.encoding_format === 'base64' && opts.metrics?.embeddingsCacheTotal !== undefined) {
+          for (let i = 0; i < inputs.length; i++) {
+            opts.metrics.embeddingsCacheTotal.inc({ result: 'bypass' });
           }
         }
 
-        // Adapter call — only for items that missed the cache (or for ALL items
-        // when cache is absent/disabled). When everything was a hit, this branch
-        // is skipped entirely and the request_log row records tokens_in=0 (the
-        // request didn't cost any upstream tokens).
-        let upstreamUsage = { prompt_tokens: 0, total_tokens: 0 };
-        let upstreamModel = entry.backend_model;
-        if (missIndices.length > 0) {
-          const semaphore = opts.semaphores.get(entry.backend);
-          release = await semaphore.acquire(controller.signal);
-          released = false;
-
-          // Preserve original input shape for the upstream call: if the client
-          // sent a string and we missed it, send a string back (not [string]).
-          // Some upstreams (older Ollama versions) special-case single-string
-          // input — keeping byte-identical to pre-Phase-12 behavior here is the
-          // safest move.
-          const missInputs = missIndices.map((i) => inputs[i] as string);
-          const adapterInput: string | string[] =
-            !Array.isArray(body.input) && missInputs.length === 1
-              ? missInputs[0]!
-              : missInputs;
-
-          // 07-REVIEW CR-01: forward optional EmbeddingCreateParams that the
-          // schema validates. Without this, encoding_format='base64' and
-          // dimensions=N pass zod but are silently dropped at the SDK boundary,
-          // violating the documented OpenAI-compat contract.
-          const upstreamResult = await adapter.embeddings(
-            adapterInput,
-            entry.backend_model,
-            controller.signal,
-            {
-              encoding_format: body.encoding_format,
-              dimensions: body.dimensions,
-              user: body.user,
-            },
-          );
-          // Plan 08-04 — fire-and-forget breaker success signal.
-          void opts.breaker.recordSuccess(entry.backend);
-
-          upstreamUsage = upstreamResult.usage;
-          upstreamModel = upstreamResult.model;
-
-          // Place upstream vectors into their original slots AND populate cache.
-          // The upstream returns results in the order of the input array; map
-          // them back via missIndices[j].
-          if (upstreamResult.data.length !== missIndices.length) {
-            // Defensive: upstream returned a different count than we asked for.
-            // This is an upstream contract violation; fail fast rather than
-            // serve mis-aligned vectors.
-            throw new Error(
-              `embeddings: upstream returned ${upstreamResult.data.length} vectors for ${missIndices.length} inputs (count mismatch)`,
-            );
-          }
-          for (let j = 0; j < upstreamResult.data.length; j++) {
-            const origIdx = missIndices[j]!;
-            const vec = upstreamResult.data[j]!.embedding;
-            slots[origIdx] = vec;
-            if (cacheable) {
-              const key = embeddingsCacheKey({
-                backend: entry.backend,
-                backend_model: entry.backend_model,
-                encoding_format: body.encoding_format,
-                dimensions: body.dimensions,
-                input: inputs[origIdx] as string,
-              });
-              try {
-                await opts.cache!.set(key, vec);
-              } catch (err) {
-                // EMB-H04 — fail-open. The vector was served; the cache write
-                // failure just means the next identical request will miss again.
-                req.log.warn(
-                  { err, key },
-                  'embeddings cache: set failed; vector served but not cached',
-                );
-              }
-            }
-          }
-        }
-
-        // EMB-H02 — dims enforcement. registry.ts.superRefine guarantees that any
-        // model with the `embeddings` capability declares `dims` (non-optional in
-        // practice), so the entry.dims === undefined branch is dead code from the
-        // route's POV — keep it as a defense-in-depth no-op rather than throw
-        // here. Skip the check for base64 strings (we can't measure dimensions
-        // without decoding) — operators using base64 + dims enforcement combined
-        // are accepting that the gate is array-only.
-        if (entry.dims !== undefined) {
-          for (let i = 0; i < slots.length; i++) {
-            const v = slots[i];
-            if (Array.isArray(v) && v.length !== entry.dims) {
-              req.log.error(
-                {
-                  model: entry.name,
-                  backend: entry.backend,
-                  expected_dims: entry.dims,
-                  actual_dims: v.length,
-                  index: i,
-                },
-                'embeddings dims mismatch: refusing to propagate',
-              );
-              throw new EmbeddingsDimsMismatchError(entry.name, entry.dims, v.length);
-            }
-          }
-          // EMB-H03 — record per-(model,dims) success. inputs.length covers both
-          // hits and misses since the response includes all of them.
-          opts.metrics?.embeddingsDimsTotal.inc(
-            { model: entry.name, dims: String(entry.dims) },
-            inputs.length,
+        // Phase 19 (EMBP-02 / D-09 / D-10): delegate upstream call + cache +
+        // dims-enforcement to EmbeddingProvider. The provider is sourced from:
+        //   1. opts.embeddingProvider (test injection option-bag — Plan 19-03)
+        //   2. req.server.embeddingProvider (Fastify decorator — Plan 19-04)
+        // If neither is available, throw a clear error (should never happen in
+        // production — composition root always provides a provider).
+        const provider: EmbeddingProvider | undefined =
+          opts.embeddingProvider ??
+          (req.server as { embeddingProvider?: EmbeddingProvider }).embeddingProvider;
+        if (!provider) {
+          throw new Error(
+            'embeddings: EmbeddingProvider not injected via opts or fastify.embeddingProvider decorator',
           );
         }
 
-        req.raw.socket?.off('close', onClose);
+        // Semaphore acquire — provider delegates to the adapter for cache misses.
+        // Acquire BEFORE the provider call so the slot is held during upstream I/O.
+        const semaphore = opts.semaphores.get(entry.backend);
+        release = await semaphore.acquire(controller.signal);
+        released = false;
 
-        // Build the wire response. Shape matches the OpenAI SDK's
-        // CreateEmbeddingResponse: object='list', data[].index increments from 0,
-        // model echoes the upstream id (preserved for byte-identical behavior
-        // with the pre-cache implementation), usage reflects only what actually
-        // hit the upstream (fully cached → 0 tokens, which is honest accounting).
+        const providerResult = await provider.embed(inputs, {
+          model: body.model,
+          dimensions: body.dimensions,
+          user: body.user,
+        });
+
+        // Plan 08-04 — fire-and-forget breaker success signal.
+        void opts.breaker.recordSuccess(entry.backend);
+
+        // D-02: re-encode to base64 if client asked. Provider always returns
+        // number[][] (float). Route re-encodes at the wire boundary.
+        const data = providerResult.embeddings.map((vec, i) => ({
+          object: 'embedding' as const,
+          index: i,
+          embedding: (body.encoding_format === 'base64' ? encodeBase64(vec) : vec) as
+            | number[]
+            | string,
+        }));
+
         result = {
           object: 'list' as const,
-          data: slots.map((vec, i) => ({
-            object: 'embedding' as const,
-            index: i,
-            // slots[i] is guaranteed non-null after the loop above (cache hit or
-            // upstream fill); the `!` is a runtime invariant assertion.
-            embedding: vec!,
-          })),
-          model: upstreamModel,
-          usage: upstreamUsage,
+          data,
+          model: providerResult.model,
+          usage: providerResult.usage,
         };
 
         // Phase 13 (v0.10.0 — COST-02/04): stamp req.computedCostCents BEFORE
         // reply.send() — Fastify v5 onSend fires synchronously inside .send().
         // Outer finally still records the same cost to the request_log row.
+        // D-08: route owns cost; provider returns usage (cache-miss only).
         const earlyCost =
           computeCostCents({
             entry,
@@ -462,12 +323,7 @@ export function registerEmbeddingsRoute(
         }
 
         // Plan 08-07 (ROUTE-12 / D-D5 / D-D6) — leader publishes the embeddings
-        // response body so concurrent followers can replay it. Embedding
-        // responses don't carry an Anthropic-style msg_<ulid>; we use the
-        // OpenAI completion id field if present (sentence-transformer servers
-        // commonly omit it) or undefined. Plan 08-08 cost-attribution groups
-        // by upstream_message_id but embeddings rarely needs that grouping
-        // (single tier, predictable cost) — undefined is acceptable.
+        // response body so concurrent followers can replay it.
         if (idempotencyKey && idempotencyRole === 'leader' && opts.idempotency) {
           try {
             const upstreamId = (result as { id?: string }).id;
@@ -498,17 +354,14 @@ export function registerEmbeddingsRoute(
         safeRelease();
 
         // The outer finally always records — embeddings is non-streaming, so unlike
-        // chat-completions.ts there is no sseCleanup race to guard against. The
-        // safeRecord idempotency flag still protects against the (extremely
-        // unlikely) double-fire if app.setErrorHandler also runs.
+        // chat-completions.ts there is no sseCleanup race to guard against.
         const httpStatus = caughtErr ? mapToHttpStatus(caughtErr) : reply.statusCode;
         const tokensIn = caughtErr ? undefined : result?.usage?.prompt_tokens ?? 0;
         const tokensOut = caughtErr ? undefined : 0; // tokensOut: 0 (plan-verify grep gate)
         // Phase 13 (v0.10.0 — COST-01/02/04): embeddings cost computed from
         // upstream usage. For cloud-served embeddings the rate-card lives in
         // entry.pricing; for local backends pricing is absent and the helper
-        // returns null → no header, no cost_cents column. Stamped on req before
-        // the function returns so onSend can emit X-Cost-Cents.
+        // returns null → no header, no cost_cents column.
         const costCents = caughtErr
           ? undefined
           : computeCostCents({ entry, tokensIn, tokensOut }) ?? undefined;
@@ -525,10 +378,6 @@ export function registerEmbeddingsRoute(
             : deriveStatusClass(reply.statusCode, false),
           httpStatus,
           durationMs: performance.now() - (req._t0 ?? performance.now()),
-          // 07-RESEARCH Open Question 3 — emit `tokensOut: 0` (not NULL) so dashboards
-          // aggregating SUM(tokens_out) over request_log include embedding rows without
-          // a COALESCE. Error path leaves it undefined → NULL column (canonical pattern
-          // shared with chat-completions.ts).
           tokensIn,
           tokensOut,
           errorCode: caughtErr ? mapErrorToCode(caughtErr) : undefined,
@@ -538,10 +387,7 @@ export function registerEmbeddingsRoute(
           projectId: req.projectId,
           workloadClass: req.workloadClass,
           requestId: req.id,
-          // Plan 08-07 (D-D5) — follower request_log row carries the leader's
-          // upstream_message_id for cost-attribution grouping (Plan 08-08).
           upstreamMessageId: followerUpstreamMessageId,
-          // 08-REVIEW CR-01: persist Idempotency-Key for dedup verification.
           idempotencyKey,
           costCents,
           timestamp: new Date(),

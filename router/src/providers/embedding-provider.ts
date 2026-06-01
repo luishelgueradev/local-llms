@@ -25,7 +25,7 @@ import type { Logger } from 'pino';
 import type { ValkeyClient } from '../clients/valkey.js';
 import type { RegistryStore } from '../config/registry.js';
 import type { AdapterFactory } from '../backends/adapter.js';
-import { makeEmbeddingsCache, embeddingsCacheKey } from '../embeddings/cache.js';
+import { makeEmbeddingsCache, embeddingsCacheKey, type EmbeddingsCache } from '../embeddings/cache.js';
 import {
   RegistryUnknownModelError,
   CapabilityNotSupportedError,
@@ -78,6 +78,14 @@ export interface MakeOpenAIEmbeddingProviderOpts {
   makeAdapter: AdapterFactory;
   valkey?: ValkeyClient;
   env?: { ROUTER_EMBED_CACHE_TTL_SEC: number };
+  /**
+   * Plan 19-03 (Rule 3 — test backward-compat): when provided, this pre-built
+   * EmbeddingsCache is used directly instead of constructing one from `valkey`.
+   * Intended for test fixtures that build an in-memory cache and need to inject
+   * it into the provider without a ValkeyClient (P12 regression suite).
+   * Production paths always use `valkey` instead.
+   */
+  cacheOverride?: EmbeddingsCache;
   metrics: {
     embeddingsCacheTotal: { inc(labels: { result: 'hit' | 'miss' | 'bypass' }): void };
     embeddingsDimsTotal: { inc(labels: { model: string; dims: string }, value?: number): void };
@@ -137,15 +145,17 @@ export function makeOpenAIEmbeddingProvider(
 ): EmbeddingProvider {
   const { registry, makeAdapter, metrics, log } = opts;
 
-  // Build the EmbeddingsCache wrapper only when Valkey is wired.
-  // When valkey is absent the entire cache path is bypassed (Phase 7 behavior).
-  const cache = opts.valkey
-    ? makeEmbeddingsCache({
-        valkey: opts.valkey,
-        ttlSec: opts.env?.ROUTER_EMBED_CACHE_TTL_SEC ?? 86400,
-        log,
-      })
-    : undefined;
+  // Build the EmbeddingsCache wrapper. Priority: cacheOverride (test injection) >
+  // valkey (production). When neither is present the cache path is bypassed entirely.
+  const cache: EmbeddingsCache | undefined = opts.cacheOverride
+    ? opts.cacheOverride
+    : opts.valkey
+      ? makeEmbeddingsCache({
+          valkey: opts.valkey,
+          ttlSec: opts.env?.ROUTER_EMBED_CACHE_TTL_SEC ?? 86400,
+          log,
+        })
+      : undefined;
 
   return {
     async embed(input, callOpts) {

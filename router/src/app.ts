@@ -52,7 +52,8 @@ import type { SummaryProvider } from './providers/summary-provider.js';
 import { countTokens } from './translation/count-tokens.js';
 import { closeValkey, type ValkeyClient } from './clients/valkey.js';
 import { mcpHostPlugin } from './mcp/host/index.js';
-import { makeEmbeddingsCache } from './embeddings/cache.js';
+// Phase 19 (v0.11.0 — EMBP-01 / D-06): makeEmbeddingsCache removed from buildApp.
+// Cache construction now lives inside makeOpenAIEmbeddingProvider (providers/embedding-provider.ts).
 import { makeCircuitBreaker, type CircuitBreaker } from './resilience/circuitBreaker.js';
 import {
   makeIdempotencyMultiplexer,
@@ -62,6 +63,13 @@ import { HookConfigError, RateLimitExceededError } from './errors/envelope.js';
 // Phase 18 (v0.11.0 — MCPC-01..06 + RETR-02..06): MCP client registry + hook map.
 import type { McpClientRegistry } from './mcp/client/registry.js';
 import type { PreCompletionHook } from './hooks/pre-completion.js';
+// Phase 19 (v0.11.0 — EMBP-01 / D-10): EmbeddingProvider type for BuildAppOpts widening.
+// makeOpenAIEmbeddingProvider imported as value (not type) so buildApp can construct
+// a fallback provider when opts.embeddingProvider is absent (Rule 3 fix — Plan 19-03).
+import {
+  makeOpenAIEmbeddingProvider,
+  type EmbeddingProvider,
+} from './providers/embedding-provider.js';
 import type { Env } from './config/env.js';
 import type { Logger } from 'pino';
 
@@ -319,6 +327,16 @@ export interface BuildAppOpts {
    * the TypeScript checker never saw.
    */
   preCompletionHooks?: Map<string, PreCompletionHook[]>;
+  /**
+   * Phase 19 (v0.11.0 — EMBP-01 / D-10): optional EmbeddingProvider. When
+   * provided, buildApp calls app.decorate('embeddingProvider', opts.embeddingProvider)
+   * so future RetrieverProvider implementations can read fastify.embeddingProvider
+   * without HTTP round-tripping. When undefined (test fixtures), the
+   * /v1/embeddings route falls back to opts.embeddingProvider injected
+   * directly via RegisterEmbeddingsOpts. Production composition (index.ts)
+   * always passes a real provider.
+   */
+  embeddingProvider?: EmbeddingProvider;
 }
 
 /**
@@ -720,6 +738,30 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
   // without a Valkey client — they exercise routes that don't touch it.
   if (opts.valkey) app.decorate('valkey', opts.valkey);
 
+  // Phase 19 (v0.11.0 — EMBP-01 / D-10 + Plan 19-03 Rule 3 fix): construct the
+  // EmbeddingProvider. When opts.embeddingProvider is supplied (production composition
+  // root in index.ts / Plan 19-04 or test fixtures that pass one), use it directly.
+  // When absent, construct a minimal provider from the available buildApp opts so
+  // ALL test fixtures that use buildApp() continue to work without modification —
+  // production index.ts always supplies a real provider so this fallback only fires
+  // in test mode (no Valkey → no cache → Phase 7 / pre-cache behavior preserved).
+  const effectiveEmbeddingProvider: EmbeddingProvider =
+    opts.embeddingProvider ??
+    makeOpenAIEmbeddingProvider({
+      registry: opts.registry,
+      // Use opts.makeAdapter when provided (test fixtures) so the fallback provider
+      // routes through the test's fake adapter — NOT the real HTTP adapter.
+      makeAdapter: opts.makeAdapter ?? makeAdapterWithCloudKey,
+      valkey: opts.valkey,
+      env: opts.env,
+      metrics: {
+        embeddingsCacheTotal: opts.metrics.embeddingsCacheTotal,
+        embeddingsDimsTotal: opts.metrics.embeddingsDimsTotal,
+      },
+      log: app.log as import('pino').Logger,
+    });
+  app.decorate('embeddingProvider', effectiveEmbeddingProvider);
+
   // Plan 08-04 (CLOUD-03 / D-B1..D-B4) — per-backend circuit breaker. When
   // both opts.valkey AND opts.env are present, construct a real Valkey-backed
   // breaker; otherwise fall back to a no-op breaker so existing test fixtures
@@ -1028,27 +1070,17 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
   // GET /v1/models — bearer-gated; lists all registry models (Plan 03-02, OAI-03).
   registerModelsRoute(app, opts.registry);
 
-  // Phase 12 (v0.10.0 — EMB-H01..04) — Valkey-backed per-input cache for
-  // /v1/embeddings. Gated on opts.valkey AND opts.env (which carries the TTL).
-  // When either is absent, embeddingsCache is undefined and the route falls
-  // back to Phase 7 behavior (every item hits the adapter; dims still enforced).
-  // Fail-open semantics live inside the route — see embeddings.ts header.
-  const embeddingsCache =
-    opts.valkey && opts.env
-      ? makeEmbeddingsCache({
-          valkey: opts.valkey,
-          ttlSec: opts.env.ROUTER_EMBED_CACHE_TTL_SEC,
-          log: app.log as Logger,
-        })
-      : undefined;
-
   // Plan 07-04 (OAI-02, EMBED-01):
   //  - POST /v1/embeddings — OpenAI-compat embedding endpoint dispatching to
   //    Ollama (bge-m3) or vLLM-embed (BAAI/bge-m3) via the factory.
   //    Non-streaming; reuses semaphores + recordOutcome from Phase 3 + Phase 5.
   //    Capability gate enforces entry.capabilities.includes('embeddings')
   //    BEFORE the adapter call (T-07-11 mitigation, route-side layer).
-  // Phase 12 (v0.10.0): cache + 3 new metrics threaded in via opts.
+  // Phase 12 (v0.10.0): 3 metrics threaded in via opts.
+  // Phase 19 (v0.11.0 — EMBP-02 / D-06 / Plan 19-03): cache construction removed
+  // — cache now lives inside the EmbeddingProvider. Route delegates to the provider
+  // via effectiveEmbeddingProvider (constructed above). Cast removed after Plan 19-03
+  // updates RegisterEmbeddingsOpts to accept embeddingProvider.
   registerEmbeddingsRoute(app, {
     registry: opts.registry,
     makeAdapter: opts.makeAdapter ?? makeAdapterWithCloudKey,
@@ -1057,11 +1089,12 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
     breaker,
     breakerCooldownSec,
     idempotency,
-    cache: embeddingsCache,
+    embeddingProvider: effectiveEmbeddingProvider,
     metrics: {
+      // Route owns batch_size (D-07) and cache bypass counter (Risk #2 Option A).
+      // embeddingsDimsTotal removed — now owned by the provider (D-03 / Plan 19-03).
       embeddingsCacheTotal: opts.metrics.embeddingsCacheTotal,
       embeddingsBatchSize: opts.metrics.embeddingsBatchSize,
-      embeddingsDimsTotal: opts.metrics.embeddingsDimsTotal,
     },
   });
 
