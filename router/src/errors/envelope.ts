@@ -9,6 +9,16 @@ import { BackendSaturatedError } from '../concurrency/semaphore.js';
 // envelope-mapping callers and unit tests have a single import surface.
 export { InvalidImageUrlError, ImageFetchError } from '../translation/ollama-native-out.js';
 import { InvalidImageUrlError, ImageFetchError } from '../translation/ollama-native-out.js';
+// Phase 17 (v0.11.0 — SESS-01..04 + Pitfall 17-B): SessionStore errors. Only
+// InvalidSessionIdError raises 4xx through the centralized envelope; the other
+// three are caught locally by the route per RESEARCH §"Route policy" (lines
+// 357-361). `mapToHttpStatus` still adds them (404/410/403) as defense-in-depth.
+import {
+  SessionNotFoundError,
+  SessionExpiredError,
+  SessionAgentMismatchError,
+  InvalidSessionIdError,
+} from '../providers/session-errors.js';
 
 export type OpenAIErrorEnvelope = {
   error: { message: string; type: string; code: string; param: string | null };
@@ -401,6 +411,16 @@ export function mapToHttpStatus(err: unknown): number {
   if (err instanceof InvalidScopedIdError) return 400;
   // Plan 08-07 (ROUTE-12 / D-D5): Idempotency-Key regex violation — 400.
   if (err instanceof InvalidIdempotencyKeyError) return 400;
+  // Phase 17 (v0.11.0 — SESS-01..04 + Pitfall 17-B):
+  //   - InvalidSessionIdError → 400 (BUBBLES through envelope — bad header).
+  //   - SessionNotFoundError → 404 (defense-in-depth; routes catch locally).
+  //   - SessionExpiredError → 410 (defense-in-depth; routes catch locally).
+  //   - SessionAgentMismatchError → 403 (bubbles from appendTurn only;
+  //     loadHistory catches locally to avoid leaking session_id existence).
+  if (err instanceof InvalidSessionIdError) return 400;
+  if (err instanceof SessionNotFoundError) return 404;
+  if (err instanceof SessionExpiredError) return 410;
+  if (err instanceof SessionAgentMismatchError) return 403;
   // Plan 04-04 T-04-02: malformed tool_calls[].function.arguments — 400.
   if (err instanceof InvalidToolArgumentsError) return 400;
   // Plan 04-04 T-04-01: image URL or fetch failures — 400 (Plan 05 consumer / D-C4 SSRF).
@@ -548,6 +568,21 @@ export function toOpenAIErrorEnvelope(err: unknown): EnvelopeOrSkip {
         type: 'invalid_request_error',
         code: 'invalid_idempotency_key',
         param: 'Idempotency-Key',
+      },
+    };
+  }
+  // Phase 17 (v0.11.0 — SESS-05 / Pitfall 17-B): only InvalidSessionIdError
+  // ever bubbles to the OpenAI envelope. SessionNotFoundError /
+  // SessionExpiredError / SessionAgentMismatchError are caught locally by the
+  // route's session-attach try/catch and never reach this mapper (RESEARCH
+  // lines 357-361). Param mirrors the InvalidAgentIdError pattern at line 499.
+  if (err instanceof InvalidSessionIdError) {
+    return {
+      error: {
+        message: err.message,
+        type: 'invalid_request_error',
+        code: 'invalid_session_id',
+        param: 'X-Session-ID',
       },
     };
   }
@@ -762,6 +797,12 @@ export function toAnthropicErrorEnvelope(err: unknown): AnthropicEnvelopeOrSkip 
   }
   // Plan 08-07 (ROUTE-12 / D-D5): Idempotency-Key regex violation — Anthropic envelope.
   if (err instanceof InvalidIdempotencyKeyError) {
+    return { type: 'error', error: { type: 'invalid_request_error', message: err.message } };
+  }
+  // Phase 17 (v0.11.0 — SESS-05 / Pitfall 17-B): only InvalidSessionIdError
+  // bubbles to the Anthropic envelope. Same rationale as the OpenAI branch
+  // above — the other three SessionStore errors are caught locally.
+  if (err instanceof InvalidSessionIdError) {
     return { type: 'error', error: { type: 'invalid_request_error', message: err.message } };
   }
   // Plan 04-04 / Plan 04-05: InvalidToolArgumentsError + InvalidImageUrlError + ImageFetchError
