@@ -116,6 +116,13 @@ const EnvSchema = z.object({
   MCP_ENABLED: z.coerce.boolean().default(true),
   MCP_SESSION_TTL_SEC: z.coerce.number().int().positive().default(3600),
   MCP_GC_INTERVAL_MS: z.coerce.number().int().positive().default(1_800_000),
+  // Phase 17 (v0.11.0 — SESS-04 / Q2 RESOLVED): default TTL for new sessions
+  // (sliding-window per Q6 RESOLVED — refreshed on every successful appendTurn).
+  // Min 1 day; a value < 1 is operator misconfiguration (a 0-day TTL means
+  // every session expires immediately and loadHistory always returns []).
+  // Threaded into PostgresSessionStore.createSession via the production
+  // composition root (Plan 17-07).
+  SESSION_TTL_DAYS: z.coerce.number().int().min(1).default(7),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

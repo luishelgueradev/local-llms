@@ -58,6 +58,42 @@
 # the cached snapshot lives in Valkey and is served from memory on warm boot.
 # ─────────────────────────────────────────────────────────────────────────────
 
+# ─────────────────────────────────────────────────────────────────────────────
+# CONTEXT WINDOW (Phase 17 — v0.11.0 — CTXP-04)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Two optional fields on each model entry tune the ContextProvider that ships
+# with v0.11.0. When `X-Session-ID` is present on a request, the router loads
+# the session's history and uses these fields to trim the message array so it
+# fits the upstream model's context window.
+#
+#   ctx_size         integer (default 8192)
+#                    The model's context window in tokens. Token counting uses
+#                    gpt-tokenizer/cl100k_base which over-estimates qwen/llama
+#                    vocabularies by ~10-20% — that's a deliberate safety margin.
+#
+#   context_strategy enum: "truncate" | "sliding-window"   (default sliding-window)
+#                    truncate       — drop oldest non-system turns, hard turn cap.
+#                    sliding-window — drop oldest non-system turns until tokens fit.
+#                    System messages are NEVER evictable by either strategy
+#                    (CTXP-03 BLOCK — preservation is a binding invariant).
+#
+# Sessions are opt-in: requests without X-Session-ID are stateless and these
+# fields are unused. Default values preserve pre-Phase-17 behavior on every
+# existing entry — no migration is required to keep existing routes working.
+#
+# Example:
+#   - name: chat-local
+#     ...
+#     ctx_size: 8192
+#     context_strategy: sliding-window     # default — can be omitted
+#
+#   - name: gpt-oss:120b-cloud
+#     ...
+#     ctx_size: 65536                      # cloud model has a larger window
+#     context_strategy: sliding-window
+# ─────────────────────────────────────────────────────────────────────────────
+
 backends:
   ollama:
     # base_url: documentation only — NOT used at runtime (see registry.ts BackendsSection comment).

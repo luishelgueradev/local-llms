@@ -59,6 +59,19 @@ export const ModelEntrySchema = z.object({
       cloud_allowed: z.boolean().default(true),
     })
     .optional(),
+  // Phase 17 (v0.11.0 — CTXP-04): per-model context window + strategy.
+  // Both default to safe values so existing models.yaml entries continue to
+  // load without modification. When SessionStore is wired and ContextProvider
+  // is active, these drive window trimming. Defaults: ctx_size=8192 (smallest
+  // existing model max_model_len) + sliding-window (orchestrator brief / Q4
+  // RESOLVED — the more forgiving strategy).
+  //
+  // Critical: NOT wrapped in `.optional()` — the keys may be omitted in the
+  // YAML but the runtime value is always populated (Zod's .default() applies
+  // at parse time). Route handlers / ContextProvider read these unconditionally
+  // without `?? 8192` fallback at the call site.
+  ctx_size: z.number().int().positive().default(8192),
+  context_strategy: z.enum(['truncate', 'sliding-window']).default('sliding-window'),
 });
 
 /**
