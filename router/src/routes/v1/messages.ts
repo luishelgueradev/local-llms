@@ -43,7 +43,23 @@ import {
   canonicalToAnthropicSse,
 } from '../../translation/anthropic-out.js';
 import { countTokens } from '../../translation/count-tokens.js';
-import type { CanonicalResponse, CanonicalStreamEvent } from '../../translation/canonical.js';
+import type {
+  CanonicalResponse,
+  CanonicalStreamEvent,
+  ContentBlock,
+} from '../../translation/canonical.js';
+// Phase 17 (v0.11.0 — SESS-01..06 / CTXP-01..03 / SUMP-02): session attach.
+import type { SessionStore } from '../../providers/session-store.js';
+import type { ContextProvider } from '../../providers/context-provider.js';
+import type { SummaryProvider } from '../../providers/summary-provider.js';
+import {
+  extractIncomingSystemFromAnthropic,
+  anthropicMessagesToCanonical,
+  canonicalToAnthropicMessages,
+  lastUserContentFromAnthropic,
+  extractToolCallsFromResponse,
+  assembleTextFromStreamedChunks,
+} from './helpers/session-attach.js';
 import {
   ANTHROPIC_NO_ENVELOPE,
   BreakerOpenError,
@@ -112,6 +128,15 @@ export interface RegisterMessagesRouteOpts {
    * is in Task 3; this opt is consumed by the non-stream branch in Task 2.
    */
   idempotency?: IdempotencyMultiplexer;
+  /**
+   * Phase 17 (v0.11.0 — SESS-01..06): optional Postgres-backed session store.
+   * SESS-06 stateless contract preserved when undefined.
+   */
+  sessionStore?: SessionStore;
+  /** Phase 17 (CTXP-01..03): optional context provider. */
+  contextProvider?: ContextProvider;
+  /** Phase 17 (SUMP-01/02): optional summary provider (forwarded for symmetry). */
+  summaryProvider?: SummaryProvider;
 }
 
 /**
@@ -227,10 +252,79 @@ export function registerMessagesRoute(
 
       const adapter: BackendAdapter = opts.makeAdapter(entry);
 
+      // ─── Phase 17 (SESS-01..06 + CTXP-01..03 + SUMP-02): session attach ──
+      // Anthropic surface: body.system is top-level; body.messages is already
+      // role:'user'|'assistant' only (Anthropic spec). extractIncomingSystemFromAnthropic
+      // is a structural passthrough so the call-site shape matches chat-completions
+      // and responses exactly. See helpers/session-attach.ts header.
+      let sessionAttached = false;
+      let pinnedSystem: string | undefined;
+      const anthropicMessages = body.messages as Array<{
+        role: string;
+        content: unknown;
+        [k: string]: unknown;
+      }>;
+      let mergedAnthropicMessages = anthropicMessages;
+      const incomingLastUserContent = lastUserContentFromAnthropic(anthropicMessages);
+
+      if (req.sessionId && opts.sessionStore && req.agentId) {
+        void reply.header('X-Session-ID', req.sessionId);
+        try {
+          await opts.sessionStore.createSession({
+            session_id: req.sessionId,
+            agent_id: req.agentId,
+            tenant_id: req.tenantId,
+            project_id: req.projectId,
+          });
+          const history = await opts.sessionStore.loadHistory(
+            req.sessionId,
+            req.agentId,
+          );
+          if (opts.contextProvider) {
+            const { system: incomingSystem, nonSystemMessages: incomingClean } =
+              extractIncomingSystemFromAnthropic({
+                system: body.system,
+                messages: anthropicMessages,
+              });
+            const incoming = anthropicMessagesToCanonical(incomingClean);
+            const ctxResult = opts.contextProvider.provideContext(
+              history,
+              incoming,
+              incomingSystem,
+              { entry },
+            );
+            mergedAnthropicMessages = canonicalToAnthropicMessages(
+              ctxResult.messages,
+            ) as typeof anthropicMessages;
+            pinnedSystem = ctxResult.system;
+          }
+          sessionAttached = true;
+        } catch (sessErr) {
+          req.log.warn(
+            {
+              err: sessErr,
+              session_id: req.sessionId,
+              event: 'session_attach_failed',
+            },
+            'session attach failed; continuing stateless',
+          );
+        }
+      }
+      // ─── End session attach ──────────────────────────────────────────────
+
       // D-A3 / D-F3 — translate Anthropic body → canonical with backend_model remap.
       // anthropicRequestToCanonical throws ZodError on shape/refinement violations;
       // the centralized error handler maps to 400 + Anthropic envelope.
-      const canonical = anthropicRequestToCanonical({ ...body, model: entry.backend_model });
+      //
+      // Phase 17: replace body.system + body.messages with the merged values when
+      // session-attach succeeded. When sessionAttached is false the spread below
+      // preserves the original body shape verbatim (SESS-06 byte-identical).
+      const canonical = anthropicRequestToCanonical({
+        ...body,
+        model: entry.backend_model,
+        messages: mergedAnthropicMessages as unknown as unknown[],
+        ...(pinnedSystem !== undefined ? { system: pinnedSystem } : {}),
+      });
 
       // D-C2: capability gating — fire BEFORE adapter call so the user gets a clean
       // 400 instead of a backend-side malformed-image error. Plan 04-04 will add
@@ -511,21 +605,76 @@ export function registerMessagesRoute(
           // canonical event is RPUSHed + PUBLISHed before yielding to the
           // SSE translator. capturedUpstreamMessageId is captured from
           // message_start.message.id for finalize and request_log row.
+          //
+          // Phase 17: also accumulate text deltas + tool_use blocks + final
+          // tokens for the fire-and-forget appendTurn IIFE inside sseCleanup.
           let capturedUpstreamMessageId: string | undefined;
-          const upstreamWithMux: AsyncIterable<CanonicalStreamEvent> =
-            idempotencyKey && idempotencyRole === 'leader' && opts.idempotency
-              ? {
-                  async *[Symbol.asyncIterator](): AsyncGenerator<CanonicalStreamEvent> {
-                    for await (const ev of upstream) {
-                      if (ev.type === 'message_start') {
-                        capturedUpstreamMessageId = ev.message.id;
-                      }
-                      void opts.idempotency!.publishStreamEvent(idempotencyKey, ev);
-                      yield ev;
+          const streamedTextParts: string[] = [];
+          const streamedToolUseBlocks: import('../../translation/canonical.js').ToolUseBlock[] = [];
+          const toolUseInProgress = new Map<
+            number,
+            { id: string; name: string; jsonParts: string[] }
+          >();
+          let streamFinalTokensIn: number | undefined;
+          let streamFinalTokensOut: number | undefined;
+          const upstreamWithMux: AsyncIterable<CanonicalStreamEvent> = {
+            async *[Symbol.asyncIterator](): AsyncGenerator<CanonicalStreamEvent> {
+              for await (const ev of upstream) {
+                if (ev.type === 'message_start') {
+                  capturedUpstreamMessageId = ev.message.id;
+                  if (typeof ev.message.usage?.input_tokens === 'number') {
+                    streamFinalTokensIn = ev.message.usage.input_tokens;
+                  }
+                } else if (ev.type === 'content_block_start') {
+                  if (ev.content_block.type === 'tool_use') {
+                    toolUseInProgress.set(ev.index, {
+                      id: ev.content_block.id,
+                      name: ev.content_block.name,
+                      jsonParts: [],
+                    });
+                  }
+                } else if (ev.type === 'content_block_delta') {
+                  if (ev.delta.type === 'text_delta') {
+                    streamedTextParts.push(ev.delta.text);
+                  } else if (ev.delta.type === 'input_json_delta') {
+                    const tu = toolUseInProgress.get(ev.index);
+                    if (tu) tu.jsonParts.push(ev.delta.partial_json);
+                  }
+                } else if (ev.type === 'content_block_stop') {
+                  const tu = toolUseInProgress.get(ev.index);
+                  if (tu) {
+                    let parsed: Record<string, unknown> = {};
+                    try {
+                      parsed = tu.jsonParts.length > 0
+                        ? (JSON.parse(tu.jsonParts.join('')) as Record<string, unknown>)
+                        : {};
+                    } catch {
+                      /* Malformed JSON — keep empty input. */
                     }
-                  },
+                    streamedToolUseBlocks.push({
+                      type: 'tool_use',
+                      id: tu.id,
+                      name: tu.name,
+                      input: parsed,
+                    });
+                    toolUseInProgress.delete(ev.index);
+                  }
+                } else if (ev.type === 'message_delta') {
+                  if (typeof ev.usage?.output_tokens === 'number') {
+                    streamFinalTokensOut = ev.usage.output_tokens;
+                  }
                 }
-              : upstream;
+                if (
+                  idempotencyKey &&
+                  idempotencyRole === 'leader' &&
+                  opts.idempotency
+                ) {
+                  void opts.idempotency.publishStreamEvent(idempotencyKey, ev);
+                }
+                yield ev;
+              }
+            },
+          };
 
           // sseCleanup runs in canonicalToAnthropicSse's finally on stream end /
           // abort / error. CRITICAL (Pitfall 1 / T-3-D4): MUST call safeRelease so
@@ -631,6 +780,57 @@ export function registerMessagesRoute(
               costCents,
               timestamp: new Date(),
             });
+
+            // ─── Phase 17 stream-path appendTurn — Pitfall 17-F ──────────
+            // Fire-and-forget IIFE: never blocks the SSE TCP close.
+            if (
+              !hasUpstreamError &&
+              !controller.signal.aborted &&
+              sessionAttached &&
+              req.sessionId &&
+              req.agentId &&
+              opts.sessionStore &&
+              idempotencyRole !== 'follower'
+            ) {
+              const sid = req.sessionId;
+              const aid = req.agentId;
+              const log = req.log;
+              const store = opts.sessionStore;
+              const tokensIn = streamFinalTokensIn ?? final?.tokensIn;
+              const tokensOut = streamFinalTokensOut ?? final?.tokensOut;
+              const assistantContent: ContentBlock[] = [
+                ...assembleTextFromStreamedChunks(streamedTextParts),
+                ...streamedToolUseBlocks,
+              ];
+              const assistantToolCalls =
+                streamedToolUseBlocks.length > 0
+                  ? streamedToolUseBlocks
+                  : undefined;
+              void (async (): Promise<void> => {
+                try {
+                  if (incomingLastUserContent !== undefined) {
+                    await store.appendTurn(sid, aid, {
+                      role: 'user',
+                      content: incomingLastUserContent,
+                    });
+                  }
+                  await store.appendTurn(sid, aid, {
+                    role: 'assistant',
+                    content: assistantContent,
+                    tool_calls: assistantToolCalls,
+                    model: entry.name,
+                    tokens_in: tokensIn,
+                    tokens_out: tokensOut,
+                  });
+                } catch (e) {
+                  log.warn(
+                    { err: e, session_id: sid, event: 'session_append_unexpected' },
+                    'session append after stream failed',
+                  );
+                }
+              })();
+            }
+            // ─── End stream-path appendTurn ──────────────────────────────
           };
 
           // WR-04 fix (chat-completions.ts:194-208): wrap reply.sse in try/finally
@@ -711,6 +911,68 @@ export function registerMessagesRoute(
             );
           }
         }
+
+        // ─── Phase 17 non-stream appendTurn (Anthropic surface) ──────────────
+        if (
+          sessionAttached &&
+          req.sessionId &&
+          req.agentId &&
+          opts.sessionStore &&
+          idempotencyRole !== 'follower'
+        ) {
+          try {
+            if (incomingLastUserContent !== undefined) {
+              const r1 = await opts.sessionStore.appendTurn(
+                req.sessionId,
+                req.agentId,
+                { role: 'user', content: incomingLastUserContent },
+              );
+              if (r1.persisted === false) {
+                req.log.warn(
+                  {
+                    session_id: req.sessionId,
+                    agent_id: req.agentId,
+                    event: 'session_append_failed_open',
+                  },
+                  'appendTurn fail-open: persisted:false (user turn)',
+                );
+              }
+            }
+            const r2 = await opts.sessionStore.appendTurn(
+              req.sessionId,
+              req.agentId,
+              {
+                role: 'assistant',
+                content: canonicalResult.content,
+                tool_calls: extractToolCallsFromResponse(canonicalResult),
+                model: entry.name,
+                tokens_in: canonicalResult.usage.input_tokens,
+                tokens_out: canonicalResult.usage.output_tokens,
+              },
+            );
+            if (r2.persisted === false) {
+              req.log.warn(
+                {
+                  session_id: req.sessionId,
+                  agent_id: req.agentId,
+                  event: 'session_append_failed_open',
+                },
+                'appendTurn fail-open: persisted:false (assistant turn)',
+              );
+            }
+          } catch (appendErr) {
+            req.log.warn(
+              {
+                err: appendErr,
+                session_id: req.sessionId,
+                event: 'session_append_unexpected',
+              },
+              'session append unexpected failure',
+            );
+          }
+        }
+        // ─── End non-stream appendTurn ───────────────────────────────────────
+
         return reply.send(wireBody);
       } catch (err) {
         if (err instanceof BackendSaturatedError) {

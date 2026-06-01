@@ -8,7 +8,7 @@ import { BackendSaturatedError } from '../../concurrency/semaphore.js';
 import { startHeartbeat } from '../../sse/heartbeat.js';
 import { openAIRequestToCanonical } from '../../translation/openai-in.js';
 import { canonicalToOpenAIResponse, canonicalToOpenAISse } from '../../translation/openai-out.js';
-import type { CanonicalResponse, CanonicalStreamEvent } from '../../translation/canonical.js';
+import type { CanonicalResponse, CanonicalStreamEvent, ContentBlock } from '../../translation/canonical.js';
 import {
   BreakerOpenError,
   CapabilityNotSupportedError,
@@ -18,6 +18,18 @@ import {
   mapToHttpStatus,
   toOpenAIErrorEnvelope,
 } from '../../errors/envelope.js';
+// Phase 17 (v0.11.0 — SESS-01..06 / CTXP-01..03 / SUMP-02): session attach.
+import type { SessionStore } from '../../providers/session-store.js';
+import type { ContextProvider } from '../../providers/context-provider.js';
+import type { SummaryProvider } from '../../providers/summary-provider.js';
+import {
+  extractIncomingSystemFromOpenAIMessages,
+  openAIMessagesToCanonical,
+  canonicalToOpenAIMessages,
+  lastUserContentFromOpenAI,
+  extractToolCallsFromResponse,
+  assembleTextFromStreamedChunks,
+} from './helpers/session-attach.js';
 import { applyPreflight } from '../../dispatch/preflight.js';
 import {
   buildRepairMessage,
@@ -134,6 +146,27 @@ export interface RegisterChatCompletionsOpts {
   metrics?: {
     jsonValidationTotal: { inc(labels: { result: 'ok' | 'retry' | 'failed' }): void };
   };
+  /**
+   * Phase 17 (v0.11.0 — SESS-01..06): optional Postgres-backed session store.
+   * When undefined the route's session-attach block is a no-op (SESS-06 stateless
+   * contract — byte-identical to Phase 16). Production wiring (Plan 17-07)
+   * threads PostgresSessionStore via BuildAppOpts.sessionStore.
+   */
+  sessionStore?: SessionStore;
+  /**
+   * Phase 17 (v0.11.0 — CTXP-01..03): optional context provider. When undefined
+   * the route skips history merge / system pinning entirely. Plan 17-07 wires
+   * DefaultContextProvider (sliding-window + truncate strategies).
+   */
+  contextProvider?: ContextProvider;
+  /**
+   * Phase 17 (v0.11.0 — SUMP-01/02): optional summary provider. Currently
+   * unused by the route handler (the v0.11.0 ContextProvider does NOT invoke
+   * SummaryProvider — SC-5 binding). Threaded here so Plan 17-07's BuildAppOpts
+   * wire-up is uniform across all three routes; future ContextProvider
+   * compaction strategies (SUMP-FUT-02) will consume it.
+   */
+  summaryProvider?: SummaryProvider;
 }
 
 /**
@@ -207,12 +240,91 @@ export function registerChatCompletionsRoute(
 
       const adapter: BackendAdapter = opts.makeAdapter(entry);
 
+      // ─── Phase 17 (SESS-01..06 + CTXP-01..03 + SUMP-02): session attach ──
+      // Gated on req.sessionId + opts.sessionStore. When either is absent the
+      // block is a no-op and the route behavior is byte-identical to Phase 16
+      // (SESS-06 stateless contract). See RESEARCH §Route handler integration.
+      //
+      // Q5 RESOLVED: only the idempotency LEADER writes to SessionStore.
+      // Followers replay from the multiplexer cache and skip session mutation.
+      // The local `idempotencyRole` variable inside the try block is the
+      // authoritative source (set after acquire). We initialize sessionAttached
+      // here at the OUTER scope so both the non-stream appendTurn and the
+      // stream-path IIFE can read it.
+      let sessionAttached = false;
+      let pinnedSystem: string | undefined;
+      let mergedOpenAIMessages = body.messages;
+      const incomingLastUserContent = lastUserContentFromOpenAI(body.messages);
+
+      // Sub-block: only when req.sessionId AND opts.sessionStore AND req.agentId.
+      // Errors are caught locally + logged + continue stateless (Pitfall 17-B).
+      if (req.sessionId && opts.sessionStore && req.agentId) {
+        // Pitfall 17-D: stamp X-Session-ID header BEFORE reply.sse/reply.send.
+        void reply.header('X-Session-ID', req.sessionId);
+        try {
+          await opts.sessionStore.createSession({
+            session_id: req.sessionId,
+            agent_id: req.agentId,
+            tenant_id: req.tenantId,
+            project_id: req.projectId,
+          });
+          const history = await opts.sessionStore.loadHistory(
+            req.sessionId,
+            req.agentId,
+          );
+          if (opts.contextProvider) {
+            // W4 mitigation: pull role:'system' out of incoming messages before
+            // handing to ContextProvider — canonical.ts:108 rejects role:'system'.
+            const { system: incomingSystem, nonSystemMessages: incomingClean } =
+              extractIncomingSystemFromOpenAIMessages(body.messages);
+            const incoming = openAIMessagesToCanonical(incomingClean);
+            const ctxResult = opts.contextProvider.provideContext(
+              history,
+              incoming,
+              incomingSystem,
+              { entry },
+            );
+            mergedOpenAIMessages = canonicalToOpenAIMessages(
+              ctxResult.messages,
+            ) as typeof body.messages;
+            pinnedSystem = ctxResult.system;
+          }
+          sessionAttached = true;
+        } catch (sessErr) {
+          // A10 RESOLVED: SessionNotFoundError / SessionExpiredError /
+          // SessionAgentMismatchError → log warn, proceed stateless. Pitfall 17-B.
+          // (InvalidSessionIdError is thrown by the preHandler — never reaches here.)
+          req.log.warn(
+            {
+              err: sessErr,
+              session_id: req.sessionId,
+              event: 'session_attach_failed',
+            },
+            'session attach failed; continuing stateless',
+          );
+        }
+      }
+      // ─── End session attach ──────────────────────────────────────────────
+
       // Plan 04-01 (D-A3, D-F3): translate inbound OpenAI body → canonical with the
       // backend_model id remapped BEFORE translation so the canonical's `model` field
       // already points to the upstream model id when the adapter receives it.
       // openAIRequestToCanonical throws ZodError on shape violations — the centralized
       // error handler maps to 400 + invalid_request envelope (envelope.ts:60-69).
-      const canonical = openAIRequestToCanonical({ ...body, model: entry.backend_model });
+      const canonical = openAIRequestToCanonical({
+        ...body,
+        model: entry.backend_model,
+        messages: mergedOpenAIMessages,
+      });
+      // Phase 17: pinned system from ContextProvider (joined history + incoming
+      // system, in turn_index ascending order — Q4 RESOLVED). openAIRequestToCanonical
+      // does not project incoming OpenAI body's `system` field (it's not a wire
+      // field on the chat-completions surface), so we set it directly on canonical
+      // here. canonical.system is z.string().optional() — undefined when no
+      // session attach or no system parts.
+      if (pinnedSystem !== undefined) {
+        canonical.system = pinnedSystem;
+      }
 
       // Plan 04-05 D-C2 / VISION-02: capability gating on the OpenAI surface too.
       // Fire BEFORE semaphore acquire / adapter call so non-vision-model image
@@ -604,24 +716,80 @@ export function registerChatCompletionsRoute(
           // captured from message_start.message.id so finalizeStream can
           // surface the shared id to followers' request_log rows.
           let capturedUpstreamMessageId: string | undefined;
-          const upstreamWithMux: AsyncIterable<CanonicalStreamEvent> =
-            idempotencyKey && idempotencyRole === 'leader' && opts.idempotency
-              ? {
-                  async *[Symbol.asyncIterator](): AsyncGenerator<CanonicalStreamEvent> {
-                    for await (const ev of upstream) {
-                      if (ev.type === 'message_start') {
-                        capturedUpstreamMessageId = ev.message.id;
-                      }
-                      // Fire-and-forget publish — Valkey blip should not
-                      // stall the upstream → SSE pipeline. publishStreamEvent
-                      // itself catches + logs internally so we don't double-
-                      // log here.
-                      void opts.idempotency!.publishStreamEvent(idempotencyKey, ev);
-                      yield ev;
+          // Phase 17 stream-path accumulators (for fire-and-forget appendTurn
+          // inside sseCleanup). Captured by reference so the IIFE below sees
+          // the final state after the stream completes.
+          const streamedTextParts: string[] = [];
+          const streamedToolUseBlocks: import('../../translation/canonical.js').ToolUseBlock[] = [];
+          // partials for tool_use input JSON accumulation (input_json_delta).
+          const toolUseInProgress = new Map<
+            number,
+            { id: string; name: string; jsonParts: string[] }
+          >();
+          let streamFinalTokensIn: number | undefined;
+          let streamFinalTokensOut: number | undefined;
+          const upstreamWithMux: AsyncIterable<CanonicalStreamEvent> = {
+            async *[Symbol.asyncIterator](): AsyncGenerator<CanonicalStreamEvent> {
+              for await (const ev of upstream) {
+                if (ev.type === 'message_start') {
+                  capturedUpstreamMessageId = ev.message.id;
+                  if (typeof ev.message.usage?.input_tokens === 'number') {
+                    streamFinalTokensIn = ev.message.usage.input_tokens;
+                  }
+                } else if (ev.type === 'content_block_start') {
+                  if (ev.content_block.type === 'tool_use') {
+                    toolUseInProgress.set(ev.index, {
+                      id: ev.content_block.id,
+                      name: ev.content_block.name,
+                      jsonParts: [],
+                    });
+                  }
+                } else if (ev.type === 'content_block_delta') {
+                  if (ev.delta.type === 'text_delta') {
+                    streamedTextParts.push(ev.delta.text);
+                  } else if (ev.delta.type === 'input_json_delta') {
+                    const tu = toolUseInProgress.get(ev.index);
+                    if (tu) tu.jsonParts.push(ev.delta.partial_json);
+                  }
+                } else if (ev.type === 'content_block_stop') {
+                  const tu = toolUseInProgress.get(ev.index);
+                  if (tu) {
+                    let parsed: Record<string, unknown> = {};
+                    try {
+                      parsed = tu.jsonParts.length > 0
+                        ? (JSON.parse(tu.jsonParts.join('')) as Record<string, unknown>)
+                        : {};
+                    } catch {
+                      // Malformed JSON in stream — keep as empty input; the
+                      // wire-level translator already surfaced what it could.
                     }
-                  },
+                    streamedToolUseBlocks.push({
+                      type: 'tool_use',
+                      id: tu.id,
+                      name: tu.name,
+                      input: parsed,
+                    });
+                    toolUseInProgress.delete(ev.index);
+                  }
+                } else if (ev.type === 'message_delta') {
+                  if (typeof ev.usage?.output_tokens === 'number') {
+                    streamFinalTokensOut = ev.usage.output_tokens;
+                  }
                 }
-              : upstream;
+                // Idempotency leader: fire-and-forget publish to the multiplexer
+                // channel. publishStreamEvent catches + logs internally — a
+                // Valkey blip never stalls the upstream → SSE pipeline.
+                if (
+                  idempotencyKey &&
+                  idempotencyRole === 'leader' &&
+                  opts.idempotency
+                ) {
+                  void opts.idempotency.publishStreamEvent(idempotencyKey, ev);
+                }
+                yield ev;
+              }
+            },
+          };
 
           // sseCleanup is called by canonicalToOpenAISse onCleanup on stream end / abort / error.
           // CRITICAL (Pitfall 1 / T-3-D4): sseCleanup MUST call safeRelease so the semaphore
@@ -732,6 +900,64 @@ export function registerChatCompletionsRoute(
               costCents,
               timestamp: new Date(),
             });
+
+            // ─── Phase 17 stream-path appendTurn — Pitfall 17-F BLOCK ────
+            // FIRE-AND-FORGET: never `await` inside sseCleanup — that would
+            // block the TCP close on Postgres. The IIFE catches all errors
+            // and logs them; the response has already streamed to the client
+            // by this point.
+            if (
+              !hasUpstreamError &&
+              !controller.signal.aborted &&
+              sessionAttached &&
+              req.sessionId &&
+              req.agentId &&
+              opts.sessionStore &&
+              idempotencyRole !== 'follower'
+            ) {
+              const sid = req.sessionId;
+              const aid = req.agentId;
+              const log = req.log;
+              const store = opts.sessionStore;
+              const tokensIn = streamFinalTokensIn ?? final?.tokensIn;
+              const tokensOut = streamFinalTokensOut ?? final?.tokensOut;
+              const assistantContent: ContentBlock[] = [
+                ...assembleTextFromStreamedChunks(streamedTextParts),
+                ...streamedToolUseBlocks,
+              ];
+              const assistantToolCalls =
+                streamedToolUseBlocks.length > 0
+                  ? streamedToolUseBlocks
+                  : undefined;
+              void (async (): Promise<void> => {
+                try {
+                  if (incomingLastUserContent !== undefined) {
+                    await store.appendTurn(sid, aid, {
+                      role: 'user',
+                      content: incomingLastUserContent,
+                    });
+                  }
+                  await store.appendTurn(sid, aid, {
+                    role: 'assistant',
+                    content: assistantContent,
+                    tool_calls: assistantToolCalls,
+                    model: entry.name,
+                    tokens_in: tokensIn,
+                    tokens_out: tokensOut,
+                  });
+                } catch (e) {
+                  log.warn(
+                    {
+                      err: e,
+                      session_id: sid,
+                      event: 'session_append_unexpected',
+                    },
+                    'session append after stream failed',
+                  );
+                }
+              })();
+            }
+            // ─── End stream-path appendTurn ──────────────────────────────
           };
 
           // The SSE plugin sets Content-Type + Cache-Control + Connection on first yield
@@ -872,6 +1098,72 @@ export function registerChatCompletionsRoute(
             );
           }
         }
+
+        // ─── Phase 17 non-stream appendTurn (SESS-01/03/04, SUMP-03 via store) ──
+        // Q5 leader-only writes: skip when this request is a follower. Bounded
+        // by SESS-04's 1s timeout inside appendTurn itself; persisted:false on
+        // timeout → log + continue (Pitfall 17-E; counter increment deferred
+        // to Plan 17-07).
+        if (
+          sessionAttached &&
+          req.sessionId &&
+          req.agentId &&
+          opts.sessionStore &&
+          idempotencyRole !== 'follower'
+        ) {
+          try {
+            if (incomingLastUserContent !== undefined) {
+              const r1 = await opts.sessionStore.appendTurn(
+                req.sessionId,
+                req.agentId,
+                { role: 'user', content: incomingLastUserContent },
+              );
+              if (r1.persisted === false) {
+                req.log.warn(
+                  {
+                    session_id: req.sessionId,
+                    agent_id: req.agentId,
+                    event: 'session_append_failed_open',
+                  },
+                  'appendTurn fail-open: persisted:false (user turn)',
+                );
+              }
+            }
+            const r2 = await opts.sessionStore.appendTurn(
+              req.sessionId,
+              req.agentId,
+              {
+                role: 'assistant',
+                content: canonicalResult.content,
+                tool_calls: extractToolCallsFromResponse(canonicalResult),
+                model: entry.name,
+                tokens_in: canonicalResult.usage.input_tokens,
+                tokens_out: canonicalResult.usage.output_tokens,
+              },
+            );
+            if (r2.persisted === false) {
+              req.log.warn(
+                {
+                  session_id: req.sessionId,
+                  agent_id: req.agentId,
+                  event: 'session_append_failed_open',
+                },
+                'appendTurn fail-open: persisted:false (assistant turn)',
+              );
+            }
+          } catch (appendErr) {
+            req.log.warn(
+              {
+                err: appendErr,
+                session_id: req.sessionId,
+                event: 'session_append_unexpected',
+              },
+              'session append unexpected failure',
+            );
+          }
+        }
+        // ─── End non-stream appendTurn ───────────────────────────────────────
+
         return reply.send(wireBody);
       } catch (err) {
         // Defense in depth — anything thrown synchronously / from the non-stream branch

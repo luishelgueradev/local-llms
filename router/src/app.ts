@@ -870,6 +870,12 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
     idempotency,
     // Phase 10 (v0.10.0 — JSON-06): inject just the counter the route needs.
     metrics: { jsonValidationTotal: opts.metrics.jsonValidationTotal },
+    // Phase 17 (v0.11.0 — SESS-01..06 / CTXP-01..03 / SUMP-02): pass-through.
+    // When opts.sessionStore is undefined the route is byte-identical to
+    // Phase 16 (SESS-06 stateless contract — all three are optional).
+    sessionStore: opts.sessionStore,
+    contextProvider: opts.contextProvider,
+    summaryProvider: opts.summaryProvider,
   });
 
   // Plan 04-02 (ANTHR-02, ANTHR-03, ANTHR-04, ANTHR-05):
@@ -884,6 +890,10 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
     breaker,
     breakerCooldownSec,
     idempotency,
+    // Phase 17 (v0.11.0 — SESS-01..06 / CTXP-01..03 / SUMP-02): pass-through.
+    sessionStore: opts.sessionStore,
+    contextProvider: opts.contextProvider,
+    summaryProvider: opts.summaryProvider,
   });
   registerCountTokensRoute(app, { registry: opts.registry });
 
