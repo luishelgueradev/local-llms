@@ -103,6 +103,11 @@ import {
   extractToolCallsFromResponse,
   assembleTextFromStreamedChunks,
 } from './helpers/session-attach.js';
+// Phase 18 (v0.11.0 — MCPC-01..06 + RETR-02..06): shared hook + MCP tool injection helper.
+import { runPreCompletionAndInjectMcpTools } from './helpers/pre-completion.js';
+import { runMcpToolLoop } from '../../mcp/client/tool-loop.js';
+import type { McpClientRegistry } from '../../mcp/client/registry.js';
+import type { PreCompletionHook } from '../../hooks/pre-completion.js';
 
 // ── Body schema ────────────────────────────────────────────────────────────────
 //
@@ -150,6 +155,20 @@ export interface RegisterResponsesOpts {
   contextProvider?: ContextProvider;
   /** Phase 17 (SUMP-01/02): optional summary provider (forwarded for symmetry). */
   summaryProvider?: SummaryProvider;
+  /**
+   * Phase 18 (v0.11.0 — RETR-02): narrow metrics injection. Mirrors chat-completions
+   * + messages: helper observes routerHookDurationMs; tool loop increments
+   * routerMcpToolCallsExternalTotal. Both optional so existing test fixtures
+   * compile without rebuilding the full MetricsRegistry.
+   */
+  metrics?: {
+    routerHookDurationMs?: import('prom-client').Histogram<'hook_name' | 'status'>;
+    routerMcpToolCallsExternalTotal?: import('prom-client').Counter<'server_alias' | 'status_class'>;
+  };
+  /** Phase 18 (v0.11.0 — MCPC-01..06): optional MCP client registry. */
+  mcpClientRegistry?: McpClientRegistry;
+  /** Phase 18 (v0.11.0 — RETR-02/03): per-route pre-completion hook map. */
+  preCompletionHooks?: Map<string, PreCompletionHook[]>;
 }
 
 /**
@@ -356,7 +375,12 @@ export function registerResponsesRoute(
       }
 
       const adapter: BackendAdapter = opts.makeAdapter(entry);
-      const canonical = responsesToCanonical(body, entry.backend_model);
+      // Phase 18 (v0.11.0 — MCPC-01..06 + RETR-02..06): `let canonical` because the
+      // hook + MCP injection helper returns a possibly-new canonical (spread for
+      // canonical.tools; in-place mutation of canonical.system via runHookChain).
+      // The Phase 17 session-attach block below ALSO mutates canonical.messages and
+      // canonical.system in place — `let` is structurally compatible with both.
+      let canonical = responsesToCanonical(body, entry.backend_model);
 
       // ─── Phase 17 (SESS-01..06 + CTXP-01..03 + SUMP-02): session attach ──
       // Responses surface: the canonical was already built from body.input +
@@ -423,6 +447,32 @@ export function registerResponsesRoute(
         }
       }
       // ─── End session attach ──────────────────────────────────────────────
+
+      // ─── Phase 18 (MCPC-01..06 + RETR-02..06): hook chain + MCP tool injection ──
+      // Identical insertion shape as chat-completions.ts + messages.ts (PATTERNS
+      // line 323). Helper fires hooks AFTER ContextProvider (above) and BEFORE
+      // adapter (below). On Responses, BOTH stream and non-stream branches exist
+      // — helper short-circuits MCP loop on stream paths (mcpToolLoopEnabled
+      // stays false when canonical.stream is true). The hook ALWAYS fires
+      // (it lives BEFORE the stream/non-stream branch).
+      let mcpToolLoopEnabled = false;
+      if (opts.metrics?.routerHookDurationMs) {
+        const hookResult = await runPreCompletionAndInjectMcpTools(
+          req,
+          reply,
+          canonical,
+          entry,
+          {
+            routeKey: '/v1/responses',
+            preCompletionHooks: opts.preCompletionHooks,
+            mcpClientRegistry: opts.mcpClientRegistry,
+            metrics: { routerHookDurationMs: opts.metrics.routerHookDurationMs },
+          },
+        );
+        canonical = hookResult.canonical;
+        mcpToolLoopEnabled = hookResult.mcpToolLoopEnabled;
+      }
+      // ─── End Phase 18 hook + MCP injection ──────────────────────────────
 
       // ── Phase 16 (RESS-05): unified AbortController + onClose wiring.
       // CRITICAL: req.raw.socket.once NOT req.raw.once — see chat-completions.ts:251-265
@@ -987,7 +1037,26 @@ export function registerResponsesRoute(
         release = await semaphore.acquire(controller.signal);
         released = false;
 
-        canonicalResult = await adapter.chatCompletionsCanonical(canonical, controller.signal);
+        // Phase 18 (v0.11.0 — MCPC-04): when mcpToolLoopEnabled, drive the
+        // model → external-MCP-tool → model loop via runMcpToolLoop. RESOLVED #4:
+        // non-stream only (stream branch above stays Phase 16 byte-identical).
+        canonicalResult =
+          mcpToolLoopEnabled &&
+          opts.mcpClientRegistry &&
+          opts.metrics?.routerMcpToolCallsExternalTotal
+            ? await runMcpToolLoop({
+                initial: canonical,
+                adapter,
+                signal: controller.signal,
+                registry: opts.mcpClientRegistry,
+                enabledAliases: entry.mcp_servers_enabled ?? [],
+                log: req.log as unknown as import('pino').Logger,
+                metrics: {
+                  routerMcpToolCallsExternalTotal:
+                    opts.metrics.routerMcpToolCallsExternalTotal,
+                },
+              })
+            : await adapter.chatCompletionsCanonical(canonical, controller.signal);
         void opts.breaker.recordSuccess(entry.backend);
         req.raw.socket?.off('close', onClose);
 

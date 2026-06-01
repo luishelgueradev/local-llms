@@ -60,6 +60,11 @@ import {
   extractToolCallsFromResponse,
   assembleTextFromStreamedChunks,
 } from './helpers/session-attach.js';
+// Phase 18 (v0.11.0 — MCPC-01..06 + RETR-02..06): shared hook + MCP tool injection helper.
+import { runPreCompletionAndInjectMcpTools } from './helpers/pre-completion.js';
+import { runMcpToolLoop } from '../../mcp/client/tool-loop.js';
+import type { McpClientRegistry } from '../../mcp/client/registry.js';
+import type { PreCompletionHook } from '../../hooks/pre-completion.js';
 import {
   ANTHROPIC_NO_ENVELOPE,
   BreakerOpenError,
@@ -137,6 +142,20 @@ export interface RegisterMessagesRouteOpts {
   contextProvider?: ContextProvider;
   /** Phase 17 (SUMP-01/02): optional summary provider (forwarded for symmetry). */
   summaryProvider?: SummaryProvider;
+  /**
+   * Phase 18 (v0.11.0 — RETR-02): narrow metrics injection. Mirrors chat-completions
+   * — the helper observes routerHookDurationMs; the tool loop increments
+   * routerMcpToolCallsExternalTotal. Both optional so existing test fixtures keep
+   * compiling without rebuilding the full MetricsRegistry.
+   */
+  metrics?: {
+    routerHookDurationMs?: import('prom-client').Histogram<'hook_name' | 'status'>;
+    routerMcpToolCallsExternalTotal?: import('prom-client').Counter<'server_alias' | 'status_class'>;
+  };
+  /** Phase 18 (v0.11.0 — MCPC-01..06): optional MCP client registry. */
+  mcpClientRegistry?: McpClientRegistry;
+  /** Phase 18 (v0.11.0 — RETR-02/03): per-route pre-completion hook map. */
+  preCompletionHooks?: Map<string, PreCompletionHook[]>;
 }
 
 /**
@@ -319,12 +338,41 @@ export function registerMessagesRoute(
       // Phase 17: replace body.system + body.messages with the merged values when
       // session-attach succeeded. When sessionAttached is false the spread below
       // preserves the original body shape verbatim (SESS-06 byte-identical).
-      const canonical = anthropicRequestToCanonical({
+      //
+      // Phase 18 (v0.11.0 — MCPC-01..06 + RETR-02..06): `let canonical` because the
+      // hook + MCP injection helper returns a possibly-new canonical (spread for
+      // canonical.tools; in-place mutation of canonical.system via runHookChain).
+      let canonical = anthropicRequestToCanonical({
         ...body,
         model: entry.backend_model,
         messages: mergedAnthropicMessages as unknown as unknown[],
         ...(pinnedSystem !== undefined ? { system: pinnedSystem } : {}),
       });
+
+      // ─── Phase 18 (MCPC-01..06 + RETR-02..06): hook chain + MCP tool injection ──
+      // Identical insertion shape as chat-completions.ts (PATTERNS line 323 —
+      // "single change shape repeated three times"). Fires AFTER ContextProvider
+      // (the session-attach block above merged history → mergedAnthropicMessages →
+      // canonical) and BEFORE the adapter call. X-Hook-Error stamped via
+      // reply.header() BEFORE reply.send/reply.sse.
+      let mcpToolLoopEnabled = false;
+      if (opts.metrics?.routerHookDurationMs) {
+        const hookResult = await runPreCompletionAndInjectMcpTools(
+          req,
+          reply,
+          canonical,
+          entry,
+          {
+            routeKey: '/v1/messages',
+            preCompletionHooks: opts.preCompletionHooks,
+            mcpClientRegistry: opts.mcpClientRegistry,
+            metrics: { routerHookDurationMs: opts.metrics.routerHookDurationMs },
+          },
+        );
+        canonical = hookResult.canonical;
+        mcpToolLoopEnabled = hookResult.mcpToolLoopEnabled;
+      }
+      // ─── End Phase 18 hook + MCP injection ──────────────────────────────
 
       // D-C2: capability gating — fire BEFORE adapter call so the user gets a clean
       // 400 instead of a backend-side malformed-image error. Plan 04-04 will add
@@ -869,7 +917,27 @@ export function registerMessagesRoute(
         // ── NON-STREAM BRANCH (Plan 04-05 — displayModel seam consumption) ───
         // Plan 05-02 Task 3: capture canonicalResult on the OUTER scope so the
         // finally block can populate request_log.tokens_in / tokens_out / upstream_message_id.
-        canonicalResult = await adapter.chatCompletionsCanonical(canonical, controller.signal);
+        //
+        // Phase 18 (v0.11.0 — MCPC-04): when mcpToolLoopEnabled is true, drive the
+        // model → external-MCP-tool → model loop via runMcpToolLoop. RESOLVED #4:
+        // non-stream only (stream path stays Phase 16 byte-identical).
+        canonicalResult =
+          mcpToolLoopEnabled &&
+          opts.mcpClientRegistry &&
+          opts.metrics?.routerMcpToolCallsExternalTotal
+            ? await runMcpToolLoop({
+                initial: canonical,
+                adapter,
+                signal: controller.signal,
+                registry: opts.mcpClientRegistry,
+                enabledAliases: entry.mcp_servers_enabled ?? [],
+                log: req.log as unknown as import('pino').Logger,
+                metrics: {
+                  routerMcpToolCallsExternalTotal:
+                    opts.metrics.routerMcpToolCallsExternalTotal,
+                },
+              })
+            : await adapter.chatCompletionsCanonical(canonical, controller.signal);
         // Plan 08-04 — fire-and-forget breaker success signal.
         void opts.breaker.recordSuccess(entry.backend);
 

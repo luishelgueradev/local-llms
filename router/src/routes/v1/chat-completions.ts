@@ -30,6 +30,11 @@ import {
   extractToolCallsFromResponse,
   assembleTextFromStreamedChunks,
 } from './helpers/session-attach.js';
+// Phase 18 (v0.11.0 — MCPC-01..06 + RETR-02..06): shared hook + MCP tool injection helper.
+import { runPreCompletionAndInjectMcpTools } from './helpers/pre-completion.js';
+import { runMcpToolLoop } from '../../mcp/client/tool-loop.js';
+import type { McpClientRegistry } from '../../mcp/client/registry.js';
+import type { PreCompletionHook } from '../../hooks/pre-completion.js';
 import { applyPreflight } from '../../dispatch/preflight.js';
 import {
   buildRepairMessage,
@@ -138,14 +143,35 @@ export interface RegisterChatCompletionsOpts {
   idempotency?: IdempotencyMultiplexer;
   /**
    * Phase 10 (v0.10.0 — JSON-06) — observe structured-output validation outcomes.
-   * Only `jsonValidationTotal` is read by this route; the type is intentionally
-   * narrow so tests can inject a no-op without rebuilding the entire MetricsRegistry.
-   * When undefined (older test fixtures), validation still runs but the metric is
-   * not recorded.
+   * Phase 18 (v0.11.0 — RETR-02) widens this with `routerHookDurationMs` so the
+   * pre-completion helper can observe per-hook latency. Phase 18 also adds
+   * `routerMcpToolCallsExternalTotal` for the runMcpToolLoop dispatch counter.
+   * The type stays narrow so tests can inject a no-op without rebuilding the
+   * entire MetricsRegistry. When undefined, validation still runs but the
+   * metric is not recorded — hooks however REQUIRE the histogram when registered
+   * (the helper passes opts.metrics into runHookChain which observe()s it).
    */
   metrics?: {
     jsonValidationTotal: { inc(labels: { result: 'ok' | 'retry' | 'failed' }): void };
+    /** Phase 18 (v0.11.0 — RETR-02): observed by runHookChain inside the helper. */
+    routerHookDurationMs?: import('prom-client').Histogram<'hook_name' | 'status'>;
+    /** Phase 18 (v0.11.0 — MCPC-04): observed by runMcpToolLoop per dispatched call. */
+    routerMcpToolCallsExternalTotal?: import('prom-client').Counter<'server_alias' | 'status_class'>;
   };
+  /**
+   * Phase 18 (v0.11.0 — MCPC-01..06): optional MCP client registry. Absent →
+   * no external MCP tools injected and runMcpToolLoop is never invoked. The
+   * route still functions byte-identical to Phase 17 (SESS-06 stateless contract
+   * extends here: also Phase 18 is opt-in via this field).
+   */
+  mcpClientRegistry?: McpClientRegistry;
+  /**
+   * Phase 18 (v0.11.0 — RETR-02/03): per-route pre-completion hook map.
+   * Map key = route path ('/v1/chat/completions' | '/v1/messages' | '/v1/responses').
+   * Absent → no hooks fire (Frame-01 BLOCK: production composition root passes
+   * an EMPTY Map, not undefined — the gate is at the helper).
+   */
+  preCompletionHooks?: Map<string, PreCompletionHook[]>;
   /**
    * Phase 17 (v0.11.0 — SESS-01..06): optional Postgres-backed session store.
    * When undefined the route's session-attach block is a no-op (SESS-06 stateless
@@ -311,7 +337,11 @@ export function registerChatCompletionsRoute(
       // already points to the upstream model id when the adapter receives it.
       // openAIRequestToCanonical throws ZodError on shape violations — the centralized
       // error handler maps to 400 + invalid_request envelope (envelope.ts:60-69).
-      const canonical = openAIRequestToCanonical({
+      //
+      // Phase 18 (v0.11.0 — MCPC-01..06 + RETR-02..06): `let canonical` because the
+      // hook + MCP injection helper returns a possibly-new canonical (spread-mutation
+      // for canonical.tools, mutation in place for canonical.system via runHookChain).
+      let canonical = openAIRequestToCanonical({
         ...body,
         model: entry.backend_model,
         messages: mergedOpenAIMessages,
@@ -325,6 +355,38 @@ export function registerChatCompletionsRoute(
       if (pinnedSystem !== undefined) {
         canonical.system = pinnedSystem;
       }
+
+      // ─── Phase 18 (MCPC-01..06 + RETR-02..06): hook chain + MCP tool injection ──
+      // Helper fires pre-completion hooks (AFTER ContextProvider, BEFORE adapter)
+      // and injects external MCP tools into canonical.tools[] when applicable.
+      // mcpToolLoopEnabled is true ONLY on non-stream + enabled aliases + registry
+      // present + at least one tool fetched successfully (RESOLVED #4 — stream
+      // path stays Phase 16 byte-identical, tool emission without loop).
+      // X-Hook-Error header (on fail-open) is stamped via reply.header() inside
+      // the helper BEFORE any reply.send/reply.sse call here.
+      let mcpToolLoopEnabled = false;
+      // Helper requires routerHookDurationMs (runHookChain observe()s it). When
+      // metrics are absent OR the Phase 18 histogram wasn't threaded, skip the
+      // helper entirely — byte-identical to Phase 17 (the gate is "wiring
+      // existed" not "hooks declared"; the helper itself is a no-op when
+      // preCompletionHooks is undefined AND mcpClientRegistry is undefined).
+      if (opts.metrics?.routerHookDurationMs) {
+        const hookResult = await runPreCompletionAndInjectMcpTools(
+          req,
+          reply,
+          canonical,
+          entry,
+          {
+            routeKey: '/v1/chat/completions',
+            preCompletionHooks: opts.preCompletionHooks,
+            mcpClientRegistry: opts.mcpClientRegistry,
+            metrics: { routerHookDurationMs: opts.metrics.routerHookDurationMs },
+          },
+        );
+        canonical = hookResult.canonical;
+        mcpToolLoopEnabled = hookResult.mcpToolLoopEnabled;
+      }
+      // ─── End Phase 18 hook + MCP injection ──────────────────────────────
 
       // Plan 04-05 D-C2 / VISION-02: capability gating on the OpenAI surface too.
       // Fire BEFORE semaphore acquire / adapter call so non-vision-model image
@@ -1023,7 +1085,34 @@ export function registerChatCompletionsRoute(
         // The repair loop happens INSIDE the try block, BEFORE breaker.recordSuccess —
         // so a request that ultimately fails validation is recorded as a failure (and
         // the breaker sees recordFailure via the catch path), not a success.
-        canonicalResult = await adapter.chatCompletionsCanonical(canonical, controller.signal);
+        //
+        // Phase 18 (v0.11.0 — MCPC-04): when mcpToolLoopEnabled is true, drive the
+        // model → external-MCP-tool → model loop via runMcpToolLoop (capped at 10
+        // iterations; per-iteration parallel dispatch). Stream path stays untouched
+        // (RESOLVED #4 — non-stream only). The non-stream adapter call here is the
+        // ONLY load-bearing site for the tool loop.
+        canonicalResult =
+          mcpToolLoopEnabled &&
+          opts.mcpClientRegistry &&
+          opts.metrics?.routerMcpToolCallsExternalTotal
+            ? await runMcpToolLoop({
+                initial: canonical,
+                adapter,
+                signal: controller.signal,
+                registry: opts.mcpClientRegistry,
+                enabledAliases: entry.mcp_servers_enabled ?? [],
+                // Cast to pino Logger — Fastify exposes FastifyBaseLogger which
+                // is a structural superset minus `msgPrefix`. runMcpToolLoop's
+                // signature is pino Logger; the child loggers exposed by Fastify
+                // v5 ARE pino logger instances at runtime, just typed narrower
+                // at the public boundary.
+                log: req.log as unknown as import('pino').Logger,
+                metrics: {
+                  routerMcpToolCallsExternalTotal:
+                    opts.metrics.routerMcpToolCallsExternalTotal,
+                },
+              })
+            : await adapter.chatCompletionsCanonical(canonical, controller.signal);
 
         if (wantsJson) {
           const rf = body.response_format as ResponseFormat;
