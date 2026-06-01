@@ -228,10 +228,11 @@ The roadmap and plan-phase agents must reject any task that would:
 | OBSV-04 | Phase 19 | Pending |
 
 **Coverage:**
-- v0.11.0 requirements: 48 total
+- v0.11.0 requirements: 48 total | Complete: 30 (POL × 6 + MCPS × 6 + RESS × 5 + SESS × 6 + CTXP × 4 + SUMP × 3) | Pending: 18 (MCPC × 6 + RETR × 6 + EMBP × 2 + OBSV × 4)
 - Mapped to phases (finalized by ROADMAP.md 2026-05-29): 48/48
 - Unmapped: 0 ✓
 
 ---
 *Requirements defined: 2026-05-29*
+*Last updated: 2026-06-01 — Phase 17 SHIPPED; SESS-01..06 + CTXP-01..04 + SUMP-01..03 closed (Plans 17-01..17-07).*
 *Last updated: 2026-05-30 — POL-01 wording patched per D-03 (top-level policies block).*

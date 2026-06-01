@@ -16,7 +16,7 @@
 - [ ] **Phase 14: Policy Primitives + Tenant/Project ID Foundation** — Additive zero-dep policy gate + tenant/project ID headers in logs and request_log; every later phase inherits correct observability context from this foundation.
 - [x] **Phase 15: MCP Host (Router as MCP Server)** — Router exposes five MCP tools (chat, embeddings, rerank, responses, list_models) over Streamable HTTP at `/mcp`; any MCP-compatible client can consume the router as a tool server.
 - [x] **Phase 16: `/v1/responses` Streaming + Tool Calls** ✅ 2026-05-31 — Full Responses API streaming with `OutputItemStateMachine`, tool-call events, and `response.completed` always last; closes v0.10.0 streaming debt.
-- [ ] **Phase 17: SessionStore + ContextProvider + SummaryProvider** — Postgres-backed session persistence, context window management, and SummaryProvider noop seam; routes gain stateful multi-turn capability without retrieval logic.
+- [x] **Phase 17: SessionStore + ContextProvider + SummaryProvider** ✅ 2026-06-01 — Postgres-backed sessions + ContextProvider sliding-window + NoopSummaryProvider all wired through `buildApp` in `router/src/index.ts`; SESS/CTXP/SUMP 13 requirements closed.
 - [ ] **Phase 18: MCP Client + RetrieverProvider + Pre-Completion Hook** — Generic MCP client capability (lazy-connect, tool namespace prefix, 60s Valkey cache), RetrieverProvider interface + pre-completion hook seam with explicit fail-open/closed, and EmbeddingProvider interface formalization.
 - [ ] **Phase 19: EmbeddingProvider Formalization + Observability Hardening** — EmbeddingProvider interface extracted, all new surfaces covered by smoke tests and Prometheus metrics, cardinality CI guard, docs updated.
 
@@ -182,7 +182,7 @@ Plans:
 4. A session created without `X-Session-ID` in the request operates fully stateless — no `sessions` or `conversation_turns` rows are written, and the response is identical to pre-Phase-17 behavior.
 5. The `X-Session-ID` response header is set on responses when a session is active; the `NoopSummaryProvider` is the default and never calls any model.
 
-**Plans:** 6/7 plans executed
+**Plans:** 7/7 plans complete
 
 Plans:
 - [x] 17-01-PLAN.md — Wave 0 scaffold (9 test files + tests/fakes.ts extension; `it.todo` placeholders + SESS-01 expectTypeOf assertions) [SESS-01..06 + CTXP-01..04 + SUMP-01..03] — SHIPPED 2026-06-01
@@ -191,7 +191,7 @@ Plans:
 - [x] 17-04-PLAN.md — ContextProvider interface + sliding-window default + truncate + system pin + Pitfall 17-G incoming-privilege invariant [CTXP-01, CTXP-02, CTXP-03] — SHIPPED 2026-06-01
 - [x] 17-05-PLAN.md — SummaryProvider + Noop + sessionIdPreHandler + EnvSchema (SESSION_TTL_DAYS) + ModelEntrySchema widening (ctx_size, context_strategy) + models.yaml banner + BuildAppOpts widening + countTokens warmup [SUMP-01, SUMP-02, SUMP-03, CTXP-04, SESS-05, SESS-06] — SHIPPED 2026-06-01
 - [x] 17-06-PLAN.md — Three-route wire-up (chat-completions + responses + messages) — non-stream await, stream-path fire-and-forget, Q5 follower gate, Pitfalls 17-D/E/F [SESS-01, SESS-03, SESS-05, SESS-06, CTXP-01..03, SUMP-02] — SHIPPED 2026-06-01
-- [ ] 17-07-PLAN.md — Production composition (index.ts) + Pitfall 17-E counter + smoke SESSION section + DEPLOY/README + STATE/ROADMAP/REQUIREMENTS wrap-up [all 13 REQs verified-by]
+- [x] 17-07-PLAN.md — Production composition (index.ts) + Pitfall 17-E counter (router_session_append_failed_total) + smoke SESSION section (6 PASS gates) + DEPLOY/README docs + Q5 follower test flipped + STATE/ROADMAP/REQUIREMENTS wrap-up [all 13 REQs verified-by] — SHIPPED 2026-06-01
 
 ---
 
@@ -259,7 +259,7 @@ Plans:
 | 14. Policy Primitives + Tenant ID Foundation | 9/9 | Complete    | 2026-05-30 |
 | 15. MCP Host (Router as MCP Server) | 12/12 | Complete    | 2026-05-31 |
 | 16. /v1/responses Streaming + Tool Calls | 4/4 | Complete   | 2026-05-31 |
-| 17. SessionStore + ContextProvider + SummaryProvider | 4/7 | In Progress|  |
+| 17. SessionStore + ContextProvider + SummaryProvider | 7/7 | Complete    | 2026-06-01 |
 | 18. MCP Client + RetrieverProvider + Pre-Completion Hook | 0/TBD | Not started | - |
 | 19. EmbeddingProvider Formalization + Observability Hardening | 0/TBD | Not started | - |
 
