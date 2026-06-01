@@ -12,6 +12,7 @@
  */
 import type { BufferedWriter } from '../src/db/bufferedWriter.js';
 import { makeMetricsRegistry, type MetricsRegistry } from '../src/metrics/registry.js';
+import type { EmbeddingProvider } from '../src/providers/embedding-provider.js';
 
 export function makeFakeBufferedWriter(): BufferedWriter {
   return {
@@ -368,6 +369,69 @@ export function makeFakeMcpClientRegistry(
     },
     async disposeAll(): Promise<void> {
       /* noop */
+    },
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 19 (v0.11.0 — EMBP-01 / D-12) — EmbeddingProvider fake.
+// Mirrors the makeFakeRetrieverProvider opts-builder pattern (Phase 18):
+//   - deterministic vector-of-0.42 output
+//   - shouldThrow seam for error-path tests
+//   - calls capture array for assertion
+//
+// Wave-0 note: the EmbeddingProvider type import above intentionally fails
+// until Plan 19-02 ships `src/providers/embedding-provider.ts`. That keeps
+// `tsc --noEmit` red as the Wave-0 signal — mirrors the missing-module gate
+// in tests/providers/embedding-provider.test.ts.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface FakeEmbeddingProviderOpts {
+  /**
+   * Vector dimension. Default 1024 (bge-m3 / embed-local).
+   * Every output vector is `Array(dims).fill(0.42)` — deterministic for
+   * golden-snapshot stability.
+   */
+  dims?: number;
+  /** When set, embed() rejects with this error. */
+  shouldThrow?: Error;
+  /**
+   * Captures every embed() call for assertion.
+   * Populated in-place — callers may pass a pre-allocated array:
+   *   `const calls: Array<...> = []; makeFakeEmbeddingProvider({ calls })`.
+   */
+  calls?: Array<{ input: string | string[]; opts: Parameters<EmbeddingProvider['embed']>[1] }>;
+}
+
+/**
+ * Phase 19 (EMBP-01 / D-12) — minimal EmbeddingProvider fake.
+ *
+ * Returns deterministic `Array(dims).fill(0.42)` vectors so integration tests
+ * produce stable golden snapshots without needing a real embedding backend.
+ * `shouldThrow` exercises the error-path (EmbeddingsDimsMismatchError, etc.).
+ * The `calls` array captures every `embed()` invocation so tests can assert
+ * call counts, input shapes, and opts forwarding.
+ *
+ * Does NOT enforce dims mismatch, capability checks, or Valkey cache —
+ * those live in the real `makeOpenAIEmbeddingProvider` factory (Plan 19-02).
+ */
+export function makeFakeEmbeddingProvider(
+  opts: FakeEmbeddingProviderOpts = {},
+): EmbeddingProvider {
+  const dims = opts.dims ?? 1024;
+  const calls = opts.calls ?? [];
+  return {
+    async embed(input, embedOpts) {
+      calls.push({ input, opts: embedOpts });
+      if (opts.shouldThrow) {
+        throw opts.shouldThrow;
+      }
+      const inputs = Array.isArray(input) ? input : [input];
+      return {
+        embeddings: inputs.map(() => Array<number>(dims).fill(0.42)),
+        model: embedOpts.model,
+        usage: { prompt_tokens: inputs.length, total_tokens: inputs.length },
+      };
     },
   };
 }
