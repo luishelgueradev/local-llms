@@ -4,6 +4,11 @@
 // high-cardinality Prometheus labels. Scans src/metrics/registry.ts for
 // labelNames arrays and asserts no array element ends in '_id'.
 //
+// Phase 19 (v0.11.0 — OBSV-02 / D-13, D-14): dual-mode extension.
+// Added: checkCardinalityLive(exposition) — hand-rolled regex parser over
+// Prometheus text exposition format (line-based; per spec one series per line).
+// Added: CLI --live <url-or-dash> dispatch (--source <path> or no-arg = static mode).
+//
 // Catches: tenant_id, project_id, agent_id, session_id, request_id, and any
 // future *_id label addition. This is the static-source case (the only case
 // Phase 14 can introduce); live /metrics parse is deferred to Phase 19 (D-27).
@@ -20,7 +25,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 export interface CardinalityViolation {
-  /** Pretty source location, e.g. "registry.ts:36" */
+  /** Pretty source location, e.g. "registry.ts:36" or "/metrics:12" */
   location: string;
   /** The full labelNames array literal text, e.g. "['protocol', 'tenant_id']" */
   arrayText: string;
@@ -84,21 +89,106 @@ export function checkCardinality(source: string): CardinalityViolation[] {
   return violations;
 }
 
+/**
+ * Phase 19 (v0.11.0 — OBSV-02 / D-14): live Prometheus exposition format parser.
+ *
+ * Parses a Prometheus text exposition string (as returned by GET /metrics) and
+ * returns cardinality violations — label names ending in _id.
+ *
+ * Parser handles (per RESEARCH §2 and Prometheus exposition format spec):
+ *   - Lines starting with '#' (HELP / TYPE / comments) — SKIP
+ *   - Blank lines — SKIP
+ *   - Unlabeled metrics: `metric_name 42.0` — SKIP (no label brace found)
+ *   - Empty-label-set: `metric_name{} 42.0` — SKIP (no labels to inspect)
+ *   - Labeled metrics: `metric_name{l1="v1",l2="v2"} 42.0` — PARSE
+ *   - Trailing timestamp: `metric_name{l1="v1"} 42.0 1234567890` — PARSE
+ *   - Histogram buckets: `metric_bucket{le="100",route="/api"} 42` — PARSE
+ *     (`le` does not end in _id so it is safe)
+ *
+ * Zero new npm dependencies — hand-rolled regex only.
+ *
+ * @param exposition - Raw Prometheus text format string from /metrics
+ * @returns Array of violations; empty if no forbidden labels found
+ */
+export function checkCardinalityLive(exposition: string): CardinalityViolation[] {
+  const violations: CardinalityViolation[] = [];
+  const lines = exposition.split('\n');
+  for (let lineNo = 0; lineNo < lines.length; lineNo++) {
+    const line = lines[lineNo];
+    if (!line || line.startsWith('#')) continue;
+    const labelMatch = line.match(/^([a-z0-9_]+)\{([^}]*)\}/);
+    if (!labelMatch) continue;
+    const metricName = labelMatch[1]!;
+    const labelText = labelMatch[2]!;
+    for (const m of labelText.matchAll(/([a-z0-9_]+)\s*=\s*"/g)) {
+      const labelName = m[1]!;
+      if (FORBIDDEN_LABEL_RE.test(labelName)) {
+        violations.push({
+          location: `/metrics:${lineNo + 1}`,
+          arrayText: `{${labelText}}`,
+          forbiddenLabel: labelName,
+          metricNameHint: metricName,
+        });
+      }
+    }
+  }
+  return violations;
+}
+
 /** CLI entry — primary integration is via scripts/__tests__/check-prometheus-cardinality.test.ts. */
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const path = resolve(process.cwd(), 'src/metrics/registry.ts');
-  const source = readFileSync(path, 'utf8');
-  const violations = checkCardinality(source);
-  if (violations.length > 0) {
-    for (const v of violations) {
-      process.stderr.write(
-        `cardinality-check: FORBIDDEN _id label "${v.forbiddenLabel}" found in ` +
-          `${v.metricNameHint} (${v.location}). ` +
-          `Labels matching /_id$/ are forbidden — see CONTEXT.md D-25 / Pitfall P8-03. ` +
-          `Move per-request identifiers to request_log columns, not Prometheus labels.\n`,
-      );
+  const args = process.argv.slice(2);
+  const mode = args[0] === '--live' ? 'live' : 'source';
+
+  if (mode === 'live') {
+    // Live mode: --live <url-or-dash>
+    // target='-' means read from stdin; target=<url> means HTTP GET.
+    const target = args[1];
+    (async () => {
+      let text: string;
+      if (!target || target === '-') {
+        text = readFileSync(0, 'utf8');
+      } else {
+        text = await (await fetch(target)).text();
+      }
+      const violations = checkCardinalityLive(text);
+      if (violations.length > 0) {
+        for (const v of violations) {
+          process.stderr.write(
+            `cardinality-check: FORBIDDEN _id label "${v.forbiddenLabel}" found in ` +
+              `${v.metricNameHint} (${v.location}). ` +
+              `Labels matching /_id$/ are forbidden — see CONTEXT.md D-25 / Pitfall P8-03. ` +
+              `Move per-request identifiers to request_log columns, not Prometheus labels.\n`,
+          );
+        }
+        process.exit(1);
+      }
+      process.stdout.write('cardinality-check: OK — no /_id$/ labels found (mode=live)\n');
+    })();
+  } else {
+    // Static mode (default — backward compatible):
+    // Usage: node check-prometheus-cardinality.ts [--source] [path]
+    // When first arg is '--source', second arg is the path; otherwise first arg is path.
+    let pathArg: string | undefined;
+    if (args[0] === '--source') {
+      pathArg = args[1];
+    } else if (args[0] && args[0] !== '--live') {
+      pathArg = args[0];
     }
-    process.exit(1);
+    const path = resolve(process.cwd(), pathArg ?? 'src/metrics/registry.ts');
+    const source = readFileSync(path, 'utf8');
+    const violations = checkCardinality(source);
+    if (violations.length > 0) {
+      for (const v of violations) {
+        process.stderr.write(
+          `cardinality-check: FORBIDDEN _id label "${v.forbiddenLabel}" found in ` +
+            `${v.metricNameHint} (${v.location}). ` +
+            `Labels matching /_id$/ are forbidden — see CONTEXT.md D-25 / Pitfall P8-03. ` +
+            `Move per-request identifiers to request_log columns, not Prometheus labels.\n`,
+        );
+      }
+      process.exit(1);
+    }
+    process.stdout.write('cardinality-check: OK — no /_id$/ labels found (mode=source)\n');
   }
-  process.stdout.write('cardinality-check: OK — no /_id$/ labels found in src/metrics/registry.ts\n');
 }
