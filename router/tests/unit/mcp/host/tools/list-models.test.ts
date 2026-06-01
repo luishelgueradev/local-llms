@@ -71,6 +71,9 @@ function makeFakeServer(): {
   return { server: { registerTool }, captured };
 }
 
+// Phase 17 (v0.11.0 — CTXP-04): ctx_size + context_strategy added to literal
+// ModelEntry fixtures (parse-time defaults populate parsed entries; literal
+// constructions must supply explicitly).
 const CHAT_LOCAL: ModelEntry = {
   name: 'chat-local',
   backend: 'ollama',
@@ -78,6 +81,8 @@ const CHAT_LOCAL: ModelEntry = {
   backend_model: 'llama3.1:8b',
   capabilities: ['chat'],
   vram_budget_gb: 5,
+  ctx_size: 8192,
+  context_strategy: 'sliding-window',
   // policy omitted on purpose — Test 5 asserts default cloud_allowed: true
 };
 
@@ -89,6 +94,8 @@ const EMBED_LOCAL: ModelEntry = {
   capabilities: ['embeddings'],
   vram_budget_gb: 1,
   dims: 768,
+  ctx_size: 8192,
+  context_strategy: 'sliding-window',
 };
 
 const CLOUD_DENIED: ModelEntry = {
@@ -99,6 +106,8 @@ const CLOUD_DENIED: ModelEntry = {
   capabilities: ['chat'],
   vram_budget_gb: 0,
   policy: { cloud_allowed: false },
+  ctx_size: 8192,
+  context_strategy: 'sliding-window',
 };
 
 function makeFakes(opts: {

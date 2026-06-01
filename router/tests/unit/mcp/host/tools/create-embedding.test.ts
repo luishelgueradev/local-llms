@@ -65,6 +65,7 @@ function makeFakeServer(): { server: { registerTool: ReturnType<typeof vi.fn> };
 }
 
 // Embedding model with declared `dims` + pricing-less (local-style entry).
+// Phase 17 (v0.11.0 — CTXP-04): ctx_size + context_strategy populated.
 const EMBED_ENTRY: ModelEntry = {
   name: 'embed-local',
   backend: 'ollama',
@@ -73,6 +74,8 @@ const EMBED_ENTRY: ModelEntry = {
   capabilities: ['embeddings'],
   vram_budget_gb: 1,
   dims: 8,
+  ctx_size: 8192,
+  context_strategy: 'sliding-window',
 };
 
 function makeEmbedResponse(n: number, dims: number, model: string) {

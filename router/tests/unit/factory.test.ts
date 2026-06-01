@@ -16,6 +16,9 @@ import type { ModelEntry } from '../../src/config/registry.js';
 /**
  * Minimal ModelEntry for factory tests — only the fields the factory needs.
  */
+// Phase 17 (v0.11.0 — CTXP-04): ctx_size + context_strategy are now required
+// fields on the inferred ModelEntry type (Zod defaults populate them at
+// parse time, but literal-constructed fixtures must supply them explicitly).
 function ollamaEntry(overrides: Partial<ModelEntry> = {}): ModelEntry {
   return {
     name: 'llama3.2:3b-instruct-q4_K_M',
@@ -24,6 +27,8 @@ function ollamaEntry(overrides: Partial<ModelEntry> = {}): ModelEntry {
     backend_model: 'llama3.2:3b-instruct-q4_K_M',
     capabilities: ['chat'],
     vram_budget_gb: 4,
+    ctx_size: 8192,
+    context_strategy: 'sliding-window',
     ...overrides,
   };
 }
@@ -36,6 +41,8 @@ function llamacppEntry(overrides: Partial<ModelEntry> = {}): ModelEntry {
     backend_model: 'qwen2.5-7b-instruct-q4_K_M',
     capabilities: ['chat', 'tools'],
     vram_budget_gb: 6,
+    ctx_size: 8192,
+    context_strategy: 'sliding-window',
     ...overrides,
   };
 }
@@ -48,6 +55,8 @@ function vllmEntry(overrides: Partial<ModelEntry> = {}): ModelEntry {
     backend_model: 'Qwen/Qwen2.5-7B-Instruct-AWQ',
     capabilities: ['chat', 'tools'],
     vram_budget_gb: 7.2,
+    ctx_size: 8192,
+    context_strategy: 'sliding-window',
     ...overrides,
   };
 }
@@ -60,6 +69,8 @@ function vllmEmbedEntry(overrides: Partial<ModelEntry> = {}): ModelEntry {
     backend_model: 'BAAI/bge-m3',
     capabilities: ['embeddings'],
     vram_budget_gb: 2.5,
+    ctx_size: 8192,
+    context_strategy: 'sliding-window',
     ...overrides,
   };
 }
@@ -72,6 +83,8 @@ function cloudEntry(overrides: Partial<ModelEntry> = {}): ModelEntry {
     backend_model: 'gpt-oss:120b-cloud',
     capabilities: ['chat', 'tools'],
     vram_budget_gb: 0,
+    ctx_size: 8192,
+    context_strategy: 'sliding-window',
     ...overrides,
   };
 }

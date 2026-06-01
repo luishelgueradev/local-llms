@@ -131,6 +131,12 @@ describe('models.yaml registry — store (ROUTE-02 startup half)', () => {
           backend_model: 'newmodel',
           capabilities: ['chat'],
           vram_budget_gb: 4,
+          // Phase 17 (v0.11.0 — CTXP-04): the inferred ModelEntry type now
+          // requires ctx_size + context_strategy. Zod defaults populate them
+          // at parse time, but a literal-constructed snapshot must supply
+          // them explicitly.
+          ctx_size: 8192,
+          context_strategy: 'sliding-window',
         },
       ],
     };

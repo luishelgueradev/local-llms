@@ -67,6 +67,7 @@ function makeFakeServer(): { server: { registerTool: ReturnType<typeof vi.fn> };
 }
 
 // Rerank model entry (local-style — no pricing).
+// Phase 17 (v0.11.0 — CTXP-04): ctx_size + context_strategy populated.
 const RERANK_ENTRY: ModelEntry = {
   name: 'rerank-local',
   backend: 'ollama',
@@ -74,6 +75,8 @@ const RERANK_ENTRY: ModelEntry = {
   backend_model: 'bge-reranker-v2-m3',
   capabilities: ['rerank'],
   vram_budget_gb: 1,
+  ctx_size: 8192,
+  context_strategy: 'sliding-window',
 };
 
 function makeRerankResponse(n: number, model: string) {

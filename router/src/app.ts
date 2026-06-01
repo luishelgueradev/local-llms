@@ -44,7 +44,12 @@ import {
 } from './metrics/recordOutcome.js';
 import { agentIdPreHandler as defaultAgentIdPreHandler } from './middleware/agentId.js';
 import { scopedIdsPreHandler as defaultScopedIdsPreHandler } from './middleware/scopedIds.js';
+import { sessionIdPreHandler as defaultSessionIdPreHandler } from './middleware/sessionId.js';
 import { makeRateLimitPreHandler } from './middleware/rateLimit.js';
+import type { SessionStore } from './providers/session-store.js';
+import type { ContextProvider } from './providers/context-provider.js';
+import type { SummaryProvider } from './providers/summary-provider.js';
+import { countTokens } from './translation/count-tokens.js';
 import { closeValkey, type ValkeyClient } from './clients/valkey.js';
 import { mcpHostPlugin } from './mcp/host/index.js';
 import { makeEmbeddingsCache } from './embeddings/cache.js';
@@ -130,6 +135,44 @@ export interface BuildAppOpts {
    * scopedIdsPreHandler; tests override for hook-isolation cases.
    */
   scopedIdsPreHandler?: preHandlerAsyncHookHandler;
+  /**
+   * Phase 17 (v0.11.0 — SESS-01 / SESS-06 BuildAppOpts widening): optional
+   * Postgres-backed session store. When undefined, the session-attach block
+   * in every route is a no-op (SESS-06 stateless contract; byte-identical to
+   * Phase 16 wire behavior). Production wiring (index.ts — Plan 17-07)
+   * constructs a PostgresSessionStore from the Drizzle db handle and threads
+   * it here.
+   *
+   * Optional: 4 Phase 17 BuildAppOpts fields (sessionStore + contextProvider
+   * + summaryProvider + sessionIdPreHandler) are ALL optional so the full
+   * Phase 14/15/16 integration test suite continues to build apps without
+   * Phase 17 injection and observes byte-identical wire output.
+   */
+  sessionStore?: SessionStore;
+  /**
+   * Phase 17 (v0.11.0 — CTXP-01 BuildAppOpts widening): optional context
+   * provider. When undefined, the route handler skips ContextProvider
+   * invocation and passes body.messages verbatim (still a no-op when
+   * sessionStore is also undefined). Default production wiring (Plan 17-07)
+   * passes DefaultContextProvider (sliding-window + truncate strategies).
+   */
+  contextProvider?: ContextProvider;
+  /**
+   * Phase 17 (v0.11.0 — SUMP-01 / SUMP-02 BuildAppOpts widening): optional
+   * summary provider. When undefined, the route falls back to
+   * NoopSummaryProvider (which returns `''` / `[]` — and `null` when the
+   * SUMP-03 BLOCK guard fires). Frame-03 binding: the v0.11.0 default is
+   * always Noop; LlmSummaryProvider is deferred to SUMP-FUT-01 downstream.
+   */
+  summaryProvider?: SummaryProvider;
+  /**
+   * Phase 17 (v0.11.0 — SESS-05 BuildAppOpts widening): test seam for the
+   * X-Session-ID preHandler. Production wiring (Plan 17-07) uses
+   * `defaultSessionIdPreHandler` from `middleware/sessionId.js`. Tests
+   * override for hook-isolation cases (mirror agentIdPreHandler? +
+   * scopedIdsPreHandler? pattern).
+   */
+  sessionIdPreHandler?: preHandlerAsyncHookHandler;
   /**
    * Phase 14 (v0.11.0 — POL-05 / D-09 / P8-01 BLOCK) — Test seam for the
    * circuit breaker. Production path uses the breaker constructed from
@@ -327,6 +370,17 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
   // enrichment. The handler also stamps req._t0 = performance.now() — the
   // latency_ms source for the request_log row (D-D6 + Plan 05-02 Task 3).
   app.addHook('preHandler', opts.agentIdPreHandler ?? defaultAgentIdPreHandler);
+
+  // Phase 17 (v0.11.0 — SESS-05/06): X-Session-ID preHandler runs AFTER
+  // agentIdPreHandler — the route session-attach block reads req.agentId to
+  // scope SessionStore.loadHistory (P4-03 BLOCK — agent_id is the privileged-
+  // write boundary on appendTurn and the anti-cross-agent-leak filter on
+  // loadHistory). Absent header is silent-NULL (req.sessionId stays undefined,
+  // route short-circuits to Phase 16 stateless byte-identical behavior —
+  // SESS-06 regression contract). Invalid header throws InvalidSessionIdError
+  // → 400 invalid_session_id envelope via the centralized setErrorHandler
+  // below (Plan 17-03 envelope wiring).
+  app.addHook('preHandler', opts.sessionIdPreHandler ?? defaultSessionIdPreHandler);
 
   // Centralized error handler — D-C1 envelope for ANY uncaught error from a route.
   // The route handlers in plan 02-03 + 02-04 may also handle errors locally; this is the
@@ -750,6 +804,34 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
     }
     return payload;
   });
+
+  // -------------------------------------------------------------------------
+  // Phase 17 (v0.11.0 — Pitfall 17-I): countTokens boot warmup
+  // -------------------------------------------------------------------------
+  //
+  // Warm up gpt-tokenizer's cl100k_base encoding tables at boot so the first
+  // session-attached request doesn't eat ~50-200 ms of lazy-load latency
+  // inside the route handler (the cl100k_base BPE dictionary is ~1 MB and
+  // loads on first import + first encode() call). Same module already used by
+  // /v1/messages/count_tokens since Phase 4 — warmup is safe and idempotent.
+  //
+  // Pass a minimal valid CanonicalRequest so the encoder exercises the real
+  // code path (encode() of system + a text message). Wrapped in try/catch
+  // because countTokens is best-effort — a failure here MUST NOT prevent
+  // boot. Route handlers tolerate countTokens failures (return 0) so any
+  // future regression surfaces as a warn log + observable cold-start
+  // latency, not a startup crash.
+  try {
+    countTokens({
+      model: 'warmup',
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'warmup' }] }],
+    });
+  } catch (warmupErr) {
+    app.log.warn(
+      { err: warmupErr },
+      'countTokens warmup failed (non-fatal — first request will incur tokenizer init latency)',
+    );
+  }
 
   // -------------------------------------------------------------------------
   // Routes
