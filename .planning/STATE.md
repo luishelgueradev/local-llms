@@ -2,20 +2,22 @@
 gsd_state_version: 1.0
 milestone: v0.11.0
 milestone_name: Retrieval-Ready Infrastructure
-status: completed
-last_updated: "2026-05-31T21:15:41.405Z"
-last_activity: 2026-05-31
+status: executing
+last_updated: "2026-06-01T02:29:37.755Z"
+last_activity: 2026-06-01
 progress:
   total_phases: 6
   completed_phases: 3
-  total_plans: 25
-  completed_plans: 25
+  total_plans: 32
+  completed_plans: 26
   percent: 50
 ---
 
 # Project State: local-llms
 
-**Last Updated:** 2026-05-31 — Phase 16 COMPLETE. Plan 16-04 SHIPPED — production lockdown gates landed. 3 files modified + 1 new file: `router/tests/routes/responses.test.ts` (+72 LOC — new P9-02 byte-identical golden describe block at top level; `created_at` post-capture scrub to 0 because vi.useFakeTimers hangs Fastify's app.inject, same root cause as Plan 16-02 + R4 deferral; supports `UPDATE_GOLDEN=1` regeneration; refuses to pass when `__placeholder` flag is still set), `router/tests/routes/golden/responses-nonstream-v0.10.0.json` (+57 LOC — populated with the real captured v0.10.0 non-stream wire body; deterministic `id: msg_01TESTRESPID` from fake adapter + scrubbed `created_at: 0`; no `__placeholder`), `router/tests/unit/grep-gates/heartbeat-no-data-event.test.ts` (NEW file + new directory — 3 vitest grep gates mirroring Phase 15 stdio-grep-gate pattern: (1) no `reply.raw.write(...heartbeat...)` in router/src/, (2) no `yield/emit(...heartbeat...)`, (3) no string-quoted `'[DONE]'` literal in responses-stream.ts), `bin/smoke-test-router.sh` (+ ~75 LOC — Phase 16 section inserted after Phase 15 MCP block: PASS gates for RESS-01 created+completed presence, RESS-02 sequence_number + last-event invariant, P3-04 no heartbeat-as-data, RESS-04 no `[DONE]` terminator). Verifications green: P9-02 test passes WITHOUT UPDATE_GOLDEN (lockdown reproducible); 3 grep-gate tests green including local mutation-canary FAIL confirmation (gate works); `bash -n bin/smoke-test-router.sh` exits 0. Full vitest run: 1007 passed / 2 failed / 8 skipped (the 2 failures remain the pre-existing hotreload.vram flake under full-suite parallel load — unchanged from Plan 16-03; passes 3/3 in isolation). All 5 RESS requirements verified-by golden + integration + grep gates + smoke section. v0.11.0 progress: 3/6 phases (Phase 14 + Phase 15 + Phase 16) + 17/48 requirements (POL-01..06 + MCPS-01..06 + RESS-01..05).
+**Last Updated:** 2026-06-01 — Phase 17 Plan 17-01 SHIPPED (Wave 0 validation harness scaffold). 9 new test files + `router/tests/fakes.ts` extended (+186 LOC). Per-file: `tests/providers/session-store.interface.test.ts` (6 real `it()` with `expectTypeOf` — the only Wave-0 file with REAL assertions; SESS-01 / P4-03 BLOCK agent_id positional), `tests/providers/postgres-session-store.test.ts` (12 it.todo — SESS-02..04 + P4-02 + P4-01 + Pitfall 17-B/17-H + sliding-TTL Q6 + idempotency Q5), `tests/providers/context-provider.test.ts` (9 it.todo — CTXP-01..04 + Pitfall 17-G; references `provideContext` per REQUIREMENTS line 64 patch), `tests/providers/summary-provider.test.ts` (5 it.todo — SUMP-01..03 + P6-01 BLOCK), `tests/middleware/sessionId.test.ts` (6 it.todo — SESS-05/06 regex + RFC 9110 first-wins), `tests/routes/session-attach.integration.test.ts` (17 it.todo across chat-completions/messages/responses 3-route fixture — SC-1..5 + Pitfall 17-D/E/F + idempotency Q5), `tests/integration/migrations/0006-sessions.test.ts` (12 it.todo real-PG schema + FK + COMMENT ON COLUMN), `tests/db/migration-journal.test.ts` (17 it.todo P9-01 BLOCK atomic-tuple grep gate), `tests/config/registry-ctx.test.ts` (8 it.todo Zod widening). `tests/fakes.ts` (+186 LOC): three new builders — `makeFakeSessionStore` (honors SESS-03 agent_id filter + SESS-04 timeout flag), `makeFakeContextProvider` (CTXP-03 system-pin parity, opt-in passthrough), `makeFakeSummaryProvider` (SUMP-02 Noop OR SUMP-03 null). [Rule-2 deviation] Added `await import('../../src/providers/<X>.js')` runtime sentinel to 3 type-only files because `import type` is stripped by esbuild — vitest run would silently green-pass without it; sentinel surfaces "Cannot find module" at runtime. [Rule-1 deviation] Annotated every `makeFakeSessionStore` async method parameter explicitly so the only `tsc --noEmit` errors are 3 expected TS2307 missing-module errors at fakes.ts:58/63/68 (no cascading TS7006 implicit-any noise). Verifications green: 5 Wave-0 vitest "Cannot find module" failures (target ≥5); 86 `it.todo` total across all scaffolds (target ≥60); 16 `expectTypeOf` assertions in SESS-01 file (target ≥6); zero `router/src/` files modified; zero `it.skip` / `xit` used (Phase 16 Wave-0 convention preserved). v0.11.0 progress: 3/6 phases + 17/48 requirements (POL-01..06 + MCPS-01..06 + RESS-01..05) — Phase 17 requirements not yet validated, will close in Plans 17-03..07.
+
+(Previous: 2026-05-31 — Phase 16 COMPLETE. Plan 16-04 SHIPPED — production lockdown gates landed. 3 files modified + 1 new file: `router/tests/routes/responses.test.ts` (+72 LOC — new P9-02 byte-identical golden describe block at top level; `created_at` post-capture scrub to 0 because vi.useFakeTimers hangs Fastify's app.inject, same root cause as Plan 16-02 + R4 deferral; supports `UPDATE_GOLDEN=1` regeneration; refuses to pass when `__placeholder` flag is still set), `router/tests/routes/golden/responses-nonstream-v0.10.0.json` (+57 LOC — populated with the real captured v0.10.0 non-stream wire body; deterministic `id: msg_01TESTRESPID` from fake adapter + scrubbed `created_at: 0`; no `__placeholder`), `router/tests/unit/grep-gates/heartbeat-no-data-event.test.ts` (NEW file + new directory — 3 vitest grep gates mirroring Phase 15 stdio-grep-gate pattern: (1) no `reply.raw.write(...heartbeat...)` in router/src/, (2) no `yield/emit(...heartbeat...)`, (3) no string-quoted `'[DONE]'` literal in responses-stream.ts), `bin/smoke-test-router.sh` (+ ~75 LOC — Phase 16 section inserted after Phase 15 MCP block: PASS gates for RESS-01 created+completed presence, RESS-02 sequence_number + last-event invariant, P3-04 no heartbeat-as-data, RESS-04 no `[DONE]` terminator). Verifications green: P9-02 test passes WITHOUT UPDATE_GOLDEN (lockdown reproducible); 3 grep-gate tests green including local mutation-canary FAIL confirmation (gate works); `bash -n bin/smoke-test-router.sh` exits 0. Full vitest run: 1007 passed / 2 failed / 8 skipped (the 2 failures remain the pre-existing hotreload.vram flake under full-suite parallel load — unchanged from Plan 16-03; passes 3/3 in isolation). All 5 RESS requirements verified-by golden + integration + grep gates + smoke section. v0.11.0 progress: 3/6 phases (Phase 14 + Phase 15 + Phase 16) + 17/48 requirements (POL-01..06 + MCPS-01..06 + RESS-01..05).
 
 (Previous: 2026-05-31 — Phase 16 Plan 16-03 SHIPPED (route streaming branch + 14 RESS integration tests). 3 files landed: responses.ts +396/-21 LOC streaming branch via near-verbatim chat-completions.ts:506-779 copy; R4 heartbeat skipped pending smoke; non-stream branch byte-identical. Full suite 1006 passed / 2 failed / 8 skipped.)
 
@@ -25,7 +27,7 @@ progress:
 
 (Earlier: 2026-05-31 — Phase 15 COMPLETE. Full vitest run: 949 passed / 7 skipped / 0 failed; all 6 MCPS requirements complete.)
 
-**Status:** Phase 16 SHIPPED (Plans 16-01 + 16-02 + 16-03 + 16-04 all complete). Phase 17 — SessionStore + ContextProvider + SummaryProvider — is next.
+**Status:** Phase 17 IN PROGRESS — Plan 17-01 (Wave 0 scaffold) SHIPPED 2026-06-01. Next: Plan 17-02 (migration 0006 + Drizzle schema + journal entry atomic tuple).
 
 ## Project Reference
 
@@ -37,10 +39,10 @@ progress:
 
 ## Current Position
 
-Phase: 16 → 17 (Phase 16 SHIPPED 2026-05-31; Phase 17 next)
-Plan: 4/4 complete (16-04 — P9-02 byte-identical golden + P3-04 heartbeat grep gate + smoke RESS section + STATE/ROADMAP/REQUIREMENTS wrap-up shipped 2026-05-31). Next: `/gsd:plan-phase 17` (SessionStore + ContextProvider + SummaryProvider).
-Status: Phase 16 shipped — ready to plan Phase 17
-Last activity: 2026-05-31
+Phase: 17 — SessionStore + ContextProvider + SummaryProvider (in progress)
+Plan: 1/7 complete (17-01 — Wave 0 scaffold: 9 test files + tests/fakes.ts extension shipped 2026-06-01). Next: `/gsd:execute-phase 17` continues with 17-02 (migration 0006 + Drizzle schema + journal entry atomic tuple).
+Status: Phase 17 Wave 0 shipped — ready to land 17-02 (migration tuple)
+Last activity: 2026-06-01
 
 ### Progress
 
@@ -49,7 +51,7 @@ Milestone v0.11.0: █████░░░░░ 50% — Phase 14 + Phase 15 + 
   Phase 14: ██████████ Policy Primitives + Tenant/Project ID Foundation (POL-01..06) — SHIPPED 2026-05-30
   Phase 15: ██████████ MCP Host (MCPS-01..06) — SHIPPED 2026-05-31 (all 12 plans + final gate green: golden snapshot drift gate, SIGTERM 5s race, D-15 disabled-mode, smoke section, DEPLOY+README docs, MCPS-06 stdio grep gate)
   Phase 16: ██████████ /v1/responses Streaming + Tool Calls (RESS-01..05) — SHIPPED 2026-05-31 (4/4 plans: Wave 0 scaffold + canonicalToResponsesSse translator + OutputItemStateMachine FSM + 6 golden fixtures + route streaming branch + 14 RESS integration tests + P9-02 byte-identical golden lockdown + P3-04 heartbeat grep gate + smoke RESS section)
-  Phase 17: ░░░░░░░░░░ SessionStore + ContextProvider + SummaryProvider (SESS-01..06 + CTXP-01..04 + SUMP-01..03)
+  Phase 17: █░░░░░░░░░ SessionStore + ContextProvider + SummaryProvider (SESS-01..06 + CTXP-01..04 + SUMP-01..03) — Plan 17-01 Wave 0 SHIPPED 2026-06-01 (9 test scaffolds + tests/fakes.ts builders)
   Phase 18: ░░░░░░░░░░ MCP Client + RetrieverProvider + Pre-Completion Hook (MCPC-01..06 + RETR-01..06)
   Phase 19: ░░░░░░░░░░ EmbeddingProvider Formalization + Observability Hardening (EMBP-01..02 + OBSV-01..04)
 

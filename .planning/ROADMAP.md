@@ -182,10 +182,10 @@ Plans:
 4. A session created without `X-Session-ID` in the request operates fully stateless — no `sessions` or `conversation_turns` rows are written, and the response is identical to pre-Phase-17 behavior.
 5. The `X-Session-ID` response header is set on responses when a session is active; the `NoopSummaryProvider` is the default and never calls any model.
 
-**Plans:** 7 plans
+**Plans:** 1/7 plans executed
 
 Plans:
-- [ ] 17-01-PLAN.md — Wave 0 scaffold (9 test files + tests/fakes.ts extension; `it.todo` placeholders + SESS-01 expectTypeOf assertions) [SESS-01..06 + CTXP-01..04 + SUMP-01..03]
+- [x] 17-01-PLAN.md — Wave 0 scaffold (9 test files + tests/fakes.ts extension; `it.todo` placeholders + SESS-01 expectTypeOf assertions) [SESS-01..06 + CTXP-01..04 + SUMP-01..03] — SHIPPED 2026-06-01
 - [ ] 17-02-PLAN.md — Migration 0006 indivisible tuple (SQL + Drizzle schema + journal + barrel re-export) [SESS-02]
 - [ ] 17-03-PLAN.md — SessionStore interface + 4 error classes + PostgresSessionStore (advisory lock + 1s fail-open + sliding TTL + agent_id mandatory) [SESS-01, SESS-02, SESS-03, SESS-04]
 - [ ] 17-04-PLAN.md — ContextProvider interface + sliding-window default + truncate + system pin + Pitfall 17-G incoming-privilege invariant [CTXP-01, CTXP-02, CTXP-03]
@@ -259,7 +259,7 @@ Plans:
 | 14. Policy Primitives + Tenant ID Foundation | 9/9 | Complete    | 2026-05-30 |
 | 15. MCP Host (Router as MCP Server) | 12/12 | Complete    | 2026-05-31 |
 | 16. /v1/responses Streaming + Tool Calls | 4/4 | Complete   | 2026-05-31 |
-| 17. SessionStore + ContextProvider + SummaryProvider | 0/7 | Planned    | - |
+| 17. SessionStore + ContextProvider + SummaryProvider | 1/7 | In Progress|  |
 | 18. MCP Client + RetrieverProvider + Pre-Completion Hook | 0/TBD | Not started | - |
 | 19. EmbeddingProvider Formalization + Observability Hardening | 0/TBD | Not started | - |
 
