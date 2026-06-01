@@ -1,0 +1,8 @@
+{
+  "file": "router/src/routes/v1/embeddings.ts",
+  "sha256": "b53c6ba1298b8b78b65f75d951e778bd031994fdcd65d14e659f8f3dd666e970",
+  "captured_at": "2026-06-01",
+  "phase": "18",
+  "plan": "18-01",
+  "rationale": "P7-01 BLOCK — Phase 18 (MCP client + RetrieverProvider + pre-completion hooks) MUST NOT modify /v1/embeddings route. EMBP (embeddings provider) work is scoped to Phase 19. Any change to this file during Plans 18-02..18-08 must update this baseline AND surface in the corresponding plan's deviations section."
+}

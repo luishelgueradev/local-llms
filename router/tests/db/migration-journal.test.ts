@@ -211,3 +211,30 @@ describe('Migration 0006 atomic tuple integrity (P9-01 BLOCK)', () => {
     expect(stdout.trim()).toBe('');
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 18 / v0.11.0 — RETR-04 (migration 0007 atomic tuple integrity).
+// Wave 0 scaffold (Plan 18-01). `it.todo` until Plan 18-07 lands the impl.
+//
+// Identical structure to the Phase 17 0006 block above — the Drizzle migrator
+// silently skips entries missing from `_journal.json`, so the SQL file
+// (0007_request_log_hook_log.sql) + Drizzle schema (request_log.ts widening)
+// + journal entry (idx=7) MUST land as one atomic git commit.
+//
+// EXTENSION (Plan 18-01): this scaffold appends idx=7 assertions ONLY. The
+// prior idx 0..6 assertions stay byte-for-byte intact — Plan 17-02's
+// EXPECTED_PRIOR_ENTRIES table is the immutable baseline.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('Migration 0007 atomic tuple integrity (P9-01 BLOCK)', () => {
+  it.todo('Test 1: SQL file 0007_request_log_hook_log.sql exists');
+  it.todo('Test 1: SQL contains ALTER TABLE "request_log" ADD COLUMN "hook_log" JSONB NULL');
+  it.todo('Test 1: SQL contains COMMENT ON COLUMN "request_log"."hook_log" with Phase 18 + RETR-04 marker');
+  it.todo('Test 1: SQL contains NO CREATE INDEX (write-heavy column per design)');
+  it.todo('Test 2: _journal.json has exactly 8 entries (was 7 after Phase 17)');
+  it.todo('Test 2: _journal.json idx=7 entry has tag "0007_request_log_hook_log" + version "7" + breakpoints true');
+  it.todo('Test 2: _journal.json entries idx 0..6 are unchanged');
+  it.todo('Test 3: Drizzle schema request_log.ts contains hook_log: jsonb("hook_log")');
+  it.todo('Test 3: db/schema/index.ts barrel re-export still exports requestLog (unchanged)');
+  it.todo('Test 4: indivisible tuple — SQL + Drizzle schema + _journal.json all reference 0007 (3-of-3 grep gate)');
+});
