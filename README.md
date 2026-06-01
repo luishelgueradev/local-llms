@@ -455,6 +455,68 @@ in `models.yaml` (defaults `8192` + `sliding-window`), sliding TTL semantics, Pr
 
 ---
 
+## MCP Client + Hooks (v0.11.0)
+
+The router can consume **external MCP servers as tool providers** (declared in
+`models.yaml`'s `mcp_servers:` block) and run **pre-completion hooks** that
+inject retrieved context into model requests before backend dispatch.
+
+**Strategic frame (binding):**
+
+> *"Retrieval Interfaces, not Retrieval Logic"* · *"Memory Abstraction Layer,
+> not Memory implementation"* — local-llms is INFRASTRUCTURE; semantic
+> memory and RAG belong to consumer applications (n8n flows, Unsloth Studio)
+> sitting downstream of this endpoint.
+
+**This repo ships ZERO retriever implementations in production code.**
+Operators register their own via the extension point in `router/src/index.ts`.
+The production `preCompletionHooks` Map is constructed empty — adding a retriever
+is a code change at the composition root, never a YAML toggle.
+
+### Quick reference
+
+- **`mcp_servers:`** top-level config in `models.yaml` — operator declares external
+  servers (alias / url / transport=streamable-http / auth_type / auth_value?); lazy
+  connect on first use; 60s Valkey `tools/list` cache; namespace-prefixed tool names
+  (`{alias}__{tool}`) to avoid collisions across multiple servers.
+- **Per-model `mcp_servers_enabled: [alias, ...]`** — opts the model into MCP tool
+  injection from the listed aliases.
+- **Per-model `pre_completion_hooks: [name, ...]`** — references hooks registered
+  in code (`router/src/index.ts`); name-only in YAML.
+- **`X-Hook-Error: <hook_name>:timeout`** response header signals fail-open hook
+  timeouts; absence = no fail-open occurred.
+- **`request_log.hook_log` JSONB column** — SHA256-only audit trail (P5-05; no
+  full content stored). Migration 0007 added the column.
+- **MCP tool loop cap** — `MCP_TOOL_LOOP_MAX=10`; `mcp_tool_loop_exceeded` → 502
+  on overflow.
+- **Stream + MCP tool loop**: non-stream paths only in v0.11.0 (stream + tool-call
+  loop coexistence is RESS-FUT carry-over). Hooks still fire on stream paths.
+
+### Auth isolation (P2-04 BLOCK)
+
+The inbound bearer token is NEVER forwarded to external MCP servers — per-server
+credentials in each `auth_value` are used. The single outbound-header build site
+takes only `McpServerConfig` (inbound headers are unreachable by construction);
+a grep gate enforces this in CI.
+
+### Frame-01 BLOCK invariant
+
+The router never ships a default `RetrieverProvider` implementation. A test-only
+fake lives in `tests/fakes.ts:makeFakeRetrieverProvider` for the integration
+suite; production wiring constructs `new Map()` literal and never registers a
+hook. The Frame-01 grep gate (`tests/unit/grep-gates/no-default-retriever.test.ts`)
+asserts this on every CI run.
+
+See [DEPLOY.md §"MCP Client + Pre-Completion Hooks (Phase 18 — v0.11.0)"](DEPLOY.md#mcp-client--pre-completion-hooks-phase-18--v0110)
+for the full operator surface: `mcp_servers:` schema, hot-edit recipe (Valkey DEL
++ `docker compose up -d --force-recreate router`), hook registration extension
+point, `on_timeout` decision tree (fail-open for augmentation hooks vs fail-closed
+for authorization hooks), `hook_log` audit shape, Prometheus metrics
+(`router_hook_duration_ms`, `router_mcp_tool_calls_external_total`), and the
+verification matrix tying each ROADMAP success criterion to its test.
+
+---
+
 ## Operacion
 
 | Tarea | Comando |

@@ -664,6 +664,147 @@ The live-router smoke harness (`bin/smoke-test-router.sh`) Phase 17 section cove
 
 ---
 
+## MCP Client + Pre-Completion Hooks (Phase 18 — v0.11.0)
+
+The router can act as an **MCP CLIENT** consuming external MCP servers as tool providers (lazy-connect, namespace-prefixed dispatch, 60s Valkey `tools/list` cache), **AND** register **pre-completion hooks** (`RetrieverProvider` interface) that inject retrieved context into model requests before backend dispatch. Both mechanisms coexist on every route without interference (RETR-06).
+
+### Strategic frame (binding)
+
+> *"Retrieval Interfaces, not Retrieval Logic"* · *"Memory Abstraction Layer, not Memory implementation"*
+>
+> local-llms = INFRASTRUCTURE; RAG/KB = downstream consumer responsibility (n8n, Unsloth Studio).
+
+**The router ships ZERO retriever implementations in production code** (Frame-01 BLOCK). Operators register their own via the composition-root extension point in `router/src/index.ts`. The production `preCompletionHooks` Map is constructed empty:
+
+```typescript
+// router/src/index.ts (Phase 18 production composition)
+const preCompletionHooks: Map<string, PreCompletionHook[]> = new Map();
+// Operators extend this Map locally; the repo never ships a registered retriever.
+```
+
+### Environment + config
+
+- **`mcp_servers:` in `models.yaml`** — top-level list of external MCP servers. Each entry: `{ alias, url, transport: 'streamable-http', auth_type, auth_value?, timeout_ms?, tool_filter? }`. Lazy-connect on first use — router boot NEVER blocks on external availability (**P2-01 BLOCK / MCPC-02**).
+  - `alias`: regex `/^[a-z0-9_]{1,32}$/`
+  - `transport`: `'streamable-http'` ONLY in v0.11.0 (no stdio, no SSE)
+  - `auth_type`: `'none' | 'bearer'`; when `bearer`, `auth_value` REQUIRED (Zod superRefine)
+  - `timeout_ms`: per-server upper bound on `tools/list` + `tools/call` (default 10_000)
+  - `tool_filter`: allowlist (default `['*']`)
+
+- **Per-model `mcp_servers_enabled: [alias, ...]`** — which declared aliases inject their tools into THIS model's request. Cross-field validated at registry load — referencing an undeclared alias throws `ZodError` with `path:['models']`.
+
+- **Per-model `pre_completion_hooks: [name, ...]`** — name-only references. Implementations are registered programmatically in `router/src/index.ts` extension point (**NOT in YAML** — Frame-01 invariant).
+
+### Hot-edit recipe (operator action — mirrors `project_models_yaml_hot_edit.md`)
+
+Editing `mcp_servers:` requires Valkey cache invalidation AND a router restart. The `mcp:tools:{alias}` keys live in Valkey for 60s; the per-alias transport is also baked into the registry at boot:
+
+```bash
+# 1. Edit models.yaml (add/change/remove mcp_servers stanza).
+# 2. DEL the Valkey tools/list cache for each affected alias:
+docker compose exec valkey valkey-cli DEL "mcp:tools:${ALIAS}"
+# 3. Force-recreate the router (a plain `restart` is NOT sufficient):
+docker compose up -d --force-recreate router
+```
+
+**Plan 18-07 added a hot-reload subscriber** (`watchRegistry.onReload`) that diffs `previousMcpServers` ↔ `next.mcp_servers` and calls `mcpClientRegistry.dispose(alias)` on REMOVED / CHANGED aliases — DELs the Valkey cache + closes the transport. In practice, after editing `models.yaml`, the file-watcher will trigger this automatically; the `docker compose up -d --force-recreate router` recipe remains the unambiguous fallback when the registry config is baked at boot (e.g., new alias added).
+
+### Hook registration extension point
+
+Operators extend the empty `preCompletionHooks` Map in `router/src/index.ts` (search for the `Phase 18 (RETR-02/03/...) extension point` comment block). Each hook MUST declare:
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `name` | string | yes | Operator-declared. Used for Prometheus label `hook_name` (bounded cardinality — operator-controlled enum), hook_log, `X-Hook-Error` header. |
+| `retriever` | RetrieverProvider | yes | Caller-supplied implementation. **NOT shipped by this repo.** |
+| `timeout_ms` | number | yes | Hook-side budget. Recommended: 2000 (RESOLVED Open Question #1). |
+| `on_timeout` | `'fail-open' \| 'fail-closed'` | yes | **No default — P5-01 BLOCK.** Missing field = startup error (`HookConfigError`). |
+| `max_chars` | number | yes | Fenced-content character cap. Recommended: 4000 (P5-03 BLOCK). |
+| `top_k` | number | no | Default 5. |
+| `buildRequest` | function | no | Default: extracts `lastUserContent` from `canonical.messages`. |
+
+**`on_timeout` decision tree:**
+
+- `fail-open` — natural default for **augmentation** hooks (retrieval ADDS context; missing context degrades quality, not safety). On timeout: warn log (`event: 'hook_fail_open'`) + `X-Hook-Error: <hook_name>:timeout` response header (FIRST fail-open only — RESOLVED #8) + request continues with original canonical.
+- `fail-closed` — natural default for **authorization** hooks (retrieval GATES access; missing context = unsafe). On timeout: `HookTimeoutError` → 502 envelope (`type: 'hook_error'`, `code: 'hook_timeout'`).
+
+The router **does NOT pick a default** — operators MUST declare intent explicitly. Misconfiguration is caught at boot via the validator in `buildApp`:
+
+```typescript
+// router/src/app.ts (boot-time P5-01 BLOCK validator)
+for (const [routeKey, hooks] of opts.preCompletionHooks) {
+  for (const hook of hooks) {
+    if (hook.on_timeout !== 'fail-open' && hook.on_timeout !== 'fail-closed') {
+      throw new HookConfigError(hook.name, `on_timeout is required ...`);
+    }
+    // ... timeout_ms + max_chars also validated.
+  }
+}
+```
+
+### Audit trail (RETR-04 — `request_log.hook_log` JSONB)
+
+Every hook invocation lands in `request_log.hook_log` (JSONB column, added by **migration 0007** — applied automatically at router boot via `db:migrate`). Schema:
+
+```json
+[
+  {
+    "hook_name": "doc_retrieval",
+    "context_hash": "sha256:abc123...",
+    "latency_ms": 123,
+    "chars_retrieved": 3500,
+    "status": "ok"
+  }
+]
+```
+
+**SHA256 hashes only — full retrieved content is NEVER stored** (P5-05 BLOCK). For forensic review of what was retrieved at a given timestamp, consult the **retriever's own logs** (the retriever owns its content; the router owns the audit trail).
+
+`context_hash` is computed over the **POST-truncate fenced content** that landed in `canonical.system`, so the hash matches the actual injection byte-for-byte (P5-05 / Plan 18-06 invariant).
+
+### Observability surface (Phase 18 metrics)
+
+| Metric | Type | Labels | Notes |
+|--------|------|--------|-------|
+| `router_hook_duration_ms` | Histogram | `hook_name`, `status` | Buckets: `[10, 50, 100, 250, 500, 1000, 2000, 5000]` ms. Sub-second by design (default `timeout_ms` 2000). |
+| `router_mcp_tool_calls_external_total` | Counter | `server_alias`, `status_class` | CLIENT surface (router → external MCP). Distinct from Phase 15's `router_mcp_tool_calls_total` (SERVER surface — router AS the MCP server). |
+
+**POL-06 cardinality invariant preserved** — both metrics carry only bounded enums (no `_id` suffixes); the `node scripts/check-prometheus-cardinality.ts` CI guard PASSES on every Phase 18 commit.
+
+### Auth boundary (P2-04 BLOCK)
+
+The **inbound bearer token is NEVER forwarded to external MCP servers**. Per-server credentials in `auth_value` are used. The grep gate enforces this structurally:
+
+```bash
+# Asserted by tests/unit/grep-gates/ + smoke gate 5:
+grep -rE 'req\.headers|request\.headers' router/src/mcp/client/  # must return empty
+```
+
+The single header-building site is `router/src/mcp/client/transport.ts:buildOutboundHeaders(cfg)` which takes ONLY `McpServerConfig` — the inbound bearer and every routing/tenancy header are UNREACHABLE by construction at the type-signature level.
+
+### MCP tool-call loop cap (MCPC-04)
+
+When the model emits a `tool_use` block referencing a prefixed external tool (e.g., `notion__search_pages`), the router strips the prefix, dispatches `tools/call` to the corresponding MCP server, and replies with a `tool_result` block — looping up to **`MCP_TOOL_LOOP_MAX = 10` iterations**. On the 11th iteration with `tool_use` still present, `McpToolLoopExceededError` is thrown → 502.
+
+**Streaming**: MCP tool-call loop is **non-stream paths only** in v0.11.0 (stream + tool-call loop is RESS-FUT carry-over). On streaming routes, hooks still fire on the inbound canonical; only the tool-call loop is deferred.
+
+### Verification matrix
+
+| ROADMAP success criterion | Verified by |
+|--------|-------------|
+| **SC-1** (lazy boot) | `tests/integration/mcp-client-lazy-boot.integration.test.ts` + smoke gate 2 (P2-01 BLOCK) |
+| **SC-2** (prefix routing) | `tests/integration/mcp-client-prefix-routing.integration.test.ts` |
+| **SC-3** (fail-open vs fail-closed) | `tests/integration/hook-position.integration.test.ts` + `tests/hooks/hook-config-validation.test.ts` |
+| **SC-4** (hook_log JSONB audit) | `tests/integration/hook-log-audit.integration.test.ts` (PG-gated) + smoke gate 1 (P9-01 BLOCK) |
+| **SC-5** (embeddings unchanged) | `tests/unit/grep-gates/embeddings-untouched.test.ts` + Phase 12 P7-01 baseline |
+| **SC-6** (hook + MCP coexist) | `tests/integration/hook-and-mcp-coexist.integration.test.ts` |
+
+### Phase 18 smoke section (live tunnel)
+
+The live-router smoke harness (`bin/smoke-test-router.sh`) Phase 18 section covers: P9-01 BLOCK migration 0007 hook_log column present, P2-01 BLOCK /readyz lazy-connect, POL-06 cardinality re-check on Phase 18 metrics, Frame-01 BLOCK no retriever implementations in production source, P2-04 BLOCK no inbound-headers references in mcp/client/, P9-02 BLOCK Phase 16 responses non-stream byte-identical golden snapshot preserved.
+
+---
+
 ## Backups + retencion
 
 **Diarios al disco** (sidecar `pg-backup` corre cada noche):

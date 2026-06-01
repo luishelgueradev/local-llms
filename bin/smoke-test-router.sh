@@ -2430,11 +2430,111 @@ fi
 echo ""
 echo "[smoke-test-router] === Phase 17 SESSION section complete ==="
 
+# ============================================================================
+# Phase 18 (v0.11.0 — MCPC-01..06 + RETR-01..06) — MCP Client + Pre-Completion Hook
+# ============================================================================
+# Proves the Plan 18-07 three-route wire-up + production composition root is
+# live end-to-end at HTTP-and-Postgres level:
+#
+#   P9-01 BLOCK: request_log.hook_log JSONB column exists in live PG
+#                (migration 0007 applied at boot via db:migrate).
+#   P2-01 BLOCK: /readyz returns 200 even when mcp_servers contains
+#                unreachable endpoints (lazy-connect — boot never blocks).
+#   POL-06:      Phase 18 metrics (router_hook_duration_ms +
+#                router_mcp_tool_calls_external_total) have bounded labels
+#                only — no `_id` suffixes (cardinality CI guard mirror).
+#   Frame-01 BLOCK: production source ships ZERO RetrieverProvider impls;
+#                   grep gate inside the running source tree.
+#   P2-04 BLOCK: no inbound-headers references in router/src/mcp/client/
+#                (auth isolation — inbound bearer NEVER reaches external MCP).
+#   P9-02 BLOCK: Phase 16 /v1/responses non-stream byte-identical golden
+#                snapshot still passes — Phase 18 wire-up did NOT regress
+#                the SESS-06 byte-identical contract preserved across routes.
+#
+# Designed to run against the live tunnel AFTER:
+#   `docker compose up -d --build --force-recreate router`
+# (operator action tracked in .planning/phases/18-.../deferred-items.md)
+#
+# Mirrors the Phase 17 SESSION section shape (curl + grep + jq + docker exec).
+# ============================================================================
+
+echo ""
+echo "[smoke-test-router] === Phase 18 — MCP Client + Pre-Completion Hook (MCPC-01..06 + RETR-01..06) ==="
+
+# Gate 1 — P9-01 BLOCK: migration 0007 hook_log column exists in live PG.
+PHASE18_HOOKLOG_PRESENT=$(docker compose exec -T postgres psql -U app -d router -tAc \
+  "SELECT 1 FROM information_schema.columns WHERE table_name='request_log' AND column_name='hook_log'" 2>/dev/null | tr -d '[:space:]' || echo "")
+if [[ "${PHASE18_HOOKLOG_PRESENT}" == "1" ]]; then
+  pass "P9-01 BLOCK: request_log.hook_log JSONB column present (migration 0007 applied)"
+else
+  fail "P9-01 BLOCK: request_log.hook_log column MISSING in live PG — apply migration 0007"
+fi
+
+# Gate 2 — P2-01 BLOCK: /readyz returns 200 (lazy MCP connect).
+PHASE18_READYZ_CODE=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "${ROUTER_URL}/readyz" 2>/dev/null || echo "000")
+if [[ "${PHASE18_READYZ_CODE}" == "200" ]]; then
+  pass "P2-01 BLOCK: /readyz returns 200 (boot not blocked on external MCP server availability)"
+else
+  fail "P2-01 BLOCK: /readyz returned ${PHASE18_READYZ_CODE} (expected 200 — lazy-connect regression?)"
+fi
+
+# Gate 3 — POL-06 cardinality re-check: Phase 18 metrics must not have _id labels.
+PHASE18_METRICS=$(curl -sS --max-time 10 -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" "${ROUTER_URL}/metrics" 2>/dev/null || echo "")
+if grep -qE '^router_hook_duration_ms_' <<< "${PHASE18_METRICS}"; then
+  # Series present — verify no _id labels on Phase 18 metric families.
+  if grep -E 'router_hook_duration_ms.*\{[^}]*_id=' <<< "${PHASE18_METRICS}" >/dev/null 2>&1 \
+     || grep -E 'router_mcp_tool_calls_external_total.*\{[^}]*_id=' <<< "${PHASE18_METRICS}" >/dev/null 2>&1; then
+    fail "POL-06: Phase 18 metric contains an _id label — cardinality CI guard would fail"
+  else
+    pass "POL-06: router_hook_duration_ms + router_mcp_tool_calls_external_total have bounded labels (no _id)"
+  fi
+else
+  # Lazy-init: when no hooks are registered in production (Frame-01), the histogram
+  # may have NO child series yet. That is itself a Frame-01 confirmation, not a fail.
+  pass "POL-06: router_hook_duration_ms has no child series — consistent with Frame-01 BLOCK (empty preCompletionHooks Map in production)"
+fi
+
+# Gate 4 — Frame-01 BLOCK: no RetrieverProvider implementations in router/src/.
+PHASE18_FRAME01_IMPL_COUNT=$(grep -rE 'class[[:space:]]+[A-Za-z_][A-Za-z0-9_]*RetrieverProvider' router/src/ 2>/dev/null \
+  | grep -v 'providers/retriever-provider.ts' | wc -l | tr -d '[:space:]')
+PHASE18_FRAME01_IMPLEMENTS_COUNT=$(grep -rE 'implements[[:space:]]+RetrieverProvider' router/src/ 2>/dev/null \
+  | wc -l | tr -d '[:space:]')
+if [[ "${PHASE18_FRAME01_IMPL_COUNT}" == "0" && "${PHASE18_FRAME01_IMPLEMENTS_COUNT}" == "0" ]]; then
+  pass "Frame-01 BLOCK: no RetrieverProvider implementations in router/src/ (production ships zero retrievers)"
+else
+  fail "Frame-01 BLOCK: ${PHASE18_FRAME01_IMPL_COUNT} impl class(es) + ${PHASE18_FRAME01_IMPLEMENTS_COUNT} 'implements RetrieverProvider' lines — Frame-01 violated"
+fi
+
+# Gate 5 — P2-04 BLOCK: no req.headers / request.headers in router/src/mcp/client/.
+PHASE18_P204_COUNT=$(grep -rE 'req\.headers|request\.headers' router/src/mcp/client/ 2>/dev/null | wc -l | tr -d '[:space:]')
+if [[ "${PHASE18_P204_COUNT}" == "0" ]]; then
+  pass "P2-04 BLOCK: no inbound-headers references in router/src/mcp/client/ (per-server auth isolation enforced)"
+else
+  fail "P2-04 BLOCK: found ${PHASE18_P204_COUNT} inbound-headers reference(s) in router/src/mcp/client/"
+fi
+
+# Gate 6 — P9-02 BLOCK: Phase 16 responses non-stream byte-identical golden still passes.
+# Soft-WARN if vitest is not on PATH (operator may smoke from a host without node deps).
+if command -v npx >/dev/null 2>&1 && [[ -d router/node_modules ]]; then
+  PHASE18_P902_OUTPUT=$(cd router && npx vitest run tests/routes/responses.test.ts -t "P9-02" 2>&1 | tail -5 || true)
+  if echo "${PHASE18_P902_OUTPUT}" | grep -qE 'passed|✓'; then
+    pass "P9-02 BLOCK: responses non-stream byte-identical golden snapshot still passes (Phase 18 wire-up preserves SESS-06)"
+  else
+    fail "P9-02 BLOCK: responses non-stream golden snapshot regressed — Phase 18 may have broken byte-identical contract"
+  fi
+else
+  echo "[smoke-test-router] SKIP P9-02 — npx/router/node_modules unavailable (run from host with node toolchain)"
+  SKIPS=$((SKIPS + 1))
+fi
+
+echo ""
+echo "[smoke-test-router] === Phase 18 MCP-CLIENT + HOOK section complete ==="
+
 # Final summary
 echo ""
 echo "[smoke-test-router] ================================================================"
 if [[ "${FAILURES}" -eq 0 ]]; then
-  echo "[smoke-test-router]  Phase 2/3/4/5/7/8/12/13/15/16/17 router verification: COMPLETE."
+  echo "[smoke-test-router]  Phase 2/3/4/5/7/8/12/13/15/16/17/18 router verification: COMPLETE."
   echo "[smoke-test-router]  Model used : ${MODEL}"
   echo "[smoke-test-router]  Router URL : ${ROUTER_URL}"
   echo "[smoke-test-router]  Skipped    : ${SKIPS:-0} (vision sections require llama3.2-vision pull + outbound HTTPS)"
