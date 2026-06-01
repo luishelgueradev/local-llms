@@ -58,7 +58,10 @@ import {
   makeIdempotencyMultiplexer,
   type IdempotencyMultiplexer,
 } from './resilience/idempotency.js';
-import { RateLimitExceededError } from './errors/envelope.js';
+import { HookConfigError, RateLimitExceededError } from './errors/envelope.js';
+// Phase 18 (v0.11.0 — MCPC-01..06 + RETR-02..06): MCP client registry + hook map.
+import type { McpClientRegistry } from './mcp/client/registry.js';
+import type { PreCompletionHook } from './hooks/pre-completion.js';
 import type { Env } from './config/env.js';
 import type { Logger } from 'pino';
 
@@ -290,6 +293,32 @@ export interface BuildAppOpts {
    * for the Q5 SessionStore-write gate).
    */
   idempotency?: IdempotencyMultiplexer;
+  /**
+   * Phase 18 (v0.11.0 — MCPC-01..06): optional MCP client registry. When
+   * undefined, no external MCP tools are injected into canonical.tools[] and
+   * the route's runMcpToolLoop wrap never fires (the route falls through to
+   * adapter.chatCompletionsCanonical unchanged). Production wiring (index.ts)
+   * always constructs a registry from `registry.get().mcp_servers ?? []`;
+   * when models.yaml declares no mcp_servers the registry is constructed with
+   * an empty Map and remains a no-op until an alias is referenced.
+   */
+  mcpClientRegistry?: McpClientRegistry;
+  /**
+   * Phase 18 (v0.11.0 — RETR-02/03): per-route pre-completion hook map. The
+   * Map key is the route path: '/v1/chat/completions' | '/v1/messages' |
+   * '/v1/responses'. Absent → no hooks fire. Frame-01 BLOCK: production
+   * composition root (index.ts) constructs an EMPTY Map — operators extend
+   * it locally to register their own RetrieverProvider implementations.
+   *
+   * At buildApp() time, every hook in this Map is validated against the
+   * P5-01 BLOCK invariants: `on_timeout`, `timeout_ms`, `max_chars` MUST
+   * be set with valid values — missing/invalid throws HookConfigError
+   * synchronously during boot. The type union already forces `on_timeout`
+   * to be `'fail-open' | 'fail-closed'`, but the runtime validator catches
+   * operators who construct hooks dynamically from JSON / YAML / env that
+   * the TypeScript checker never saw.
+   */
+  preCompletionHooks?: Map<string, PreCompletionHook[]>;
 }
 
 /**
@@ -300,6 +329,45 @@ export interface BuildAppOpts {
 export const POSTGRES_PROBE_URL = 'postgres://pool';
 
 export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
+  // Phase 18 (v0.11.0 — P5-01 BLOCK / RETR-03): validate every registered hook
+  // declares on_timeout + timeout_ms + max_chars. Missing/invalid fields throw
+  // HookConfigError synchronously — the startup crash IS the signal. No implicit
+  // defaults: operators who construct hooks dynamically from JSON/YAML/env that
+  // the TypeScript checker never saw get a loud failure at boot rather than a
+  // silent fail-closed on the first request. The type union enforces this
+  // statically when the hook is built from a literal; this validator covers the
+  // dynamic construction path.
+  if (opts.preCompletionHooks) {
+    for (const [routeKey, hooks] of opts.preCompletionHooks) {
+      for (const hook of hooks) {
+        if (hook.on_timeout !== 'fail-open' && hook.on_timeout !== 'fail-closed') {
+          throw new HookConfigError(
+            hook.name ?? '<unnamed-hook>',
+            `on_timeout is required and must be 'fail-open' or 'fail-closed' (got: ${JSON.stringify(
+              (hook as { on_timeout?: unknown }).on_timeout,
+            )}; routeKey: ${routeKey})`,
+          );
+        }
+        if (typeof hook.timeout_ms !== 'number' || hook.timeout_ms <= 0) {
+          throw new HookConfigError(
+            hook.name ?? '<unnamed-hook>',
+            `timeout_ms is required and must be a positive number (got: ${JSON.stringify(
+              (hook as { timeout_ms?: unknown }).timeout_ms,
+            )}; routeKey: ${routeKey})`,
+          );
+        }
+        if (typeof hook.max_chars !== 'number' || hook.max_chars <= 0) {
+          throw new HookConfigError(
+            hook.name ?? '<unnamed-hook>',
+            `max_chars is required and must be a positive number (got: ${JSON.stringify(
+              (hook as { max_chars?: unknown }).max_chars,
+            )}; routeKey: ${routeKey})`,
+          );
+        }
+      }
+    }
+  }
+
   const app = Fastify({
     logger: opts.loggerOpts ?? loggerOptions, // pass OPTIONS, not an instance — Fastify v5 contract
     bodyLimit: 8 * 1024 * 1024, // 8 MB; Phase 4 vision blows past 1 MB easily
@@ -732,6 +800,27 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
   // flush land before SIGTERM hardstops. Compose's default stop_grace_period
   // is 10s, so 3s fits comfortably.
   //
+  // Phase 18 (v0.11.0 — MCPC-01..06): MCP client registry SIGTERM shutdown.
+  // disposeAll closes every per-alias transport with a 5s Promise.race ceiling
+  // (registry.ts:411 — mirrors Phase 15 shutdownSessions). Registered BEFORE
+  // the main onClose hook below so Fastify v5's FIFO hook order calls dispose
+  // FIRST — that way each per-alias dispose can DEL its `mcp:tools:{alias}`
+  // Valkey cache key while the Valkey client is still connected. If we
+  // registered after the main hook, closeValkey() would have already shut down
+  // Valkey and the DEL would no-op + warn-log (registry.ts:378 catches it).
+  if (opts.mcpClientRegistry) {
+    app.addHook('onClose', async () => {
+      try {
+        await opts.mcpClientRegistry!.disposeAll();
+      } catch (err) {
+        app.log.warn(
+          { err, event: 'mcp_client_dispose_all_failed' },
+          'MCP client registry disposeAll() rejected at shutdown',
+        );
+      }
+    });
+  }
+
   // Phase 8 (DATA-06): closeValkey runs BETWEEN usageDailyScheduler.stop() and
   // bufferedWriter.drain(). Rationale: a Valkey write from an in-flight request
   // (breaker state, rate-limit INCR, idempotency SETNX) should flush BEFORE the
@@ -889,14 +978,24 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
     breaker,
     breakerCooldownSec,
     idempotency,
-    // Phase 10 (v0.10.0 — JSON-06): inject just the counter the route needs.
-    metrics: { jsonValidationTotal: opts.metrics.jsonValidationTotal },
+    // Phase 10 (JSON-06) + Phase 18 (RETR-02 / MCPC-04): inject the narrow
+    // metric slice the route consumes — json validation counter + hook
+    // duration histogram + external MCP tool-call counter.
+    metrics: {
+      jsonValidationTotal: opts.metrics.jsonValidationTotal,
+      routerHookDurationMs: opts.metrics.routerHookDurationMs,
+      routerMcpToolCallsExternalTotal: opts.metrics.routerMcpToolCallsExternalTotal,
+    },
     // Phase 17 (v0.11.0 — SESS-01..06 / CTXP-01..03 / SUMP-02): pass-through.
     // When opts.sessionStore is undefined the route is byte-identical to
     // Phase 16 (SESS-06 stateless contract — all three are optional).
     sessionStore: opts.sessionStore,
     contextProvider: opts.contextProvider,
     summaryProvider: opts.summaryProvider,
+    // Phase 18 (v0.11.0 — MCPC-01..06 + RETR-02..06): pass-through. When both
+    // are undefined the route's helper is a no-op (byte-identical to Phase 17).
+    mcpClientRegistry: opts.mcpClientRegistry,
+    preCompletionHooks: opts.preCompletionHooks,
   });
 
   // Plan 04-02 (ANTHR-02, ANTHR-03, ANTHR-04, ANTHR-05):
@@ -915,6 +1014,14 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
     sessionStore: opts.sessionStore,
     contextProvider: opts.contextProvider,
     summaryProvider: opts.summaryProvider,
+    // Phase 18 (v0.11.0 — MCPC-01..06 + RETR-02..06): same wiring as
+    // chat-completions; the helper + tool-loop are identical across routes.
+    metrics: {
+      routerHookDurationMs: opts.metrics.routerHookDurationMs,
+      routerMcpToolCallsExternalTotal: opts.metrics.routerMcpToolCallsExternalTotal,
+    },
+    mcpClientRegistry: opts.mcpClientRegistry,
+    preCompletionHooks: opts.preCompletionHooks,
   });
   registerCountTokensRoute(app, { registry: opts.registry });
 
@@ -984,6 +1091,13 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
     sessionStore: opts.sessionStore,
     contextProvider: opts.contextProvider,
     summaryProvider: opts.summaryProvider,
+    // Phase 18 (v0.11.0 — MCPC-01..06 + RETR-02..06): same wiring.
+    metrics: {
+      routerHookDurationMs: opts.metrics.routerHookDurationMs,
+      routerMcpToolCallsExternalTotal: opts.metrics.routerMcpToolCallsExternalTotal,
+    },
+    mcpClientRegistry: opts.mcpClientRegistry,
+    preCompletionHooks: opts.preCompletionHooks,
   });
 
   // Plan 05-04 — start the usage_daily scheduler last, after all routes are

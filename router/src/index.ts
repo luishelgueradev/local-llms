@@ -16,6 +16,10 @@ import { installGlobalBackendDispatcher } from './backends/http-dispatcher.js';
 import { PostgresSessionStore } from './providers/postgres-session-store.js';
 import { DefaultContextProvider } from './providers/context-provider.js';
 import { NoopSummaryProvider } from './providers/summary-provider.js';
+// Phase 18 (v0.11.0 — MCPC-01..06 + RETR-02..06): production-wired MCP client registry
+// + EMPTY pre-completion hooks map (Frame-01 BLOCK — no retrievers in production).
+import { makeMcpClientRegistry } from './mcp/client/registry.js';
+import type { PreCompletionHook } from './hooks/pre-completion.js';
 
 /**
  * Plan 08-02 (CLOUD-01 + D-A2) — refuses boot when the registry declares any
@@ -174,6 +178,47 @@ async function main(): Promise<void> {
     'Phase 17 providers initialized — sessionStore + contextProvider (DefaultSlidingWindow) + summaryProvider (Noop)',
   );
 
+  // Phase 18 (v0.11.0 — MCPC-01..06): MCP client registry. Lazy connect —
+  // boot proceeds even when external MCP servers are unreachable (P2-01
+  // BLOCK). tools/list cached 60s in Valkey under `mcp:tools:{alias}`.
+  // Construction takes the snapshot of `initialRegistry.mcp_servers` —
+  // hot-reload (below) calls dispose() on changed/removed aliases.
+  const initialRegistrySnapshot = registry.get();
+  const mcpClientRegistry = makeMcpClientRegistry({
+    servers: new Map(
+      (initialRegistrySnapshot.mcp_servers ?? []).map((s) => [s.alias, s]),
+    ),
+    valkey, // optional inside the registry; absent → re-fetch every time
+    logger: bootLog.child({ subsystem: 'mcp_client' }),
+    cacheTtlSec: 60, // MCPC-06 — 60-second tools/list TTL
+  });
+
+  // Phase 18 (v0.11.0 — RETR-02/03 + Frame-01 BLOCK): pre-completion hooks
+  // are declared in CODE, never in YAML. Production wiring ships ZERO hooks —
+  // the strategic frame "Retrieval Interfaces, not Retrieval Logic" is
+  // enforced here: operators extend this Map locally to register their own
+  // RetrieverProvider implementations. The grep gate (no-default-retriever.test.ts)
+  // continues to pass because router/src/ does not contain any RetrieverProvider
+  // implementation — only the type contract.
+  //
+  // Example downstream wiring (NOT in production code):
+  //   preCompletionHooks.set('/v1/chat/completions', [{
+  //     name: 'doc_retrieval',
+  //     retriever: new MyRagRetriever({ ... }),
+  //     timeout_ms: 2000,
+  //     on_timeout: 'fail-open',
+  //     max_chars: 4000,
+  //   }]);
+  const preCompletionHooks: Map<string, PreCompletionHook[]> = new Map();
+
+  bootLog.info(
+    {
+      mcpServerCount: initialRegistrySnapshot.mcp_servers?.length ?? 0,
+      hookCount: 0,
+    },
+    'Phase 18 providers initialized — mcpClientRegistry + empty preCompletionHooks (Frame-01: production ships no retrievers)',
+  );
+
   const app = await buildApp({
     registry,
     bearerToken: env.ROUTER_BEARER_TOKEN,
@@ -189,6 +234,11 @@ async function main(): Promise<void> {
     sessionStore,
     contextProvider,
     summaryProvider,
+    // Phase 18 (v0.11.0): production-wired MCP client registry + EMPTY hooks Map.
+    // Frame-01 BLOCK is structurally enforced here — the Map is `new Map()`
+    // (literal empty). Operators add hook implementations downstream.
+    mcpClientRegistry,
+    preCompletionHooks,
     // Plan 08-02 (CLOUD-01) — pre-bind OLLAMA_API_KEY into the AdapterFactory
     // closure. Empty string when the operator runs local-only — assertCloudEnvIfConfigured
     // (above) refused to boot if cloud entries existed without a real key.
@@ -219,6 +269,16 @@ async function main(): Promise<void> {
   // Desktop bind-mount flakiness via env. Default false (event-based fs.watch).
   const usePolling = process.env.MODELS_YAML_WATCH === 'poll';
   if (usePolling) app.log.info('registry hot-reload: polling fallback enabled (MODELS_YAML_WATCH=poll)');
+
+  // Phase 18 (v0.11.0 — MCPC-06 cache-invalidation): capture the
+  // mcp_servers snapshot at construction-time so the hot-reload `onReload`
+  // callback can diff against `next.mcp_servers` and dispose changed/removed
+  // aliases. Closure-scoped `let` so the previous snapshot updates after each
+  // successful reload. (Plan 18-04's registry exposes dispose(alias) — DELs
+  // the Valkey cache key + closes the transport.)
+  let previousMcpServers = new Map(
+    (initialRegistrySnapshot.mcp_servers ?? []).map((s) => [s.alias, s]),
+  );
 
   const watcher = watchRegistry(env.MODELS_YAML_PATH, registry, {
     debounceMs: 250,
@@ -277,6 +337,36 @@ async function main(): Promise<void> {
       // restart. `pool` is in closure scope from the outer-scope `const pool` above.
       const urls = pool ? [...backendUrls, POSTGRES_PROBE_URL] : backendUrls;
       app.liveness.start(urls);
+
+      // Phase 18 (v0.11.0 — MCPC-06): hot-reload cache invalidation for
+      // MCP client tools/list. Diff `previousMcpServers` against
+      // `next.mcp_servers` and dispose any alias that was REMOVED or whose
+      // config CHANGED. dispose() DELs the Valkey cache key + closes the
+      // transport — the next request for that alias will reconnect against
+      // the new config. Added aliases need no action: they connect lazily on
+      // first request (P2-01).
+      //
+      // Resolves the user-memory friction-point (project_models_yaml_hot_edit.md):
+      // operators no longer need to manually DEL the cache + `up -d --force-recreate`
+      // the router after editing mcp_servers in models.yaml.
+      const nextMcpServers = new Map(
+        (next.mcp_servers ?? []).map((s) => [s.alias, s]),
+      );
+      for (const [alias, cfg] of previousMcpServers) {
+        const nextCfg = nextMcpServers.get(alias);
+        if (!nextCfg || JSON.stringify(nextCfg) !== JSON.stringify(cfg)) {
+          // Fire-and-forget — dispose() is best-effort + warn-logs on its own.
+          // Awaiting here would block the synchronous onReload contract.
+          void mcpClientRegistry.dispose(alias).catch((err: unknown) => {
+            app.log.warn(
+              { err, alias, event: 'mcp_client_hot_reload_dispose_failed' },
+              'MCP client dispose() on hot-reload rejected',
+            );
+          });
+        }
+      }
+      previousMcpServers = nextMcpServers;
+
       // IN-01 (03-REVIEW.md): semaphoreMap is NOT rebuilt here. It is built once
       // at buildApp() time from the initial registry snapshot (app.ts). Within Phase 3
       // this is safe because the zod schema restricts backend to ['ollama', 'llamacpp']
