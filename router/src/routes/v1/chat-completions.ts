@@ -489,7 +489,15 @@ export function registerChatCompletionsRoute(
         if (recorded) return;
         recorded = true;
         req.__recorded = true; // suppress app.setErrorHandler from also recording
-        opts.recordOutcome(ctx);
+        // Phase 18 (v0.11.0 — RETR-04 / P5-05): forward req.hookLog into the
+        // outcome row so the buffered writer can persist it in
+        // request_log.hook_log JSONB. Empty array → undefined (NULL column —
+        // "no hooks ran" is distinct from "an empty chain ran"). Caller may
+        // also override ctx.hookLog explicitly; req.hookLog is the default
+        // source.
+        const hookLogForRow =
+          req.hookLog && req.hookLog.length > 0 ? req.hookLog : undefined;
+        opts.recordOutcome({ hookLog: hookLogForRow, ...ctx });
       };
 
       // Captured by both catch + finally so safeRecord can know whether to

@@ -508,7 +508,12 @@ export function registerResponsesRoute(
         if (recorded) return;
         recorded = true;
         req.__recorded = true;
-        opts.recordOutcome(ctx);
+        // Phase 18 (v0.11.0 — RETR-04 / P5-05): forward req.hookLog into the
+        // outcome row → request_log.hook_log JSONB. Empty array → undefined
+        // (NULL column — "no hooks ran" is distinct from "empty chain ran").
+        const hookLogForRow =
+          req.hookLog && req.hookLog.length > 0 ? req.hookLog : undefined;
+        opts.recordOutcome({ hookLog: hookLogForRow, ...ctx });
       };
 
       let caughtErr: Error | undefined;

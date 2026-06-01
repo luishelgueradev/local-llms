@@ -105,6 +105,17 @@ export interface OutcomeContext {
    * response header (both derived from the same source).
    */
   costCents?: string;
+  /**
+   * Phase 18 (v0.11.0 — RETR-04 / P5-05): per-hook audit entries gathered
+   * by runHookChain during pre-completion. Stashed by the route on req.hookLog
+   * and forwarded here so the buffered writer can persist them in
+   * `request_log.hook_log` (JSONB, migration 0007). SHA256-hashed content
+   * ONLY — never the full retrieved text (P5-05 BLOCK privacy invariant).
+   *
+   * Undefined when no hook ran for this request → column persists as NULL
+   * (distinct from an empty array, which would imply an empty chain ran).
+   */
+  hookLog?: import('../hooks/pre-completion.js').HookLogEntry[];
   timestamp: Date;
 }
 
@@ -293,6 +304,10 @@ export function makeRecordRequestOutcome(deps: RecordRequestOutcomeDeps) {
       // doesn't have the registry entry in scope and the route's onSend hook
       // needs the same value to stamp X-Cost-Cents.
       cost_cents: ctx.costCents ?? null,
+      // Phase 18 (v0.11.0 — RETR-04 / P5-05): hook audit JSONB. Undefined →
+      // null column ("no hooks ran"); explicit empty array → empty JSONB
+      // (an empty chain DID run, distinct from no chain at all).
+      hook_log: (ctx.hookLog as unknown as RequestLogInsert['hook_log']) ?? null,
     };
     bufferedWriter.push(row);
   };
