@@ -100,17 +100,17 @@ Phase 18 candidate. The retrieval seam — interface only, no logic.
 
 Phase 19 candidate. Extract existing capability into a named interface.
 
-- [ ] **EMBP-01**: A TypeScript interface `EmbeddingProvider` is exported with `embed(input, opts) → { embeddings, model, usage }`; the interface is exposed via `fastify.decorate('embeddingProvider', ...)` so `RetrieverProvider` implementations can depend on it without HTTP round-tripping.
-- [ ] **EMBP-02**: The existing `/v1/embeddings` route delegates to `EmbeddingProvider` under the hood; wire shape, dims enforcement, Valkey cache (v0.10.0 Phase 12), and `X-Cost-Cents` emission are unchanged (verified by regression suite).
+- [x] **EMBP-01**: A TypeScript interface `EmbeddingProvider` is exported with `embed(input, opts) → { embeddings, model, usage }`; the interface is exposed via `fastify.decorate('embeddingProvider', ...)` so `RetrieverProvider` implementations can depend on it without HTTP round-tripping.
+- [x] **EMBP-02**: The existing `/v1/embeddings` route delegates to `EmbeddingProvider` under the hood; wire shape, dims enforcement, Valkey cache (v0.10.0 Phase 12), and `X-Cost-Cents` emission are unchanged (verified by regression suite).
 
 ### Observability hardening (OBSV)
 
 Phase 19 candidate. Smoke coverage + cardinality CI + production-grade docs.
 
-- [ ] **OBSV-01**: `bin/smoke-test-router.sh` gains new sections covering MCP host (`/mcp` initialize + tools/list + tools/call for `list_models`), `/v1/responses` streaming with and without tools, and SessionStore round-trip; live tunnel run prints PASS/FAIL summary.
-- [ ] **OBSV-02**: A new CI check `scripts/check-prometheus-cardinality.ts` parses the live `/metrics` output and FAILS if any label contains an `_id` suffix (cardinality guard against accidental tenant_id/agent_id label addition).
-- [ ] **OBSV-03**: `README.md` and `DEPLOY.md` are updated to document: MCP host endpoint + tools + auth · MCP client config (`mcp_servers:`) · session lifecycle and `X-Session-ID` · pre-completion hook registration · policy stanza (`model_allowlist`, `cloud_allowed`) · tenant/project/agent ID headers.
-- [ ] **OBSV-04**: A new Drizzle migration 0007 adds the `hook_log` JSONB column on `request_log` if not already added in Phase 18 (this REQ provides the safety net for migration ordering across phases).
+- [x] **OBSV-01**: `bin/smoke-test-router.sh` gains new sections covering MCP host (`/mcp` initialize + tools/list + tools/call for `list_models`), `/v1/responses` streaming with and without tools, and SessionStore round-trip; live tunnel run prints PASS/FAIL summary.
+- [x] **OBSV-02**: A new CI check `scripts/check-prometheus-cardinality.ts` parses the live `/metrics` output and FAILS if any label contains an `_id` suffix (cardinality guard against accidental tenant_id/agent_id label addition).
+- [x] **OBSV-03**: `README.md` and `DEPLOY.md` are updated to document: MCP host endpoint + tools + auth · MCP client config (`mcp_servers:`) · session lifecycle and `X-Session-ID` · pre-completion hook registration · policy stanza (`model_allowlist`, `cloud_allowed`) · tenant/project/agent ID headers.
+- [x] **OBSV-04**: A new Drizzle migration 0007 adds the `hook_log` JSONB column on `request_log` if not already added in Phase 18 (this REQ provides the safety net for migration ordering across phases).
 
 ## Future Requirements
 
@@ -220,20 +220,21 @@ The roadmap and plan-phase agents must reject any task that would:
 | RETR-04 | Phase 18 | Complete |
 | RETR-05 | Phase 18 | Complete |
 | RETR-06 | Phase 18 | Complete |
-| EMBP-01 | Phase 19 | Pending |
-| EMBP-02 | Phase 19 | Pending |
-| OBSV-01 | Phase 19 | Pending |
-| OBSV-02 | Phase 19 | Pending |
-| OBSV-03 | Phase 19 | Pending |
-| OBSV-04 | Phase 19 | Pending |
+| EMBP-01 | Phase 19 | Complete |
+| EMBP-02 | Phase 19 | Complete |
+| OBSV-01 | Phase 19 | Complete |
+| OBSV-02 | Phase 19 | Complete |
+| OBSV-03 | Phase 19 | Complete |
+| OBSV-04 | Phase 19 | Complete (re-verifies Phase 18 Plan 18-02 migration 0007) |
 
 **Coverage:**
-- v0.11.0 requirements: 48 total | Complete: 42 (POL × 6 + MCPS × 6 + RESS × 5 + SESS × 6 + CTXP × 4 + SUMP × 3 + MCPC × 6 + RETR × 6) | Pending: 6 (EMBP × 2 + OBSV × 4)
+- v0.11.0 requirements: 48 total | Complete: 48 (POL × 6 + MCPS × 6 + RESS × 5 + SESS × 6 + CTXP × 4 + SUMP × 3 + MCPC × 6 + RETR × 6 + EMBP × 2 + OBSV × 4) | Pending: 0
 - Mapped to phases (finalized by ROADMAP.md 2026-05-29): 48/48
 - Unmapped: 0 ✓
 
 ---
 *Requirements defined: 2026-05-29*
+*Last updated: 2026-06-01 — Phase 19 SHIPPED; EMBP-01..02 + OBSV-01..04 closed (Plans 19-01..19-07). v0.11.0 COMPLETE.*
 *Last updated: 2026-06-01 — Phase 18 SHIPPED; MCPC-01..06 + RETR-01..06 closed (Plans 18-01..18-08).*
 *Last updated: 2026-06-01 — Phase 17 SHIPPED; SESS-01..06 + CTXP-01..04 + SUMP-01..03 closed (Plans 17-01..17-07).*
 *Last updated: 2026-05-30 — POL-01 wording patched per D-03 (top-level policies block).*

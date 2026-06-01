@@ -1,24 +1,24 @@
 # Roadmap: local-llms
 
-**Coverage:** 76/76 v1 requirements shipped in v0.9.0 · 26/26 v0.10.0 requirements shipped · 48/48 v0.11.0 requirements mapped
-**Status:** v0.11.0 "Retrieval-Ready Infrastructure" — in planning.
+**Coverage:** 76/76 v1 requirements shipped in v0.9.0 · 26/26 v0.10.0 requirements shipped · 48/48 v0.11.0 requirements complete
+**Status:** v0.11.0 "Retrieval-Ready Infrastructure" — SHIPPED 2026-06-01. All 6 phases + 48 requirements complete.
 
 ## Milestones
 
 - ✅ **v0.9.0 MVP** — Router multi-backend con cloud fallback + observability + ops · Phases 1-9 · shipped 2026-05-28 · 9 phases, 55 plans, 112 tasks · [archive](./milestones/v0.9.0-ROADMAP.md) · [requirements](./milestones/v0.9.0-REQUIREMENTS.md) · [audit](./milestones/v0.9.0-MILESTONE-AUDIT.md)
 - ✅ **v0.10.0 Cognitive Primitives** — Structured outputs · Reranker · Embeddings hardening · Cost obs + Responses API · Phases 10-13 · shipped 2026-05-29 · 4 phases (freeform single-shot pattern), 26 requirements · [archive](./milestones/v0.10.0-ROADMAP.md) · [requirements](./milestones/v0.10.0-REQUIREMENTS.md) · [audit](./milestones/v0.10.0-MILESTONE-AUDIT.md)
-- 🚧 **v0.11.0 Retrieval-Ready Infrastructure** — MCP-as-server/client · `/v1/responses` streaming + tools · SessionStore/ContextProvider/SummaryProvider · RetrieverProvider + pre-completion hook · EmbeddingProvider interface · Policy primitives · Phases 14-19
+- ✅ **v0.11.0 Retrieval-Ready Infrastructure** — MCP-as-server/client · `/v1/responses` streaming + tools · SessionStore/ContextProvider/SummaryProvider · RetrieverProvider + pre-completion hook · EmbeddingProvider interface · Policy primitives · Phases 14-19 · shipped 2026-06-01 · 6 phases, 47 plans, 48 requirements
 
 ## Phases
 
 ### v0.11.0 Retrieval-Ready Infrastructure (Phases 14–19)
 
-- [ ] **Phase 14: Policy Primitives + Tenant/Project ID Foundation** — Additive zero-dep policy gate + tenant/project ID headers in logs and request_log; every later phase inherits correct observability context from this foundation.
+- [x] **Phase 14: Policy Primitives + Tenant/Project ID Foundation** ✅ 2026-05-30 — Additive zero-dep policy gate + tenant/project ID headers in logs and request_log; every later phase inherits correct observability context from this foundation.
 - [x] **Phase 15: MCP Host (Router as MCP Server)** — Router exposes five MCP tools (chat, embeddings, rerank, responses, list_models) over Streamable HTTP at `/mcp`; any MCP-compatible client can consume the router as a tool server.
 - [x] **Phase 16: `/v1/responses` Streaming + Tool Calls** ✅ 2026-05-31 — Full Responses API streaming with `OutputItemStateMachine`, tool-call events, and `response.completed` always last; closes v0.10.0 streaming debt.
 - [x] **Phase 17: SessionStore + ContextProvider + SummaryProvider** ✅ 2026-06-01 — Postgres-backed sessions + ContextProvider sliding-window + NoopSummaryProvider all wired through `buildApp` in `router/src/index.ts`; SESS/CTXP/SUMP 13 requirements closed.
 - [x] **Phase 18: MCP Client + RetrieverProvider + Pre-Completion Hook** ✅ 2026-06-01 — Generic MCP client (lazy connect, `{alias}__{tool}` namespace prefix, 60s Valkey `tools/list` cache), RetrieverProvider interface + pre-completion hook seam with explicit fail-open/closed (P5-01 BLOCK), hook_log JSONB audit (SHA256-only — P5-05), production `preCompletionHooks` Map literal-empty (Frame-01 BLOCK enforced by grep gate); 12 REQs closed across provider + route + production composition + smoke + docs.
-- [ ] **Phase 19: EmbeddingProvider Formalization + Observability Hardening** — EmbeddingProvider interface extracted, all new surfaces covered by smoke tests and Prometheus metrics, cardinality CI guard, docs updated.
+- [x] **Phase 19: EmbeddingProvider Formalization + Observability Hardening** ✅ 2026-06-01 — All new v0.11.0 surfaces covered by smoke + Prometheus metrics; cardinality CI guard enforced live; README/DEPLOY reflect full v0.11.0 surface.
 
 <details>
 <summary>✅ v0.10.0 Cognitive Primitives (Phases 10-13) — SHIPPED 2026-05-29</summary>
@@ -276,27 +276,27 @@ Plans:
 4. A caller can call `fastify.embeddingProvider.embed(input, opts)` directly (Fastify decorator injected) and receive the same embedding output as `POST /v1/embeddings` — verified by unit test asserting interface conformance (EMBP-01); the `/v1/embeddings` wire shape is byte-identical to pre-Phase-19 (EMBP-02 regression).
 5. Vitest full suite passes with 0 failures; `tsc --noEmit` reports 0 errors.
 
-**Plans:** 6/7 plans executed
+**Plans:** 7/7 plans complete
 
 Plans:
 **Wave 1**
 
-- [x] 19-01-PLAN.md — Wave 0 scaffold (2 test placeholders + tests/fakes.ts makeFakeEmbeddingProvider + src/types/fastify.d.ts augmentation) [EMBP-01, OBSV-02]
-- [x] 19-02-PLAN.md — EmbeddingProvider interface + makeOpenAIEmbeddingProvider factory (Frame-01 — object literal, not class); cache + dims + base64-decode moved INTO provider [EMBP-01]
+- [x] 19-01-PLAN.md — Wave 0 scaffold (2 test placeholders + tests/fakes.ts makeFakeEmbeddingProvider + src/types/fastify.d.ts augmentation) [EMBP-01, OBSV-02] — SHIPPED 2026-06-01
+- [x] 19-02-PLAN.md — EmbeddingProvider interface + makeOpenAIEmbeddingProvider factory (Frame-01 — object literal, not class); cache + dims + base64-decode moved INTO provider [EMBP-01] — SHIPPED 2026-06-01
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [x] 19-03-PLAN.md — /v1/embeddings route delegates to provider; P7-01 SHA-256 baseline atomically rotated in the SAME commit (D-24 — never split) [EMBP-02]
-- [x] 19-04-PLAN.md — Composition-root construction in router/src/index.ts + BuildAppOpts widening + app.decorate('embeddingProvider') in router/src/app.ts [EMBP-01]
-- [x] 19-05-PLAN.md — checkCardinalityLive parser + dual-mode CLI (--source | --live) + CI integration test (in-band /metrics scrape) [OBSV-02]
+- [x] 19-03-PLAN.md — /v1/embeddings route delegates to provider; P7-01 SHA-256 baseline atomically rotated in the SAME commit (D-24 — never split) [EMBP-02] — SHIPPED 2026-06-01
+- [x] 19-04-PLAN.md — Composition-root construction in router/src/index.ts + BuildAppOpts widening + app.decorate('embeddingProvider') in router/src/app.ts [EMBP-01] — SHIPPED 2026-06-01
+- [x] 19-05-PLAN.md — checkCardinalityLive parser + dual-mode CLI (--source | --live) + CI integration test (in-band /metrics scrape) [OBSV-02] — SHIPPED 2026-06-01
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [x] 19-06-PLAN.md — Smoke Phase 19 section: OBSV-02-LIVE + RESS-WITH-TOOLS (gpt-oss:20b-cloud, soft-skip on missing OLLAMA_API_KEY) + 4 cite lines [OBSV-01, OBSV-02]
+- [x] 19-06-PLAN.md — Smoke Phase 19 section: OBSV-02-LIVE + RESS-WITH-TOOLS (gpt-oss:20b-cloud, soft-skip on missing OLLAMA_API_KEY) + 4 cite lines [OBSV-01, OBSV-02] — SHIPPED 2026-06-01
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
-- [ ] 19-07-PLAN.md — OBSV-03 docs (DEPLOY + README EmbeddingProvider sections + v0.11.0 SHIPPED banner) + OBSV-04 re-verify describe block (extend 0007-hook-log.test.ts — D-22 NO new migration) + STATE/ROADMAP/REQUIREMENTS milestone wrap-up [OBSV-03, OBSV-04]
+- [x] 19-07-PLAN.md — OBSV-03 docs (DEPLOY + README EmbeddingProvider sections + v0.11.0 SHIPPED banner) + OBSV-04 re-verify describe block (extend 0007-hook-log.test.ts — D-22 NO new migration) + STATE/ROADMAP/REQUIREMENTS milestone wrap-up [OBSV-03, OBSV-04] — SHIPPED 2026-06-01
 
 ---
 
@@ -309,7 +309,7 @@ Plans:
 | 16. /v1/responses Streaming + Tool Calls | 4/4 | Complete   | 2026-05-31 |
 | 17. SessionStore + ContextProvider + SummaryProvider | 7/7 | Complete    | 2026-06-01 |
 | 18. MCP Client + RetrieverProvider + Pre-Completion Hook | 8/8 | Complete    | 2026-06-01 |
-| 19. EmbeddingProvider Formalization + Observability Hardening | 6/7 | In Progress|  |
+| 19. EmbeddingProvider Formalization + Observability Hardening | 7/7 | Complete | 2026-06-01 |
 
 ---
 
