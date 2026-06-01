@@ -258,17 +258,16 @@ Plans:
 4. A caller can call `fastify.embeddingProvider.embed(input, opts)` directly (Fastify decorator injected) and receive the same embedding output as `POST /v1/embeddings` — verified by unit test asserting interface conformance (EMBP-01); the `/v1/embeddings` wire shape is byte-identical to pre-Phase-19 (EMBP-02 regression).
 5. Vitest full suite passes with 0 failures; `tsc --noEmit` reports 0 errors.
 
-**Plans:** 7/8 plans complete
+**Plans:** 7 plans
 
 Plans:
-- [x] 18-01-PLAN.md — Wave 0 scaffold (22+ test files + MSW MCP fixture + tests/fakes.ts extension) [MCPC-01..06 + RETR-01..06]
-- [x] 18-02-PLAN.md — Migration 0007 indivisible tuple (SQL + Drizzle + journal idx=7 + barrel) + 4 envelope errors + 2 Prometheus metrics + registry Zod widening + models.yaml stanza [MCPC-01, MCPC-04, MCPC-05, RETR-03, RETR-04]
-- [x] 18-03-PLAN.md — RetrieverProvider interface + inject.ts (P5-03 fence) + sanitize.ts (P2-03) + prefix.ts (MCPC-03) + barrels [RETR-01, RETR-05, MCPC-03]
-- [x] 18-04-PLAN.md — McpClientRegistry impl + transport.ts + Valkey cache + sanitize-on-ingest + dispose lifecycle [MCPC-01..03, MCPC-05, MCPC-06]
-- [x] 18-05-PLAN.md — runMcpToolLoop + MCP_TOOL_LOOP_MAX=10 + abort propagation [MCPC-04]
-- [x] 18-06-PLAN.md — runHookChain + Promise.race timeout helper + SHA256 hook_log producer + redactBearer [RETR-02, RETR-03, RETR-04, RETR-05, RETR-06]
-- [x] 18-07-PLAN.md — Three-route wire-up via shared helper + BuildAppOpts widening + boot-time HookConfigError validator + production composition root (empty preCompletionHooks Map — Frame-01) + onSwap hot-reload + SIGTERM disposeAll [all 12 REQs] — SHIPPED 2026-06-01
-- [ ] 18-08-PLAN.md — Smoke MCP-CLIENT + HOOK section + DEPLOY/README docs + STATE/ROADMAP/REQUIREMENTS wrap-up + final phase gate [all 12 REQs verified-by]
+- [ ] 19-01-PLAN.md — Wave 0 scaffold (2 test placeholders + tests/fakes.ts makeFakeEmbeddingProvider + src/types/fastify.d.ts augmentation) [EMBP-01, OBSV-02]
+- [ ] 19-02-PLAN.md — EmbeddingProvider interface + makeOpenAIEmbeddingProvider factory (Frame-01 — object literal, not class); cache + dims + base64-decode moved INTO provider [EMBP-01]
+- [ ] 19-03-PLAN.md — /v1/embeddings route delegates to provider; P7-01 SHA-256 baseline atomically rotated in the SAME commit (D-24 — never split) [EMBP-02]
+- [ ] 19-04-PLAN.md — Composition-root construction in router/src/index.ts + BuildAppOpts widening + app.decorate('embeddingProvider') in router/src/app.ts [EMBP-01]
+- [ ] 19-05-PLAN.md — checkCardinalityLive parser + dual-mode CLI (--source | --live) + CI integration test (in-band /metrics scrape) [OBSV-02]
+- [ ] 19-06-PLAN.md — Smoke Phase 19 section: OBSV-02-LIVE + RESS-WITH-TOOLS (gpt-oss:20b-cloud, soft-skip on missing OLLAMA_API_KEY) + 4 cite lines [OBSV-01, OBSV-02]
+- [ ] 19-07-PLAN.md — OBSV-03 docs (DEPLOY + README EmbeddingProvider sections + v0.11.0 SHIPPED banner) + OBSV-04 re-verify describe block (extend 0007-hook-log.test.ts — D-22 NO new migration) + STATE/ROADMAP/REQUIREMENTS milestone wrap-up [OBSV-03, OBSV-04]
 
 ---
 
@@ -281,7 +280,7 @@ Plans:
 | 16. /v1/responses Streaming + Tool Calls | 4/4 | Complete   | 2026-05-31 |
 | 17. SessionStore + ContextProvider + SummaryProvider | 7/7 | Complete    | 2026-06-01 |
 | 18. MCP Client + RetrieverProvider + Pre-Completion Hook | 8/8 | Complete    | 2026-06-01 |
-| 19. EmbeddingProvider Formalization + Observability Hardening | 0/TBD | Not started | - |
+| 19. EmbeddingProvider Formalization + Observability Hardening | 0/7 | Planned     | - |
 
 ---
 
