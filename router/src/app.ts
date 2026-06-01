@@ -52,7 +52,9 @@ import type { SummaryProvider } from './providers/summary-provider.js';
 import { countTokens } from './translation/count-tokens.js';
 import { closeValkey, type ValkeyClient } from './clients/valkey.js';
 import { mcpHostPlugin } from './mcp/host/index.js';
-import { makeEmbeddingsCache } from './embeddings/cache.js';
+// Phase 19 (v0.11.0 — EMBP-01 / D-06): per-input Valkey cache construction
+// removed from buildApp — the provider factory (providers/embedding-provider.ts)
+// owns it. Route no longer receives a pre-built EmbeddingsCache from buildApp.
 import { makeCircuitBreaker, type CircuitBreaker } from './resilience/circuitBreaker.js';
 import {
   makeIdempotencyMultiplexer,
@@ -62,6 +64,8 @@ import { HookConfigError, RateLimitExceededError } from './errors/envelope.js';
 // Phase 18 (v0.11.0 — MCPC-01..06 + RETR-02..06): MCP client registry + hook map.
 import type { McpClientRegistry } from './mcp/client/registry.js';
 import type { PreCompletionHook } from './hooks/pre-completion.js';
+// Phase 19 (v0.11.0 — EMBP-01 / D-10): EmbeddingProvider type for BuildAppOpts widening.
+import type { EmbeddingProvider } from './providers/embedding-provider.js';
 import type { Env } from './config/env.js';
 import type { Logger } from 'pino';
 
@@ -319,6 +323,15 @@ export interface BuildAppOpts {
    * the TypeScript checker never saw.
    */
   preCompletionHooks?: Map<string, PreCompletionHook[]>;
+  /**
+   * Phase 19 (v0.11.0 — EMBP-01 / D-10): optional EmbeddingProvider. When
+   * provided, buildApp registers it as a Fastify decorator (fastify.embeddingProvider)
+   * so future RetrieverProvider implementations can call .embed() without HTTP
+   * round-tripping. When undefined (test fixtures), the /v1/embeddings route falls
+   * back to opts.embeddingProvider injected directly via RegisterEmbeddingsOpts.
+   * Production composition (index.ts) always passes a real provider.
+   */
+  embeddingProvider?: EmbeddingProvider;
 }
 
 /**
@@ -720,6 +733,15 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
   // without a Valkey client — they exercise routes that don't touch it.
   if (opts.valkey) app.decorate('valkey', opts.valkey);
 
+  // Phase 19 (v0.11.0 — EMBP-01 / D-10): decorate the EmbeddingProvider when
+  // present. Optional — test fixtures that don't exercise embeddings may omit it;
+  // the /v1/embeddings route reads its provider from route-level opts when the
+  // decorator is absent (Plan 19-03). Production composition (index.ts) always
+  // passes a real provider so fastify.embeddingProvider is defined in production.
+  if (opts.embeddingProvider) {
+    app.decorate('embeddingProvider', opts.embeddingProvider);
+  }
+
   // Plan 08-04 (CLOUD-03 / D-B1..D-B4) — per-backend circuit breaker. When
   // both opts.valkey AND opts.env are present, construct a real Valkey-backed
   // breaker; otherwise fall back to a no-op breaker so existing test fixtures
@@ -1028,27 +1050,24 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
   // GET /v1/models — bearer-gated; lists all registry models (Plan 03-02, OAI-03).
   registerModelsRoute(app, opts.registry);
 
-  // Phase 12 (v0.10.0 — EMB-H01..04) — Valkey-backed per-input cache for
-  // /v1/embeddings. Gated on opts.valkey AND opts.env (which carries the TTL).
-  // When either is absent, embeddingsCache is undefined and the route falls
-  // back to Phase 7 behavior (every item hits the adapter; dims still enforced).
-  // Fail-open semantics live inside the route — see embeddings.ts header.
-  const embeddingsCache =
-    opts.valkey && opts.env
-      ? makeEmbeddingsCache({
-          valkey: opts.valkey,
-          ttlSec: opts.env.ROUTER_EMBED_CACHE_TTL_SEC,
-          log: app.log as Logger,
-        })
-      : undefined;
-
   // Plan 07-04 (OAI-02, EMBED-01):
   //  - POST /v1/embeddings — OpenAI-compat embedding endpoint dispatching to
   //    Ollama (bge-m3) or vLLM-embed (BAAI/bge-m3) via the factory.
   //    Non-streaming; reuses semaphores + recordOutcome from Phase 3 + Phase 5.
   //    Capability gate enforces entry.capabilities.includes('embeddings')
   //    BEFORE the adapter call (T-07-11 mitigation, route-side layer).
-  // Phase 12 (v0.10.0): cache + 3 new metrics threaded in via opts.
+  // Phase 12 (v0.10.0): 3 metrics threaded in via opts.
+  // Phase 19 (v0.11.0 — EMBP-01 / D-06): cache construction removed from buildApp
+  // — cache now lives inside the EmbeddingProvider (makeOpenAIEmbeddingProvider owns
+  // the Valkey per-input cache). embeddingProvider threaded via opts so the route
+  // delegates to the provider rather than calling the adapter directly (Plan 19-03).
+  //
+  // XXX(19-04 / Rule 3 cross-plan): RegisterEmbeddingsOpts.embeddingProvider and
+  // RegisterEmbeddingsOpts.cache removal are Plan 19-03's territory (that plan owns
+  // router/src/routes/v1/embeddings.ts). Until Plan 19-03 merges, the embeddingProvider
+  // field does not exist in RegisterEmbeddingsOpts and cache still does. Cast through
+  // the extended type here so tsc passes in this worktree; the cast dissolves when
+  // Plan 19-03 lands and the field is declared.
   registerEmbeddingsRoute(app, {
     registry: opts.registry,
     makeAdapter: opts.makeAdapter ?? makeAdapterWithCloudKey,
@@ -1057,13 +1076,14 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
     breaker,
     breakerCooldownSec,
     idempotency,
-    cache: embeddingsCache,
+    // Phase 19: forward embeddingProvider to route opts (typed after Plan 19-03 merges).
+    ...(opts.embeddingProvider ? { embeddingProvider: opts.embeddingProvider } : {}),
     metrics: {
       embeddingsCacheTotal: opts.metrics.embeddingsCacheTotal,
       embeddingsBatchSize: opts.metrics.embeddingsBatchSize,
       embeddingsDimsTotal: opts.metrics.embeddingsDimsTotal,
     },
-  });
+  } as Parameters<typeof registerEmbeddingsRoute>[1]);
 
   // Phase 11 (v0.10.0 — RERANK-01..06) — POST /v1/rerank.
   registerRerankRoute(app, {
