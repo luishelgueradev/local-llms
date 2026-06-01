@@ -224,7 +224,7 @@ Plans:
 5. The existing `/v1/embeddings` smoke test passes byte-identical to pre-Phase-18 (no wire shape change from EmbeddingProvider formalization).
 6. When both a pre-completion hook and an MCP tool are configured for the same route, both execute independently on the same request — the hook fires before the model call, the MCP tool fires via the model's tool-call loop after the first model response.
 
-**Plans:** 6/8 plans executed
+**Plans:** 7/8 plans executed
 
 Plans:
 - [x] 18-01-PLAN.md — Wave 0 scaffold (22+ test files + MSW MCP fixture + tests/fakes.ts extension) [MCPC-01..06 + RETR-01..06]
@@ -233,7 +233,7 @@ Plans:
 - [x] 18-04-PLAN.md — McpClientRegistry impl + transport.ts + Valkey cache + sanitize-on-ingest + dispose lifecycle [MCPC-01..03, MCPC-05, MCPC-06]
 - [x] 18-05-PLAN.md — runMcpToolLoop + MCP_TOOL_LOOP_MAX=10 + abort propagation [MCPC-04]
 - [x] 18-06-PLAN.md — runHookChain + Promise.race timeout helper + SHA256 hook_log producer + redactBearer [RETR-02, RETR-03, RETR-04, RETR-05, RETR-06]
-- [ ] 18-07-PLAN.md — Three-route wire-up via shared helper + BuildAppOpts widening + boot-time HookConfigError validator + production composition root (empty preCompletionHooks Map — Frame-01) + onSwap hot-reload + SIGTERM disposeAll [all 12 REQs]
+- [x] 18-07-PLAN.md — Three-route wire-up via shared helper + BuildAppOpts widening + boot-time HookConfigError validator + production composition root (empty preCompletionHooks Map — Frame-01) + onSwap hot-reload + SIGTERM disposeAll [all 12 REQs] — SHIPPED 2026-06-01
 - [ ] 18-08-PLAN.md — Smoke MCP-CLIENT + HOOK section + DEPLOY/README docs + STATE/ROADMAP/REQUIREMENTS wrap-up + final phase gate [all 12 REQs verified-by]
 
 ---
@@ -258,7 +258,7 @@ Plans:
 4. A caller can call `fastify.embeddingProvider.embed(input, opts)` directly (Fastify decorator injected) and receive the same embedding output as `POST /v1/embeddings` — verified by unit test asserting interface conformance (EMBP-01); the `/v1/embeddings` wire shape is byte-identical to pre-Phase-19 (EMBP-02 regression).
 5. Vitest full suite passes with 0 failures; `tsc --noEmit` reports 0 errors.
 
-**Plans:** 6/8 plans complete
+**Plans:** 7/8 plans complete
 
 Plans:
 - [x] 18-01-PLAN.md — Wave 0 scaffold (22+ test files + MSW MCP fixture + tests/fakes.ts extension) [MCPC-01..06 + RETR-01..06]
@@ -267,7 +267,7 @@ Plans:
 - [x] 18-04-PLAN.md — McpClientRegistry impl + transport.ts + Valkey cache + sanitize-on-ingest + dispose lifecycle [MCPC-01..03, MCPC-05, MCPC-06]
 - [x] 18-05-PLAN.md — runMcpToolLoop + MCP_TOOL_LOOP_MAX=10 + abort propagation [MCPC-04]
 - [x] 18-06-PLAN.md — runHookChain + Promise.race timeout helper + SHA256 hook_log producer + redactBearer [RETR-02, RETR-03, RETR-04, RETR-05, RETR-06]
-- [ ] 18-07-PLAN.md — Three-route wire-up via shared helper + BuildAppOpts widening + boot-time HookConfigError validator + production composition root (empty preCompletionHooks Map — Frame-01) + onSwap hot-reload + SIGTERM disposeAll [all 12 REQs]
+- [x] 18-07-PLAN.md — Three-route wire-up via shared helper + BuildAppOpts widening + boot-time HookConfigError validator + production composition root (empty preCompletionHooks Map — Frame-01) + onSwap hot-reload + SIGTERM disposeAll [all 12 REQs] — SHIPPED 2026-06-01
 - [ ] 18-08-PLAN.md — Smoke MCP-CLIENT + HOOK section + DEPLOY/README docs + STATE/ROADMAP/REQUIREMENTS wrap-up + final phase gate [all 12 REQs verified-by]
 
 ---
