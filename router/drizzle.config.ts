@@ -22,7 +22,11 @@ export default defineConfig({
   // (the barrel's `export ... from './x.js'` is fine for the application
   // runtime but esbuild-register's CJS shim doesn't honor the .js
   // extension-mapping convention).
-  schema: ['./src/db/schema/request_log.ts', './src/db/schema/usage_daily.ts'],
+  schema: [
+    './src/db/schema/request_log.ts',
+    './src/db/schema/usage_daily.ts',
+    './src/db/schema/sessions.ts',
+  ],
   out: './db/migrations',
   dbCredentials: {
     // biome-ignore lint/style/noNonNullAssertion: drizzle-kit reads this at config-parse time only

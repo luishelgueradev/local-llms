@@ -52,10 +52,15 @@ describe('Migration 0005 atomic tuple integrity', () => {
     expect(sql).toMatch(/ADD COLUMN IF NOT EXISTS "workload_class"/);
   });
 
-  it('Test 2: _journal.json has exactly 6 entries', () => {
+  it('Test 2: _journal.json has at least 6 entries (idx=5 is the migration 0005 slot)', () => {
+    // Phase 14 originally asserted exactly 6 entries. Phase 17 Plan 17-02
+    // appended idx=6 (0006_sessions), making the count grow as the migration
+    // history extends. The invariant 0005 cares about is "idx=5 exists and
+    // has the right tag" (next test) — not the absolute length. Relaxed to
+    // `>= 6` so future migrations don't regress this test.
     const raw = readFileSync(JOURNAL_PATH, 'utf-8');
     const journal = JSON.parse(raw) as { entries: unknown[] };
-    expect(journal.entries).toHaveLength(6);
+    expect(journal.entries.length).toBeGreaterThanOrEqual(6);
   });
 
   it('Test 2: _journal.json has idx=5 entry with correct tag', () => {
