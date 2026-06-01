@@ -90,11 +90,11 @@ Phase 18 candidate. Generic capability for consuming external MCP servers as too
 Phase 18 candidate. The retrieval seam — interface only, no logic.
 
 - [x] **RETR-01**: A TypeScript interface `RetrieverProvider` is exported with `retrieve(request) → RetrieverResponse` where request is `{ query, top_k?, filters?, metadata?, hybrid?: object }` and response is `{ documents: Array<{ content, score?, metadata? }>, retrieved_at }`.
-- [ ] **RETR-02**: Operator can register a `RetrieverProvider` per route via a new Fastify `preHandler` hook seam; the hook fires BEFORE backend dispatch and AFTER `ContextProvider` history loading.
-- [ ] **RETR-03**: Hook registration declares an `on_timeout` field (`fail-open` | `fail-closed`) — there is no default; missing field is a startup error (implicit failure mode is a security risk that cannot be deferred to code review).
-- [ ] **RETR-04**: Retrieved documents are injected into the canonical request as a new system message tagged `<retrieved_context>...</retrieved_context>`; the injection is visible in `request_log` via a new `hook_log` JSONB column (audit trail).
+- [x] **RETR-02**: Operator can register a `RetrieverProvider` per route via a new Fastify `preHandler` hook seam; the hook fires BEFORE backend dispatch and AFTER `ContextProvider` history loading.
+- [x] **RETR-03**: Hook registration declares an `on_timeout` field (`fail-open` | `fail-closed`) — there is no default; missing field is a startup error (implicit failure mode is a security risk that cannot be deferred to code review).
+- [x] **RETR-04**: Retrieved documents are injected into the canonical request as a new system message tagged `<retrieved_context>...</retrieved_context>`; the injection is visible in `request_log` via a new `hook_log` JSONB column (audit trail).
 - [x] **RETR-05**: The router ships NO retriever implementation by default (the `RetrieverProvider` is uninstantiated unless a config provides one); a `NoopRetrieverProvider` exists only in tests.
-- [ ] **RETR-06**: When both an MCP-tool retrieval is registered AND a pre-completion hook is configured for the same route, both fire on the same request without overlap (model can still call the MCP tool after pre-completion injection) — verified by integration test asserting both code paths execute independently.
+- [x] **RETR-06**: When both an MCP-tool retrieval is registered AND a pre-completion hook is configured for the same route, both fire on the same request without overlap (model can still call the MCP tool after pre-completion injection) — verified by integration test asserting both code paths execute independently.
 
 ### Embedding provider formalization (EMBP)
 
@@ -215,11 +215,11 @@ The roadmap and plan-phase agents must reject any task that would:
 | MCPC-05 | Phase 18 | Complete |
 | MCPC-06 | Phase 18 | Complete |
 | RETR-01 | Phase 18 | Complete |
-| RETR-02 | Phase 18 | Pending |
-| RETR-03 | Phase 18 | Pending |
-| RETR-04 | Phase 18 | Pending |
+| RETR-02 | Phase 18 | Complete |
+| RETR-03 | Phase 18 | Complete |
+| RETR-04 | Phase 18 | Complete |
 | RETR-05 | Phase 18 | Complete |
-| RETR-06 | Phase 18 | Pending |
+| RETR-06 | Phase 18 | Complete |
 | EMBP-01 | Phase 19 | Pending |
 | EMBP-02 | Phase 19 | Pending |
 | OBSV-01 | Phase 19 | Pending |
