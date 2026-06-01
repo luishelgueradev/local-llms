@@ -1,6 +1,6 @@
 /**
  * Phase 18 / v0.11.0 — P5-02 BLOCK (no setTimeout leak).
- * Wave 0 scaffold (Plan 18-01). `it.todo` until Plan 18-06 lands the impl.
+ * Plan 18-06: real it() — production module landed in src/hooks/pre-completion.ts.
  *
  * Unit tests for the timeout helper that wraps each `RetrieverProvider.retrieve()`
  * call in `runHookChain`. The P5-02 BLOCK invariant is: regardless of which
@@ -12,23 +12,78 @@
  *   - timeout-arm wins → rejects with `HookTimeoutError(hookName, timeoutMs)`.
  *   - retriever-arm wins → cancel() is invoked, clearTimeout called once.
  *   - HookTimeoutError carries `code: 'hook_timeout'` for envelope mapping.
- *
- * Lock convention (Plan 18-01 lock): each `it.todo` case-name string below
- * is the authoritative wording for Plan 18-06's flip.
  */
-import { describe, it } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { timeout } from '../../src/hooks/pre-completion.js';
+import { HookTimeoutError } from '../../src/errors/envelope.js';
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe('Promise.race timeout helper — P5-02 BLOCK no setTimeout leak', () => {
-  it('runtime sentinel: src/hooks/pre-completion.js (timeout helper) resolves (Wave-0 fails until Plan 18-06)', async () => {
-    // Wave-0 missing-module sentinel — the timeout helper colocates with the
-    // hook chain runner (Plan 18-06 finalizes the exact module boundary).
+  it('runtime sentinel: src/hooks/pre-completion.js (timeout helper) resolves', async () => {
     await import('../../src/hooks/pre-completion.js');
   });
-  it.todo('rejects with HookTimeoutError after timeout_ms');
-  it.todo('cancel() clears the underlying setTimeout (no leaked timer)');
-  it.todo(
-    'Promise.race winner = retriever: cancel() is called in finally; clearTimeout invoked exactly once',
-  );
-  it.todo('Promise.race winner = timeout: HookTimeoutError carries hookName + timeoutMs');
-  it.todo('HookTimeoutError.code === "hook_timeout"');
+
+  it('rejects with HookTimeoutError after timeout_ms', async () => {
+    const t = timeout(10, 'h');
+    await expect(t.promise).rejects.toBeInstanceOf(HookTimeoutError);
+    t.cancel(); // safe to call multiple times
+  });
+
+  it('cancel() clears the underlying setTimeout (no leaked timer)', async () => {
+    const clearSpy = vi.spyOn(globalThis, 'clearTimeout');
+    const t = timeout(10_000, 'h');
+    t.cancel();
+    expect(clearSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('Promise.race winner = retriever: cancel() is called in finally; clearTimeout invoked exactly once', async () => {
+    const clearSpy = vi.spyOn(globalThis, 'clearTimeout');
+
+    // Mirror runHookChain's pattern: race against a fast-resolving hook.
+    const hookPromise = Promise.resolve('done');
+    const t = timeout(10_000, 'h');
+    let cancelled = false;
+    try {
+      const winner = await Promise.race([hookPromise, t.promise]);
+      expect(winner).toBe('done');
+    } finally {
+      t.cancel();
+      cancelled = true;
+    }
+    expect(cancelled).toBe(true);
+    expect(clearSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('Promise.race winner = timeout: HookTimeoutError carries hookName + timeoutMs', async () => {
+    const neverResolves = new Promise<string>(() => {
+      /* deliberately stuck */
+    });
+    const t = timeout(15, 'slow_kb');
+    try {
+      await Promise.race([neverResolves, t.promise]);
+      throw new Error('should not reach');
+    } catch (err) {
+      expect(err).toBeInstanceOf(HookTimeoutError);
+      const e = err as HookTimeoutError;
+      expect(e.hookName).toBe('slow_kb');
+      expect(e.timeoutMs).toBe(15);
+    } finally {
+      t.cancel();
+    }
+  });
+
+  it('HookTimeoutError.code === "hook_timeout"', async () => {
+    const t = timeout(5, 'h');
+    try {
+      await t.promise;
+    } catch (err) {
+      expect(err).toBeInstanceOf(HookTimeoutError);
+      expect((err as HookTimeoutError).code).toBe('hook_timeout');
+    } finally {
+      t.cancel();
+    }
+  });
 });
