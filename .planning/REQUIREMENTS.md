@@ -81,7 +81,7 @@ Phase 18 candidate. Generic capability for consuming external MCP servers as too
 - [x] **MCPC-01**: Operator can declare external MCP servers in a new `mcp_servers:` top-level section of `models.yaml` with fields `{ alias, url, transport, auth_type, auth_value, tool_filter? }`.
 - [x] **MCPC-02**: The router connects to declared MCP servers **lazily** on first use (NOT eager at boot) — router boot MUST NOT block on external MCP server availability (verified by integration test simulating unresponsive MCP server during boot).
 - [x] **MCPC-03**: Tools discovered via `tools/list` are namespace-prefixed with `<server_alias>__<tool_name>` before being injected into the upstream model's `tools[]` array; collision-free across multiple MCP servers (verified by unit test with two servers registering same tool name).
-- [ ] **MCPC-04**: When the model emits a `tool_call` for a prefixed external tool, the router proxies `tools/call` to the corresponding MCP server, returns the result as a `tool` role message, and loops up to 10 iterations before aborting with structured error `{ code: "mcp_tool_loop_exceeded" }`.
+- [x] **MCPC-04**: When the model emits a `tool_call` for a prefixed external tool, the router proxies `tools/call` to the corresponding MCP server, returns the result as a `tool` role message, and loops up to 10 iterations before aborting with structured error `{ code: "mcp_tool_loop_exceeded" }`.
 - [x] **MCPC-05**: The inbound bearer token is NEVER forwarded to external MCP servers; per-server credentials in `auth_value` are used instead (verified by integration test asserting outbound MCP request headers contain only the configured per-server credential).
 - [x] **MCPC-06**: `tools/list` results are cached in Valkey with a 60-second TTL keyed by `<server_alias>` and invalidated when `mcp_servers` configuration reloads via the existing registry hot-reload path.
 
@@ -211,7 +211,7 @@ The roadmap and plan-phase agents must reject any task that would:
 | MCPC-01 | Phase 18 | Complete |
 | MCPC-02 | Phase 18 | Complete |
 | MCPC-03 | Phase 18 | Complete |
-| MCPC-04 | Phase 18 | Pending |
+| MCPC-04 | Phase 18 | Complete |
 | MCPC-05 | Phase 18 | Complete |
 | MCPC-06 | Phase 18 | Complete |
 | RETR-01 | Phase 18 | Complete |
