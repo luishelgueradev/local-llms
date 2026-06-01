@@ -805,6 +805,69 @@ The live-router smoke harness (`bin/smoke-test-router.sh`) Phase 18 section cove
 
 ---
 
+## EmbeddingProvider (Phase 19 — v0.11.0)
+
+> **Strategic frame (binding):** "Retrieval Interfaces, not Retrieval Logic" —
+> the router exposes an `EmbeddingProvider` interface so downstream
+> RetrieverProvider implementations can fetch vectors without HTTP round-trips,
+> but the router itself ships **zero retrieval logic**. Frame-01 BLOCK:
+> the production implementation is a factory returning an object literal,
+> NOT a class — the router carries embeddings-shaped logic only because
+> `/v1/embeddings` must work; nothing more.
+
+### Interface
+
+```typescript
+export interface EmbeddingProvider {
+  embed(
+    input: string | string[],
+    opts: { model: string; dimensions?: number; user?: string },
+  ): Promise<{
+    embeddings: number[][];
+    model: string;
+    usage: { prompt_tokens: number; total_tokens: number };
+  }>;
+}
+```
+
+### Consuming the provider from a custom pre-completion hook
+
+```typescript
+// Inside a caller-supplied RetrieverProvider implementation:
+async retrieve(request: RetrieverRequest): Promise<RetrieverResponse> {
+  const provider = request.fastify.embeddingProvider;  // decorated by buildApp
+  const { embeddings: [queryVec] } = await provider.embed(request.query, {
+    model: 'embed-local',
+  });
+  // ... your vector-store similarity search using queryVec ...
+}
+```
+
+### Wire-shape invariant (P7-01 BLOCK)
+
+`/v1/embeddings` wire shape is **byte-identical** to pre-Phase-19 (Phase 12 baseline).
+Verified by:
+- `router/tests/unit/grep-gates/embeddings-untouched.test.ts` SHA-256 baseline (rotated atomically with the route refactor in Plan 19-03).
+- `router/tests/routes/embeddings.test.ts` 30+ regression cases.
+- Smoke gates: Phase 7 EMBED-01 + Phase 12 EMB-H01..06.
+
+### Observability surface
+
+| Metric | Labels | Owned by | Notes |
+|--------|--------|----------|-------|
+| `router_embeddings_cache_total` | `result` ∈ {hit, miss, bypass} | provider (hit/miss); route (bypass for base64) | hit/miss/bypass; bypass-on-base64 stays at the route (Risk #2 Option A) |
+| `router_embeddings_batch_size` | (histogram) | route | EMB-H03 — inbound batch size; route owns wire-shape metric (D-07) |
+| `router_embeddings_dims_total` | `model`, `dims` | provider | per-served-vector increment; cardinality bounded by `models.yaml` × distinct dims observed |
+
+### Verification matrix
+
+| Requirement | Verified by |
+|-------------|-------------|
+| EMBP-01 (interface + decorator) | `router/tests/providers/embedding-provider.test.ts` (vitest unit + expectTypeOf) |
+| EMBP-02 (route delegates; wire identical) | `tests/routes/embeddings.test.ts` regression suite + `tests/unit/grep-gates/embeddings-untouched.test.ts` SHA gate + smoke Phase 7 + Phase 12 gates |
+
+---
+
 ## Backups + retencion
 
 **Diarios al disco** (sidecar `pg-backup` corre cada noche):

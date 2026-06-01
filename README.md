@@ -40,7 +40,7 @@ cambias modelos/backends/quants/cuotas debajo sin tocar el codigo del cliente.
 |-----------|--------|------------|
 | **v0.9.0** MVP | ✅ shipped 2026-05-28 | 76 reqs / 9 phases / 55 plans · router multi-backend + cloud + observability + ops |
 | **v0.10.0** Cognitive Primitives | ✅ shipped 2026-05-29 | 26 reqs / 4 phases · JSON mode · Reranker · Embeddings hardening · Cost obs + `/v1/responses` |
-| **v0.11.0** TBD | — | candidatos: `/v1/responses` streaming + tools · `/v1/audio/transcriptions` · MCP-as-server |
+| **v0.11.0** Retrieval-Ready Infrastructure | ✅ shipped 2026-06-01 | 48 reqs / 6 phases · Policy primitives · MCP host + client · Streaming Responses · Sessions/Context · Pre-completion hooks · EmbeddingProvider + observability hardening |
 
 Full archive: `.planning/MILESTONES.md` · `.planning/milestones/*-ROADMAP.md` · `.planning/RETROSPECTIVE.md`
 
@@ -514,6 +514,32 @@ point, `on_timeout` decision tree (fail-open for augmentation hooks vs fail-clos
 for authorization hooks), `hook_log` audit shape, Prometheus metrics
 (`router_hook_duration_ms`, `router_mcp_tool_calls_external_total`), and the
 verification matrix tying each ROADMAP success criterion to its test.
+
+---
+
+## EmbeddingProvider (v0.11.0)
+
+> **Strategic frame (binding):** "Retrieval Interfaces, not Retrieval Logic."
+> Frame-01 BLOCK: zero retriever implementations ship in `router/src/`.
+
+The router exposes an `EmbeddingProvider` interface so downstream
+RetrieverProvider implementations consume vectors without an HTTP
+round-trip through `/v1/embeddings`:
+
+```typescript
+export interface EmbeddingProvider {
+  embed(
+    input: string | string[],
+    opts: { model: string; dimensions?: number; user?: string },
+  ): Promise<{ embeddings: number[][]; model: string; usage: { prompt_tokens: number; total_tokens: number } }>;
+}
+```
+
+From a Fastify hook: `const provider = fastify.embeddingProvider;` (decorated by `buildApp`).
+
+**`/v1/embeddings` wire shape is byte-identical to pre-Phase-19** (P7-01 BLOCK SHA-256 baseline).
+
+See [`DEPLOY.md` §"EmbeddingProvider (Phase 19 — v0.11.0)"](./DEPLOY.md#embeddingprovider-phase-19--v0110) for the full operator reference.
 
 ---
 
