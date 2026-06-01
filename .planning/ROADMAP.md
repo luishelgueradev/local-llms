@@ -17,7 +17,7 @@
 - [x] **Phase 15: MCP Host (Router as MCP Server)** — Router exposes five MCP tools (chat, embeddings, rerank, responses, list_models) over Streamable HTTP at `/mcp`; any MCP-compatible client can consume the router as a tool server.
 - [x] **Phase 16: `/v1/responses` Streaming + Tool Calls** ✅ 2026-05-31 — Full Responses API streaming with `OutputItemStateMachine`, tool-call events, and `response.completed` always last; closes v0.10.0 streaming debt.
 - [x] **Phase 17: SessionStore + ContextProvider + SummaryProvider** ✅ 2026-06-01 — Postgres-backed sessions + ContextProvider sliding-window + NoopSummaryProvider all wired through `buildApp` in `router/src/index.ts`; SESS/CTXP/SUMP 13 requirements closed.
-- [ ] **Phase 18: MCP Client + RetrieverProvider + Pre-Completion Hook** — Generic MCP client capability (lazy-connect, tool namespace prefix, 60s Valkey cache), RetrieverProvider interface + pre-completion hook seam with explicit fail-open/closed, and EmbeddingProvider interface formalization.
+- [x] **Phase 18: MCP Client + RetrieverProvider + Pre-Completion Hook** ✅ 2026-06-01 — Generic MCP client (lazy connect, `{alias}__{tool}` namespace prefix, 60s Valkey `tools/list` cache), RetrieverProvider interface + pre-completion hook seam with explicit fail-open/closed (P5-01 BLOCK), hook_log JSONB audit (SHA256-only — P5-05), production `preCompletionHooks` Map literal-empty (Frame-01 BLOCK enforced by grep gate); 12 REQs closed across provider + route + production composition + smoke + docs.
 - [ ] **Phase 19: EmbeddingProvider Formalization + Observability Hardening** — EmbeddingProvider interface extracted, all new surfaces covered by smoke tests and Prometheus metrics, cardinality CI guard, docs updated.
 
 <details>
@@ -224,17 +224,17 @@ Plans:
 5. The existing `/v1/embeddings` smoke test passes byte-identical to pre-Phase-18 (no wire shape change from EmbeddingProvider formalization).
 6. When both a pre-completion hook and an MCP tool are configured for the same route, both execute independently on the same request — the hook fires before the model call, the MCP tool fires via the model's tool-call loop after the first model response.
 
-**Plans:** 7/8 plans executed
+**Plans:** 8/8 plans complete
 
 Plans:
-- [x] 18-01-PLAN.md — Wave 0 scaffold (22+ test files + MSW MCP fixture + tests/fakes.ts extension) [MCPC-01..06 + RETR-01..06]
-- [x] 18-02-PLAN.md — Migration 0007 indivisible tuple (SQL + Drizzle + journal idx=7 + barrel) + 4 envelope errors + 2 Prometheus metrics + registry Zod widening + models.yaml stanza [MCPC-01, MCPC-04, MCPC-05, RETR-03, RETR-04]
-- [x] 18-03-PLAN.md — RetrieverProvider interface + inject.ts (P5-03 fence) + sanitize.ts (P2-03) + prefix.ts (MCPC-03) + barrels [RETR-01, RETR-05, MCPC-03]
-- [x] 18-04-PLAN.md — McpClientRegistry impl + transport.ts + Valkey cache + sanitize-on-ingest + dispose lifecycle [MCPC-01..03, MCPC-05, MCPC-06]
-- [x] 18-05-PLAN.md — runMcpToolLoop + MCP_TOOL_LOOP_MAX=10 + abort propagation [MCPC-04]
-- [x] 18-06-PLAN.md — runHookChain + Promise.race timeout helper + SHA256 hook_log producer + redactBearer [RETR-02, RETR-03, RETR-04, RETR-05, RETR-06]
-- [x] 18-07-PLAN.md — Three-route wire-up via shared helper + BuildAppOpts widening + boot-time HookConfigError validator + production composition root (empty preCompletionHooks Map — Frame-01) + onSwap hot-reload + SIGTERM disposeAll [all 12 REQs] — SHIPPED 2026-06-01
-- [ ] 18-08-PLAN.md — Smoke MCP-CLIENT + HOOK section + DEPLOY/README docs + STATE/ROADMAP/REQUIREMENTS wrap-up + final phase gate [all 12 REQs verified-by]
+- [x] 18-01-PLAN.md — Wave 0 scaffold (22+ test files + MSW MCP fixture + tests/fakes.ts extension) [MCPC-01..06 + RETR-01..06] — SHIPPED 2026-06-01
+- [x] 18-02-PLAN.md — Migration 0007 indivisible tuple (SQL + Drizzle + journal idx=7 + barrel) + 4 envelope errors + 2 Prometheus metrics + registry Zod widening + models.yaml stanza [MCPC-01, MCPC-04, MCPC-05, RETR-03, RETR-04] — SHIPPED 2026-06-01
+- [x] 18-03-PLAN.md — RetrieverProvider interface + inject.ts (P5-03 fence) + sanitize.ts (P2-03) + prefix.ts (MCPC-03) + barrels [RETR-01, RETR-05, MCPC-03] — SHIPPED 2026-06-01
+- [x] 18-04-PLAN.md — McpClientRegistry impl + transport.ts + Valkey cache + sanitize-on-ingest + dispose lifecycle [MCPC-01..03, MCPC-05, MCPC-06] — SHIPPED 2026-06-01
+- [x] 18-05-PLAN.md — runMcpToolLoop + MCP_TOOL_LOOP_MAX=10 + abort propagation [MCPC-04] — SHIPPED 2026-06-01
+- [x] 18-06-PLAN.md — runHookChain + Promise.race timeout helper + SHA256 hook_log producer + redactBearer [RETR-02, RETR-03, RETR-04, RETR-05, RETR-06] — SHIPPED 2026-06-01
+- [x] 18-07-PLAN.md — Three-route wire-up via shared helper + BuildAppOpts widening + boot-time HookConfigError validator + production composition root (empty preCompletionHooks Map — Frame-01) + onReload hot-reload + SIGTERM disposeAll [all 12 REQs] — SHIPPED 2026-06-01
+- [x] 18-08-PLAN.md — Smoke MCP-CLIENT + HOOK section + DEPLOY/README docs + 35 deferred hook test flips + req.hookLog → recordOutcome → request_log.hook_log JSONB Rule-2 gap closure + STATE/ROADMAP/REQUIREMENTS wrap-up + final phase gate [all 12 REQs verified-by] — SHIPPED 2026-06-01
 
 ---
 
@@ -280,7 +280,7 @@ Plans:
 | 15. MCP Host (Router as MCP Server) | 12/12 | Complete    | 2026-05-31 |
 | 16. /v1/responses Streaming + Tool Calls | 4/4 | Complete   | 2026-05-31 |
 | 17. SessionStore + ContextProvider + SummaryProvider | 7/7 | Complete    | 2026-06-01 |
-| 18. MCP Client + RetrieverProvider + Pre-Completion Hook | 6/8 | In Progress|  |
+| 18. MCP Client + RetrieverProvider + Pre-Completion Hook | 8/8 | Complete    | 2026-06-01 |
 | 19. EmbeddingProvider Formalization + Observability Hardening | 0/TBD | Not started | - |
 
 ---
