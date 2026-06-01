@@ -229,3 +229,140 @@ export function makeFakeSummaryProvider(): SummaryProvider {
     },
   };
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 18 (v0.11.0 — MCPC-01..06 / RETR-01..06) — fakes for downstream tests.
+// Mirror the Phase 17 makeFakeSessionStore shape: single-arg opts builder
+// returning an object satisfying the production interface, with call-capture
+// arrays for assertions.
+//
+// Wave-0 note: the type imports below intentionally fail until Plans 18-03/04
+// land the production interface files. That keeps `tsc --noEmit` red as the
+// Wave-0 signal — mirrors the missing-module gate in tests/hooks/*.test.ts +
+// tests/mcp/client/*.test.ts.
+// ─────────────────────────────────────────────────────────────────────────────
+
+import type {
+  RetrieverProvider,
+  RetrieverRequest,
+  RetrieverResponse,
+  RetrievedDocument,
+} from '../src/providers/retriever-provider.js';
+import type {
+  McpClientRegistry,
+  McpServerConfig,
+} from '../src/mcp/client/registry.js';
+import type { CanonicalTool } from '../src/translation/canonical.js';
+
+// Compile-time anchor — Plan 18-02/04 wires McpServerConfig into the registry
+// fake constructor signature. Reference kept to surface the missing module
+// at tsc time.
+type _UnusedMcpServerConfig = McpServerConfig;
+
+export interface FakeRetrieverProviderOpts {
+  /** Documents returned by retrieve(). Default []. */
+  documents?: RetrievedDocument[];
+  /** When true, retrieve() never resolves (simulates P5-02 hook timeout). */
+  shouldTimeout?: boolean;
+  /** When set, retrieve() rejects with this error. */
+  shouldThrow?: Error;
+  /** Latency simulation in ms before retrieve() resolves. */
+  latencyMs?: number;
+  /** Captures every retrieve() call for assertion. */
+  calls?: RetrieverRequest[];
+}
+
+/**
+ * Phase 18 (RETR-01) — minimal RetrieverProvider fake for hook tests.
+ *
+ * Honors the P5-02 BLOCK timeout-arm contract: `shouldTimeout: true` returns
+ * a Promise that never resolves, so `runHookChain`'s `Promise.race(retrieve,
+ * timeout)` exercises the timeout arm deterministically. `shouldThrow`
+ * exercises the error-arm (status:'error' in `hook_log`). The
+ * `retrieved_at` value uses `new Date(0).toISOString()` so golden snapshots
+ * stay stable across re-runs.
+ *
+ * Does NOT enforce filtering / scoring / hybrid retrieval — those live in
+ * real RetrieverProvider implementations (Phase 19+).
+ */
+export function makeFakeRetrieverProvider(opts: FakeRetrieverProviderOpts = {}): RetrieverProvider {
+  const calls = opts.calls ?? [];
+  return {
+    async retrieve(request: RetrieverRequest): Promise<RetrieverResponse> {
+      calls.push(request);
+      if (opts.shouldTimeout) {
+        // Never-resolving Promise — Promise.race in runHookChain MUST observe
+        // the timeout arm winning.
+        return new Promise<RetrieverResponse>(() => {
+          /* never resolves */
+        });
+      }
+      if (opts.shouldThrow) {
+        throw opts.shouldThrow;
+      }
+      if (opts.latencyMs && opts.latencyMs > 0) {
+        await new Promise((r) => setTimeout(r, opts.latencyMs));
+      }
+      return {
+        documents: opts.documents ?? [],
+        retrieved_at: new Date(0).toISOString(), // deterministic for golden snapshots
+      };
+    },
+  };
+}
+
+export interface FakeMcpClientRegistryOpts {
+  /** Map alias → tools returned by getOrFetchTools (already prefixed). Default {}. */
+  toolsByAlias?: Record<string, CanonicalTool[]>;
+  /** Map alias → (toolName → result returned by callTool). Default {}. */
+  toolResultsByAlias?: Record<string, Record<string, unknown>>;
+  /** Captures every callTool invocation for assertion. */
+  callTrace?: Array<{ alias: string; toolName: string; args: unknown }>;
+  /** Force a failure mode on a specific alias + operation. */
+  shouldFailOn?: { alias: string; on: 'connect' | 'list' | 'call' };
+}
+
+/**
+ * Phase 18 (MCPC-02..06) — minimal McpClientRegistry fake for the MCP-loop
+ * unit + integration tests. Mirrors the production interface in
+ * `src/mcp/client/registry.ts` (Plan 18-04).
+ *
+ * The `callTrace` array captures every `callTool(alias, toolName, args)`
+ * invocation, allowing the MCP-loop tests to assert dispatch ordering +
+ * parallel-call semantics without needing a real MSW peer. The
+ * `shouldFailOn` opt forces a single operation to throw — used by
+ * registry-retry tests that exercise the "connect failure evicts the cached
+ * promise" path.
+ */
+export function makeFakeMcpClientRegistry(
+  opts: FakeMcpClientRegistryOpts = {},
+): McpClientRegistry {
+  const callTrace = opts.callTrace ?? [];
+  return {
+    async getOrConnect(alias: string): Promise<unknown> {
+      if (opts.shouldFailOn?.alias === alias && opts.shouldFailOn.on === 'connect') {
+        throw new Error(`fake-fail: connect ${alias}`);
+      }
+      return { name: `fake-client-${alias}` };
+    },
+    async getOrFetchTools(alias: string): Promise<CanonicalTool[]> {
+      if (opts.shouldFailOn?.alias === alias && opts.shouldFailOn.on === 'list') {
+        throw new Error(`fake-fail: list ${alias}`);
+      }
+      return opts.toolsByAlias?.[alias] ?? [];
+    },
+    async callTool(alias: string, toolName: string, args: unknown): Promise<unknown> {
+      callTrace.push({ alias, toolName, args });
+      if (opts.shouldFailOn?.alias === alias && opts.shouldFailOn.on === 'call') {
+        throw new Error(`fake-fail: call ${alias}.${toolName}`);
+      }
+      return opts.toolResultsByAlias?.[alias]?.[toolName] ?? { ok: true };
+    },
+    async dispose(_alias: string): Promise<void> {
+      /* noop */
+    },
+    async disposeAll(): Promise<void> {
+      /* noop */
+    },
+  };
+}
