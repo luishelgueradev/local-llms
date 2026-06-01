@@ -276,19 +276,19 @@ Plans:
 4. A caller can call `fastify.embeddingProvider.embed(input, opts)` directly (Fastify decorator injected) and receive the same embedding output as `POST /v1/embeddings` — verified by unit test asserting interface conformance (EMBP-01); the `/v1/embeddings` wire shape is byte-identical to pre-Phase-19 (EMBP-02 regression).
 5. Vitest full suite passes with 0 failures; `tsc --noEmit` reports 0 errors.
 
-**Plans:** 1/7 plans executed
+**Plans:** 3/7 plans executed
 
 Plans:
 **Wave 1**
 
 - [x] 19-01-PLAN.md — Wave 0 scaffold (2 test placeholders + tests/fakes.ts makeFakeEmbeddingProvider + src/types/fastify.d.ts augmentation) [EMBP-01, OBSV-02]
-- [ ] 19-02-PLAN.md — EmbeddingProvider interface + makeOpenAIEmbeddingProvider factory (Frame-01 — object literal, not class); cache + dims + base64-decode moved INTO provider [EMBP-01]
+- [x] 19-02-PLAN.md — EmbeddingProvider interface + makeOpenAIEmbeddingProvider factory (Frame-01 — object literal, not class); cache + dims + base64-decode moved INTO provider [EMBP-01]
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
 - [ ] 19-03-PLAN.md — /v1/embeddings route delegates to provider; P7-01 SHA-256 baseline atomically rotated in the SAME commit (D-24 — never split) [EMBP-02]
 - [ ] 19-04-PLAN.md — Composition-root construction in router/src/index.ts + BuildAppOpts widening + app.decorate('embeddingProvider') in router/src/app.ts [EMBP-01]
-- [ ] 19-05-PLAN.md — checkCardinalityLive parser + dual-mode CLI (--source | --live) + CI integration test (in-band /metrics scrape) [OBSV-02]
+- [x] 19-05-PLAN.md — checkCardinalityLive parser + dual-mode CLI (--source | --live) + CI integration test (in-band /metrics scrape) [OBSV-02]
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
@@ -309,7 +309,7 @@ Plans:
 | 16. /v1/responses Streaming + Tool Calls | 4/4 | Complete   | 2026-05-31 |
 | 17. SessionStore + ContextProvider + SummaryProvider | 7/7 | Complete    | 2026-06-01 |
 | 18. MCP Client + RetrieverProvider + Pre-Completion Hook | 8/8 | Complete    | 2026-06-01 |
-| 19. EmbeddingProvider Formalization + Observability Hardening | 1/7 | In Progress|  |
+| 19. EmbeddingProvider Formalization + Observability Hardening | 3/7 | In Progress|  |
 
 ---
 
