@@ -62,6 +62,7 @@ import {
   sessions,
   type SessionRow,
 } from '../db/schema/index.js';
+import type { MetricsRegistry } from '../metrics/registry.js';
 import type { ContentBlock, ToolUseBlock } from '../translation/canonical.js';
 import {
   SessionAgentMismatchError,
@@ -111,6 +112,14 @@ export interface PostgresSessionStoreOpts {
   /** Override the 1s default fail-open timeout. */
   appendTimeoutMs?: number;
   logger?: PostgresSessionStoreLogger;
+  /**
+   * Phase 17 Plan 17-07 (Pitfall 17-E observability): optional metrics registry.
+   * When provided, the store increments `router_session_append_failed_total{reason}`
+   * on every fail-open event (1s timeout OR unexpected error inside appendTurnTx).
+   * Test fixtures that don't care about the counter omit this field — the
+   * increments are silently skipped.
+   */
+  metricsRegistry?: MetricsRegistry;
 }
 
 /**
@@ -161,6 +170,7 @@ export class PostgresSessionStore implements SessionStore {
   private readonly defaultTtlSec: number;
   private readonly appendTimeoutMs: number;
   private readonly logger: PostgresSessionStoreLogger;
+  private readonly metricsRegistry: MetricsRegistry | undefined;
 
   constructor(
     private readonly db: NodePgDatabase,
@@ -169,6 +179,7 @@ export class PostgresSessionStore implements SessionStore {
     this.defaultTtlSec = opts.defaultTtlSec ?? DEFAULT_TTL_SEC;
     this.appendTimeoutMs = opts.appendTimeoutMs ?? DEFAULT_APPEND_TIMEOUT_MS;
     this.logger = opts.logger ?? { warn: () => {} };
+    this.metricsRegistry = opts.metricsRegistry;
   }
 
   // ── createSession ────────────────────────────────────────────────────────
@@ -228,9 +239,7 @@ export class PostgresSessionStore implements SessionStore {
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
     const timeoutPromise = new Promise<AppendTurnResult>((resolve) => {
       timeoutHandle = setTimeout(() => {
-        // Pitfall 17-E: structured fail-open log. Plan 17-07 will wire the
-        // router_session_append_failed_total{reason="timeout"} counter.
-        // TODO(17-07): increment router_session_append_failed_total{reason="timeout"}
+        // Pitfall 17-E: structured fail-open log + Prometheus counter (Plan 17-07).
         this.logger.warn({
           event: 'session_append_failed_open',
           session_id,
@@ -238,19 +247,61 @@ export class PostgresSessionStore implements SessionStore {
           reason: 'timeout',
           timeout_ms: this.appendTimeoutMs,
         });
+        this.metricsRegistry?.routerSessionAppendFailedTotal.inc({ reason: 'timeout' });
         resolve({ turn_id: '', turn_index: -1, persisted: false });
       }, this.appendTimeoutMs);
     });
 
     try {
       return await Promise.race([
-        this.appendTurnTx(session_id, agent_id, turn),
+        this.appendTurnTxWithCounter(session_id, agent_id, turn),
         timeoutPromise,
       ]);
     } finally {
       if (timeoutHandle !== undefined) {
         clearTimeout(timeoutHandle);
       }
+    }
+  }
+
+  /**
+   * Plan 17-07 (Pitfall 17-E observability): wraps appendTurnTx so unexpected
+   * (non-business) errors increment `router_session_append_failed_total{reason='error'}`
+   * before propagating to the caller. Business errors thrown by appendTurnTx
+   * (SessionNotFoundError / SessionExpiredError / SessionAgentMismatchError /
+   * InvalidSessionIdError) are explicitly excluded — the call site handles them
+   * with appropriate semantics (404/410/403/400). The counter fires only for
+   * truly unexpected failure surfaces (pg connection drop, transaction abort,
+   * unmapped Drizzle exception).
+   */
+  private async appendTurnTxWithCounter(
+    session_id: string,
+    agent_id: string,
+    turn: Omit<Turn, 'turn_id' | 'session_id' | 'agent_id' | 'turn_index' | 'ts'>,
+  ): Promise<AppendTurnResult> {
+    try {
+      return await this.appendTurnTx(session_id, agent_id, turn);
+    } catch (err) {
+      // Business errors are NOT fail-open events — they're caller bugs / expired
+      // sessions / cross-tenant mismatches that the route handler maps to
+      // structured HTTP responses. Only unexpected errors count toward the
+      // observability counter (operators care about: "is the DB healthy?").
+      if (
+        err instanceof SessionNotFoundError ||
+        err instanceof SessionExpiredError ||
+        err instanceof SessionAgentMismatchError
+      ) {
+        throw err;
+      }
+      this.metricsRegistry?.routerSessionAppendFailedTotal.inc({ reason: 'error' });
+      this.logger.warn({
+        event: 'session_append_failed_open',
+        session_id,
+        agent_id,
+        reason: 'error',
+        err_message: err instanceof Error ? err.message : String(err),
+      });
+      throw err;
     }
   }
 

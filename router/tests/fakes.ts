@@ -178,10 +178,18 @@ export function makeFakeContextProvider(opts: FakeContextProviderOpts = {}): Con
         if (t.role === 'system') {
           // Best-effort stringify of ContentBlock[] — fakes intentionally
           // don't share the full canonical-content union to avoid coupling.
+          // Plan 17-07 Rule-1 typing cleanup: previously `filter` widened the
+          // array element to the full ContentBlock union (text | image |
+          // tool_use | tool_result), then `map` could not narrow back to
+          // `{ text?: string }`. The explicit type-predicate in the filter
+          // callback narrows the array element so map sees the text-block shape.
           const txt = Array.isArray(t.content)
             ? t.content
-                .filter((b: { type?: string }) => b.type === 'text')
-                .map((b: { text?: string }) => b.text ?? '')
+                .filter(
+                  (b: { type?: string; text?: string }): b is { type: 'text'; text: string } =>
+                    b.type === 'text',
+                )
+                .map((b) => b.text ?? '')
                 .join('')
             : '';
           if (txt) systemParts.push(txt);

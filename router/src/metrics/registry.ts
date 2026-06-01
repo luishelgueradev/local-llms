@@ -143,6 +143,28 @@ export function makeMetricsRegistry() {
     registers: [register],
   });
 
+  // Phase 17 (v0.11.0 — Pitfall 17-E observability): fail-open append events.
+  // Bounded label `reason` ∈ {'timeout', 'error'} — total 2 series. Within
+  // the P8-03 cardinality budget. NEVER add session_id / agent_id / tenant_id
+  // labels here (they are high-cardinality; live in Postgres + structured logs only).
+  // Cardinality CI guard: scripts/check-prometheus-cardinality.ts validates the
+  // labelNames array does not contain any element ending in `_id`.
+  const routerSessionAppendFailedTotal = new Counter({
+    name: 'router_session_append_failed_total',
+    help: 'SessionStore.appendTurn fail-open events. Bounded label: reason (timeout | error).',
+    labelNames: ['reason'] as const,
+    registers: [register],
+  });
+
+  // W5 mitigation (plan-checker 2026-05-31): `Counter.inc(labels, 0)` is a no-op
+  // in prom-client and does NOT register the series. The correct idiom to make
+  // the series appear in `/metrics` with value 0 is to call `.labels(...).inc(0)`
+  // which lazily creates the child counter and emits the line. Both label combos
+  // are pre-warmed so Test 5's smoke gate ("Prometheus counter present in /metrics
+  // on a fresh boot") passes cold.
+  routerSessionAppendFailedTotal.labels({ reason: 'timeout' }).inc(0);
+  routerSessionAppendFailedTotal.labels({ reason: 'error' }).inc(0);
+
   return {
     register,
     requestsTotal,
@@ -156,6 +178,7 @@ export function makeMetricsRegistry() {
     embeddingsDimsTotal,
     routerMcpToolCallsTotal,
     routerMcpActiveSessions,
+    routerSessionAppendFailedTotal,
   };
 }
 

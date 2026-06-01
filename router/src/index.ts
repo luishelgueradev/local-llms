@@ -12,6 +12,10 @@ import { makeMetricsRegistry } from './metrics/registry.js';
 import { makeValkeyClient, waitUntilReady } from './clients/valkey.js';
 import { makeRegistryCache } from './config/registryCache.js';
 import { installGlobalBackendDispatcher } from './backends/http-dispatcher.js';
+// Phase 17 (v0.11.0 — SESS-01 / CTXP-01 / SUMP-02): production-wired providers.
+import { PostgresSessionStore } from './providers/postgres-session-store.js';
+import { DefaultContextProvider } from './providers/context-provider.js';
+import { NoopSummaryProvider } from './providers/summary-provider.js';
 
 /**
  * Plan 08-02 (CLOUD-01 + D-A2) — refuses boot when the registry declares any
@@ -150,6 +154,26 @@ async function main(): Promise<void> {
 
   const registry = makeRegistryStore(initialRegistry);
 
+  // Phase 17 (v0.11.0 — SESS-01 / CTXP-01 / SUMP-02): production-wired providers.
+  // PostgresSessionStore consumes the same Drizzle `db` handle already used by
+  // request_log + bufferedWriter (Pitfall 17-A: single pg.Pool — never construct
+  // a second handle). DefaultContextProvider is stateless so we use the exported
+  // singleton; NoopSummaryProvider is the Frame-03 default (never calls a model).
+  // metricsRegistry threads the Pitfall 17-E counter so fail-open events show up
+  // in `/metrics` as `router_session_append_failed_total{reason}`.
+  const sessionStore = new PostgresSessionStore(db, {
+    defaultTtlSec: env.SESSION_TTL_DAYS * 86400,
+    appendTimeoutMs: 1000,
+    logger: bootLog,
+    metricsRegistry: metrics,
+  });
+  const contextProvider = DefaultContextProvider;
+  const summaryProvider = new NoopSummaryProvider();
+  bootLog.info(
+    { defaultTtlDays: env.SESSION_TTL_DAYS },
+    'Phase 17 providers initialized — sessionStore + contextProvider (DefaultSlidingWindow) + summaryProvider (Noop)',
+  );
+
   const app = await buildApp({
     registry,
     bearerToken: env.ROUTER_BEARER_TOKEN,
@@ -159,6 +183,12 @@ async function main(): Promise<void> {
     usageDailyScheduler,
     pool, // Plan 05-04 D-G2 — enables /readyz postgres probe
     valkey, // Plan 08-01 DATA-06 — decorates app.valkey for Phase 8 consumers
+    // Phase 17 (v0.11.0): production-wired providers — all 3 routes consume
+    // these transparently. When undefined, SESS-06 stateless byte-identical
+    // contract applies; production always wires them.
+    sessionStore,
+    contextProvider,
+    summaryProvider,
     // Plan 08-02 (CLOUD-01) — pre-bind OLLAMA_API_KEY into the AdapterFactory
     // closure. Empty string when the operator runs local-only — assertCloudEnvIfConfigured
     // (above) refused to boot if cloud entries existed without a real key.
