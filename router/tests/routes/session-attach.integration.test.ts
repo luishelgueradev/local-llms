@@ -740,11 +740,107 @@ describe('Cross-route invariants', () => {
     expect(JSON.parse(resResp.body).error.code).toBe('invalid_session_id');
   });
 
-  it.todo(
-    'Idempotency leader+follower (Q5) — follower replay does NOT mutate conversation_turns ' +
-      '[deferred: requires the full Valkey-backed multiplexer fixture from ' +
-      'tests/routes/idempotency-integration.test.ts; Plan 17-06 ships the source-level ' +
-      '`idempotencyRole !== "follower"` guard in all three routes (grep-verified) and ' +
-      'Plan 17-07 will exercise it end-to-end alongside the production composition root]',
-  );
+  it('Idempotency leader+follower (Q5) — follower replay does NOT mutate conversation_turns', async () => {
+    // Plan 17-07: flip the Wave-0 it.todo by injecting a hand-rolled
+    // IdempotencyMultiplexer via BuildAppOpts.idempotency (test seam added
+    // in app.ts at the same plan boundary). The fake returns role:'follower'
+    // and serves a pre-canned cached body on awaitNonStreamResult — exactly
+    // what a real follower replay receives from Valkey. The route's
+    // `idempotencyRole !== 'follower'` source-level guard (6 sites,
+    // grep-verified in Plan 17-06 SUMMARY) must short-circuit the appendTurn
+    // path: store.appendTurn MUST NOT be called on the follower request.
+    //
+    // Crucially, this exercise does NOT require Valkey — the test only cares
+    // about the leader/follower discriminator's effect on the SessionStore
+    // appendTurn invocation count, which is independent of the wire-level
+    // chunks/channels machinery exercised by tests/routes/idempotency-integration.test.ts.
+    // Capture every appendTurn call via the FakeSessionStoreOpts.appendCalls
+    // sink (see tests/fakes.ts line 79). The Q5 invariant is that this array
+    // remains empty for the follower request.
+    const appendCalls: Array<{
+      session_id: string;
+      agent_id: string;
+      turn: Parameters<SessionStore['appendTurn']>[2];
+    }> = [];
+    const sessionStore = makeFakeSessionStore({ appendCalls });
+
+    // Hand-rolled IdempotencyMultiplexer that ALWAYS returns 'follower' and
+    // serves a Phase-16-shape cached body for the follower replay path.
+    // Mirrors the cached body shape produced by chat-completions.ts publishNonStream.
+    const cachedBody = {
+      id: 'chatcmpl-cached-leader-id',
+      object: 'chat.completion',
+      created: 0,
+      model: CHAT_MODEL,
+      choices: [
+        {
+          index: 0,
+          message: { role: 'assistant', content: 'cached-leader-response' },
+          finish_reason: 'stop',
+        },
+      ],
+      usage: { prompt_tokens: 7, completion_tokens: 3, total_tokens: 10 },
+    };
+    const fakeIdempotency = {
+      acquire: async () => ({ role: 'follower' as const }),
+      publishNonStream: async () => {},
+      publishStreamEvent: async () => {},
+      finalizeStream: async () => {},
+      awaitNonStreamResult: async () => ({
+        body: cachedBody,
+        upstreamMessageId: 'msg_leader_upstream',
+      }),
+      awaitStreamResult: async function* () {
+        yield { terminal: 'done' as const };
+      },
+    };
+
+    // buildAppWithSession's narrow signature doesn't expose the idempotency
+    // seam — build the app inline so the fake multiplexer flows through.
+    const registry = makeRegistryStore(loadRegistryFromString(YAML));
+    const { factory } = makeAdapterFactory(spy);
+    app = await buildApp({
+      registry,
+      bearerToken: TOKEN,
+      loggerOpts: false as never,
+      makeAdapter: factory,
+      semaphores: {
+        get: () =>
+          ({
+            acquire: async () => () => {},
+            stats: () => ({ inFlight: 0, queued: 0 }),
+          }) as never,
+      },
+      bufferedWriter: makeFakeBufferedWriter(),
+      metrics: makeFakeMetrics(),
+      sessionStore,
+      contextProvider: DefaultContextProvider as never,
+      summaryProvider: new NoopSummaryProvider(),
+      // The Q5 test seam — see app.ts BuildAppOpts.idempotency JSDoc.
+      idempotency: fakeIdempotency as never,
+    });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/chat/completions',
+      headers: authHeaders({
+        'x-agent-id': 'a-q5',
+        'x-session-id': 'sess-q5',
+        'idempotency-key': '01HQ5TESTQ5TESTQ5TESTQ5TES',
+      }),
+      payload: {
+        model: CHAT_MODEL,
+        messages: [{ role: 'user', content: 'follower replay should NOT appendTurn' }],
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    // The follower's response body should mirror the cached leader's body.
+    const parsed = JSON.parse(res.body) as { choices: { message: { content: string } }[] };
+    expect(parsed.choices[0].message.content).toBe('cached-leader-response');
+    // Q5 INVARIANT: appendTurn MUST NOT be called on the follower path.
+    expect(appendCalls.length).toBe(0);
+    // The adapter MUST NOT be called on the follower path either (cached replay).
+    expect(spy.calls.length).toBe(0);
+  });
 });

@@ -574,6 +574,96 @@ The live-router smoke harness (`bin/smoke-test-router.sh`) covers the initialize
 
 ---
 
+## Sessions + ContextProvider (Phase 17 — v0.11.0)
+
+Phase 17 introduces server-side multi-turn sessions via the `X-Session-ID` request header. Sessions are persisted to Postgres (tables `sessions` + `conversation_turns` from migration 0006) and reloaded automatically on every request that carries the header. Callers without the header continue to operate stateless and byte-identical to Phase 16 behavior (SESS-06 contract).
+
+### Env var: `SESSION_TTL_DAYS`
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SESSION_TTL_DAYS` | `7` | Sliding TTL (in days) for new sessions. Every successful `appendTurn` refreshes `sessions.expires_at = now() + SESSION_TTL_DAYS`; idle sessions age out without operator intervention. Minimum: `1`. |
+
+Set it in `.env`:
+```dotenv
+SESSION_TTL_DAYS=7
+```
+
+A zero or negative value fails Zod parsing at boot (the schema enforces `min(1)`). The boot path threads the env value into `PostgresSessionStore` via the production composition root (`router/src/index.ts`):
+```ts
+new PostgresSessionStore(db, {
+  defaultTtlSec: env.SESSION_TTL_DAYS * 86400,
+  appendTimeoutMs: 1000,
+  logger: bootLog,
+  metricsRegistry: metrics,
+});
+```
+
+### `models.yaml`: `ctx_size` + `context_strategy` per entry
+
+Each registry entry gains two fields that the `ContextProvider` consults when trimming session history (CTXP-04). Defaults are wired by the Zod schema so existing entries continue to work unchanged:
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `ctx_size` | `8192` | Model context window in tokens. Used by the sliding-window / truncate strategies to compute the history budget. Set this to the **exact** value the underlying backend advertises (Ollama: `ollama show <model> --modelfile \| grep num_ctx`; vLLM: `--max-model-len`; llama.cpp: `--ctx-size`). |
+| `context_strategy` | `sliding-window` | Trim policy. `sliding-window` keeps the most recent turns that fit `ctx_size - safety_margin`; `truncate` additionally caps at `100` turns. System messages are NEVER evicted (CTXP-03 / P4-04 BLOCK). |
+
+Example:
+```yaml
+models:
+  - name: chat-local
+    backend: ollama
+    backend_url: http://ollama:11434/v1
+    backend_model: qwen2.5:7b
+    ctx_size: 8192
+    context_strategy: sliding-window
+    capabilities: [chat]
+```
+
+**Hot-edit gotcha (`project_models_yaml_hot_edit.md`):** changes to `ctx_size` / `context_strategy` require flushing the Valkey registry cache **AND** recreating the router container — `docker compose restart router` is not sufficient because the registry cache lives in Valkey:
+```bash
+docker compose exec valkey valkey-cli DEL "model-registry:default"
+docker compose up -d --force-recreate router
+```
+
+### `X-Session-ID` lifecycle
+
+- **Format**: `/^[A-Za-z0-9._:-]{1,128}$/` — caller-supplied opaque ID (ULID, UUID, or any operator-defined scheme). Malformed values return `400 invalid_session_id`.
+- **Request**: send `X-Session-ID: <id>` (and the mandatory `X-Agent-Id: <agent>`) on every request that should participate in the same conversation.
+- **Response**: the router echoes `X-Session-ID: <id>` on every response that touched a session (SESS-05 — Pitfall 17-D: header is stamped BEFORE `reply.sse` / `reply.send` so it appears on both stream and non-stream paths).
+- **Absent header**: stateless mode — zero `sessions` / `conversation_turns` writes, byte-identical wire output to Phase 16 (SESS-06).
+- **Cross-agent isolation (SESS-03 / P4-03 BLOCK)**: a session is owned by the `X-Agent-Id` that created it. A request with a mismatched agent gets an empty history (loadHistory returns `[]`) — the route does NOT return 403 because that would confirm the session ID exists (Pitfall 17-B).
+- **Sliding TTL**: `sessions.expires_at` is refreshed on every successful `appendTurn` (Q6 RESOLVED). Idle sessions expire after `SESSION_TTL_DAYS` of inactivity; expired sessions read as empty history (cron GC of fully-expired rows is deferred to v0.12).
+- **Append semantics (SESS-04)**: synchronous durable write with a **1 s** timeout. On timeout: `persisted: false`, structured warn log `{ event: 'session_append_failed_open', reason: 'timeout' }`, Prometheus counter increment, route continues stateless. Differs from `request_log`'s async-buffered fire-and-forget.
+
+### Prometheus signal
+
+```
+# HELP router_session_append_failed_total SessionStore.appendTurn fail-open events. Bounded label: reason (timeout | error).
+# TYPE router_session_append_failed_total counter
+router_session_append_failed_total{reason="timeout"} 0
+router_session_append_failed_total{reason="error"} 0
+```
+
+Both label values are force-initialized at boot so the series appears in `/metrics` on a cold router. Operators alert on `rate(router_session_append_failed_total[5m]) > 0.01` (≥1 fail-open every 100s).
+
+### Verification
+
+| Criterion | Verified by |
+|-----------|-------------|
+| Two turns same `X-Session-ID` → history injected | `tests/routes/session-attach.integration.test.ts` (SC-1 family — 9 cases per protocol) |
+| Cross-agent isolation (mismatched `X-Agent-Id`) | `tests/routes/session-attach.integration.test.ts` (SC-2) |
+| Sliding-window trim respects `ctx_size` | `tests/routes/session-attach.integration.test.ts` (SC-3) |
+| Stateless mode byte-identical to Phase 16 | `tests/routes/session-attach.integration.test.ts` (SC-4) + Plan 16-04 P9-02 golden snapshot |
+| `X-Session-ID` response header (non-stream + stream) | `tests/routes/session-attach.integration.test.ts` (SESS-05 — per protocol) |
+| Pitfall 17-E counter wired into prom-client | `tests/unit/metricsRegistry.test.ts` + smoke section test 5 |
+| Pitfall 17-F fire-and-forget IIFE (65ms under 3s store delay) | `tests/routes/session-attach.integration.test.ts` Pitfall 17-F |
+| Q5 idempotency follower never mutates conversation_turns | source-level guard `idempotencyRole !== 'follower'` at 6 sites + Plan 17-07 follower integration test |
+
+The live-router smoke harness (`bin/smoke-test-router.sh`) Phase 17 section covers: SESS-05 header echo on non-stream, SC-1 sentinel-echo soft-check (warn-not-fail to accommodate small local models), invalid_session_id 400, SC-4 stateless shape preservation, Prometheus counter presence, POL-06 cardinality re-check.
+
+---
+
 ## Backups + retencion
 
 **Diarios al disco** (sidecar `pg-backup` corre cada noche):

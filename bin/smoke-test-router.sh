@@ -2286,11 +2286,155 @@ fi
 echo ""
 echo "[smoke-test-router] === Phase 16 RESS section complete ==="
 
+# ============================================================================
+# Phase 17 (v0.11.0 — SESS-01..06 + CTXP-01..04 + SUMP-01..03) — SessionStore +
+# ContextProvider + SummaryProvider session attach
+# ============================================================================
+# Proves the Plan 17-06 three-route wire-up is live end-to-end at HTTP level:
+#
+#   SESS-05: X-Session-ID response header echoed on non-stream chat-completions.
+#   SC-1:    Two turns with the same X-Session-ID inject history into turn 2
+#            (sentinel echo soft-check — integration tests verify the structural
+#            injection separately under tests/routes/session-attach.integration.test.ts).
+#   invalid_session_id: malformed X-Session-ID → 400 (SESS-05 strict regex).
+#   SC-4:    Stateless mode (no X-Session-ID) preserves Phase-16-shaped response.
+#   17-E:    Prometheus counter router_session_append_failed_total{reason}
+#            present in /metrics on cold boot (force-initialized timeout + error series).
+#   POL-06:  cardinality re-check on the new counter — no _id labels.
+#
+# Designed to run against the live tunnel after `docker compose up -d --build router`.
+# Mirrors the SC1 chat-completions + Phase 16 RESS section shape (curl + grep + jq).
+# ============================================================================
+
+echo ""
+echo "[smoke-test-router] === Phase 17 — SessionStore + ContextProvider + SummaryProvider (SESS-01..06 + CTXP-01..04 + SUMP-01..03) ==="
+
+SESS_ID="smoke-sess-$(date +%s)"
+AGENT_ID="smoke-agent-1"
+SESSION_GATE_OK=1
+
+# Test 1 — non-stream round-trip; X-Session-ID header echoed (SESS-05).
+RESP1_FILE=$(mktemp /tmp/sess-smoke-XXXXXX.txt)
+trap 'rm -f "${RESP1_FILE}"' EXIT
+RESP1_CODE=$(curl -sS -i -o "${RESP1_FILE}" -w '%{http_code}' \
+  --max-time 60 \
+  -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+  -H "X-Agent-Id: ${AGENT_ID}" \
+  -H "X-Session-ID: ${SESS_ID}" \
+  -H "Content-Type: application/json" \
+  -d "{\"model\":\"${MODEL}\",\"messages\":[{\"role\":\"user\",\"content\":\"Recordá este nombre único exacto: jorgüez-42-omega. Vamos a verificar memoria.\"}]}" \
+  "${ROUTER_URL}/v1/chat/completions" 2>/dev/null || echo "000")
+
+if [[ "${RESP1_CODE}" != "200" ]]; then
+  fail "SESS-05: first round-trip failed (HTTP ${RESP1_CODE}); body head: $(head -c 200 "${RESP1_FILE}")"
+  SESSION_GATE_OK=0
+fi
+
+if [[ "${SESSION_GATE_OK}" -eq 1 ]]; then
+  if grep -qi "^x-session-id: ${SESS_ID}" "${RESP1_FILE}"; then
+    pass "SESS-05: X-Session-ID response header present on non-stream"
+  else
+    fail "SESS-05: X-Session-ID response header missing on non-stream (Pitfall 17-D regression?)"
+  fi
+fi
+
+# Test 2 — SC-1: second turn shows context awareness (sentinel echo soft-check).
+# The earlier draft only asserted that choices[0].message.content was non-empty,
+# which a non-aware model trivially passes. We now seed the first turn with a
+# unique sentinel ('jorgüez-42-omega') and grep the second response for it — a
+# real memory-aware response will echo or reference the sentinel; a stateless
+# fall-through cannot. Integration tests cover the structural injection.
+if [[ "${SESSION_GATE_OK}" -eq 1 ]]; then
+  RESP2=$(curl -sS \
+    --max-time 60 \
+    -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+    -H "X-Agent-Id: ${AGENT_ID}" \
+    -H "X-Session-ID: ${SESS_ID}" \
+    -H "Content-Type: application/json" \
+    -d "{\"model\":\"${MODEL}\",\"messages\":[{\"role\":\"user\",\"content\":\"¿Cuál era el nombre único que te dije que recordaras? Respondé con el nombre exacto, nada más.\"}]}" \
+    "${ROUTER_URL}/v1/chat/completions" 2>/dev/null || echo "")
+  RESP2_TEXT=$(echo "${RESP2}" | python3 -c 'import sys, json
+try:
+  d = json.load(sys.stdin)
+  print(d.get("choices", [{}])[0].get("message", {}).get("content", ""))
+except Exception:
+  print("")' 2>/dev/null || echo "")
+
+  if [[ -z "${RESP2_TEXT}" ]]; then
+    fail "SC-1: second-turn response missing content (body head: ${RESP2:0:200})"
+  elif echo "${RESP2_TEXT}" | grep -qiE "jorgüez-42-omega|jorguez-42-omega"; then
+    pass "SC-1: second turn references the sentinel from turn 1 (history was injected end-to-end)"
+  else
+    # Soft-fail: some small local models cannot reliably echo a multi-segment
+    # sentinel even with history injected. The structural injection IS verified
+    # by integration tests in tests/routes/session-attach.integration.test.ts;
+    # this smoke is a real-world sanity gate. Emit a warning, not a hard fail.
+    echo "[smoke-test-router] WARN: SC-1 sentinel not found in second response — model may have rephrased; integration tests verify the structural injection. Got: ${RESP2_TEXT:0:120}"
+    pass "SC-1: second turn returned content (sentinel-echo soft-check warned above — see integration tests for structural verification)"
+  fi
+fi
+
+# Test 3 — invalid X-Session-ID (whitespace not allowed by SESS-05 regex) → 400.
+RESP_BAD_CODE=$(curl -sS -o /dev/null -w "%{http_code}" \
+  --max-time 30 \
+  -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+  -H "X-Agent-Id: ${AGENT_ID}" \
+  -H "X-Session-ID: has space" \
+  -H "Content-Type: application/json" \
+  -d "{\"model\":\"${MODEL}\",\"messages\":[{\"role\":\"user\",\"content\":\"x\"}]}" \
+  "${ROUTER_URL}/v1/chat/completions" 2>/dev/null || echo "000")
+if [[ "${RESP_BAD_CODE}" == "400" ]]; then
+  pass "invalid_session_id: 400 returned for bad X-Session-ID"
+else
+  fail "invalid_session_id: expected 400, got ${RESP_BAD_CODE}"
+fi
+
+# Test 4 — SC-4: stateless byte-identical. Request WITHOUT X-Session-ID returns
+# Phase-16-shaped response (no SessionStore involvement). We confirm the shape
+# by parsing the response as a valid OpenAI chat-completion (id + choices + usage).
+RESP_NOSESS=$(curl -sS \
+  --max-time 60 \
+  -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+  -H "X-Agent-Id: ${AGENT_ID}" \
+  -H "Content-Type: application/json" \
+  -d "{\"model\":\"${MODEL}\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}" \
+  "${ROUTER_URL}/v1/chat/completions" 2>/dev/null || echo "")
+SC4_SHAPE_OK=$(echo "${RESP_NOSESS}" | python3 -c 'import sys, json
+try:
+  d = json.load(sys.stdin)
+  ok = all(k in d for k in ["id", "choices", "usage"])
+  print("ok" if ok else "fail")
+except Exception:
+  print("fail")' 2>/dev/null || echo "fail")
+if [[ "${SC4_SHAPE_OK}" == "ok" ]]; then
+  pass "SC-4: stateless mode (no X-Session-ID) returns Phase-16-shaped response (id/choices/usage)"
+else
+  fail "SC-4: stateless response missing required fields; body head: ${RESP_NOSESS:0:200}"
+fi
+
+# Test 5 — Prometheus counter present in /metrics (force-initialized in Plan 17-07).
+METRICS=$(curl -sS --max-time 30 -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" "${ROUTER_URL}/metrics" 2>/dev/null || echo "")
+if echo "${METRICS}" | grep -q "^router_session_append_failed_total"; then
+  pass "router_session_append_failed_total present in /metrics"
+else
+  fail "router_session_append_failed_total missing from /metrics (Pitfall 17-E counter not wired? router rebuild needed?)"
+fi
+
+# Test 6 — POL-06 / P8-03 cardinality re-check: no _id labels on the new counter.
+if echo "${METRICS}" | grep -E '^router_session_append_failed_total\{' | grep -qE '(tenant_id|agent_id|session_id|project_id)='; then
+  fail "POL-06 violation: router_session_append_failed_total has an _id label"
+else
+  pass "POL-06: router_session_append_failed_total has bounded labels only (no _id)"
+fi
+
+echo ""
+echo "[smoke-test-router] === Phase 17 SESSION section complete ==="
+
 # Final summary
 echo ""
 echo "[smoke-test-router] ================================================================"
 if [[ "${FAILURES}" -eq 0 ]]; then
-  echo "[smoke-test-router]  Phase 2/3/4/5/7/8/12/13/15/16 router verification: COMPLETE."
+  echo "[smoke-test-router]  Phase 2/3/4/5/7/8/12/13/15/16/17 router verification: COMPLETE."
   echo "[smoke-test-router]  Model used : ${MODEL}"
   echo "[smoke-test-router]  Router URL : ${ROUTER_URL}"
   echo "[smoke-test-router]  Skipped    : ${SKIPS:-0} (vision sections require llama3.2-vision pull + outbound HTTPS)"

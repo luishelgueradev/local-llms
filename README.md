@@ -390,6 +390,71 @@ option is shown as a YAML comment so operators can uncomment and adapt.
 
 ---
 
+## Sessions / `X-Session-ID` (v0.11.0)
+
+Phase 17 ships server-side multi-turn conversations as an **opt-in** capability — the router
+keeps a Postgres-backed history per `X-Session-ID` and injects it into every subsequent request
+that carries the same header. Callers without the header continue to operate stateless and
+**byte-identical** to v0.10.0 (SESS-06 contract).
+
+This is a **Memory Abstraction Layer**, not a Memory implementation — the router stores raw
+conversation turns and trims them to fit `ctx_size`; it does NOT embed, summarize, or retrieve.
+Semantic memory / RAG belongs to consumer applications (e.g. n8n flows, Unsloth Studio) that
+sit downstream of this endpoint.
+
+### How it works
+
+1. Caller chooses a stable opaque ID per conversation (ULID, UUID, or any matching `/^[A-Za-z0-9._:-]{1,128}$/`).
+2. Caller sends every request for that conversation with both `X-Agent-Id: <agent>` (mandatory — owns the session) and `X-Session-ID: <id>`.
+3. Router loads history → invokes `ContextProvider` to trim within `ctx_size` (system pin always preserved) → forwards to the backend → appends user + assistant turns to `conversation_turns`.
+4. Router echoes `X-Session-ID: <id>` on the response so the caller can confirm.
+
+### Example: stateful 2-turn chat (OpenAI surface)
+
+```bash
+SESS=$(uuidgen)
+
+# Turn 1 — seed.
+curl -s -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+     -H "X-Agent-Id: agent-1" \
+     -H "X-Session-ID: ${SESS}" \
+     -H "Content-Type: application/json" \
+     -d '{"model":"chat-local","messages":[{"role":"user","content":"My name is Luis."}]}' \
+     https://local-llms.tu-dominio.com/v1/chat/completions
+
+# Turn 2 — recall.
+curl -s -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+     -H "X-Agent-Id: agent-1" \
+     -H "X-Session-ID: ${SESS}" \
+     -H "Content-Type: application/json" \
+     -d '{"model":"chat-local","messages":[{"role":"user","content":"What is my name?"}]}' \
+     https://local-llms.tu-dominio.com/v1/chat/completions
+# → response includes Luis (the model saw turn 1 because the router loaded the history).
+```
+
+The same pattern works on `/v1/messages` (Anthropic surface) and `/v1/responses` (Responses API surface).
+
+### Pairing with `X-Agent-Id` (mandatory)
+
+Sessions are scoped per `X-Agent-Id` — the agent that creates a session **owns** it. A request
+with a different agent ID gets an empty history (the router does NOT return 403 because that
+would leak existence; Pitfall 17-B). Always send `X-Agent-Id` together with `X-Session-ID`.
+
+### Stateless mode (default)
+
+Omit `X-Session-ID` entirely and the router writes zero session rows and returns a v0.10.0
+byte-identical wire shape. There is no opt-out flag — opt-in is per-request via the header.
+
+### Operator-facing config
+
+See [DEPLOY.md §"Sessions + ContextProvider (Phase 17 — v0.11.0)"](DEPLOY.md#sessions--contextprovider-phase-17--v0110)
+for: `SESSION_TTL_DAYS` env var (default 7), `ctx_size` + `context_strategy` per-entry fields
+in `models.yaml` (defaults `8192` + `sliding-window`), sliding TTL semantics, Prometheus signal
+(`router_session_append_failed_total{reason}`), and the hot-edit recipe (`valkey-cli DEL` +
+`docker compose up -d --force-recreate router`).
+
+---
+
 ## Operacion
 
 | Tarea | Comando |

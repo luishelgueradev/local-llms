@@ -274,6 +274,22 @@ export interface BuildAppOpts {
    * wiring does not pass this field.
    */
   rateLimitNow?: () => number;
+  /**
+   * Plan 17-07 (Q5 follower gate test): test injection seam for the
+   * IdempotencyMultiplexer. When provided, the internal `if (opts.valkey)`
+   * branch that constructs `makeIdempotencyMultiplexer({...})` is bypassed
+   * and the supplied multiplexer is passed to every route handler.
+   *
+   * Production wiring (index.ts) does NOT pass this — `opts.valkey` is the
+   * canonical signal. Tests that need to deterministically exercise the
+   * follower replay path inject a hand-rolled multiplexer here that returns
+   * `{ role: 'follower' }` on `acquire()` and a known cached body on
+   * `awaitNonStreamResult` (mirrors the ValkeyMock pattern in
+   * tests/routes/idempotency-integration.test.ts but without the Valkey
+   * surface; the test only cares about the leader/follower discriminator
+   * for the Q5 SessionStore-write gate).
+   */
+  idempotency?: IdempotencyMultiplexer;
 }
 
 /**
@@ -688,8 +704,13 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
   // multiplexer is always constructed at runtime. Subscriber-mode
   // connections are created via valkey.duplicate() per ioredis pub/sub
   // semantics — a subscribed connection cannot issue other commands.
-  let idempotency: IdempotencyMultiplexer | undefined;
-  if (opts.valkey) {
+  // Plan 17-07 (Q5 follower gate test): when an explicit multiplexer is
+  // injected via opts.idempotency, use it verbatim — bypasses the valkey
+  // construction below. Production wiring NEVER passes opts.idempotency;
+  // this seam exists solely for tests that need to deterministically
+  // exercise the follower replay path without a real Valkey pub/sub.
+  let idempotency: IdempotencyMultiplexer | undefined = opts.idempotency;
+  if (!idempotency && opts.valkey) {
     idempotency = makeIdempotencyMultiplexer({
       valkey: opts.valkey,
       log: app.log as Logger,
