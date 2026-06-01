@@ -43,6 +43,13 @@
       "when": 1780142072840,
       "tag": "0005_request_log_scoped_ids",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1780281151546,
+      "tag": "0006_sessions",
+      "breakpoints": true
     }
   ]
 }
