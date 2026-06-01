@@ -14,7 +14,7 @@
 //   for the "debug a runaway agent" use case (the literal use case in
 //   PROJECT.md), and status_class for error filtering.
 import { sql } from 'drizzle-orm';
-import { index, integer, numeric, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { index, integer, jsonb, numeric, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
 
 export const requestLog = pgTable(
   'request_log',
@@ -62,6 +62,12 @@ export const requestLog = pgTable(
     // Regex /^[A-Za-z0-9._-]{1,64}$/, lowercased. Invalid → silent NULL (D-12).
     // No routing impact, no content classification, no fixed enum (D-11).
     workload_class: text('workload_class'),
+    // Phase 18 (v0.11.0 — RETR-04): per-request pre-completion hook audit trail.
+    // JSONB; nullable (NULL when no hooks ran). Schema-by-convention; shape:
+    //   [{ hook_name, context_hash, latency_ms, chars_retrieved, status, error_message? }].
+    // See router/src/hooks/pre-completion.ts HookLogEntry[] (lands in Plan 18-06).
+    // Hashes only — full retrieved content never stored here (P5-05).
+    hook_log: jsonb('hook_log'),
   },
   (t) => ({
     // Baseline btree indexes per D-D1. Tune if/when volume warrants

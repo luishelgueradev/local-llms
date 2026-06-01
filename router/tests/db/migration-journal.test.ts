@@ -113,9 +113,14 @@ describe('Migration 0006 atomic tuple integrity (P9-01 BLOCK)', () => {
     expect(markers.length).toBeGreaterThanOrEqual(5);
   });
 
-  it('Test 2: _journal.json has exactly 7 entries', () => {
+  it('Test 2: _journal.json has at least 7 entries (idx=6 landed; later migrations append)', () => {
+    // Phase 18 Plan 02 (migration 0007) appended idx=7; the 0006 invariant under
+    // test is "idx=6 entry exists and is unchanged" + "prior entries unchanged",
+    // not "exactly 7 entries". Relaxed to >= 7 so the assertion stays correct
+    // as the journal grows. The 0007 describe block below asserts the exact
+    // post-0007 length (8).
     const journal = JSON.parse(readFileSync(JOURNAL_PATH, 'utf-8')) as { entries: unknown[] };
-    expect(journal.entries).toHaveLength(7);
+    expect(journal.entries.length).toBeGreaterThanOrEqual(7);
   });
 
   it('Test 2: _journal.json idx=6 entry has tag "0006_sessions" + version "7" + breakpoints true', () => {
@@ -226,15 +231,90 @@ describe('Migration 0006 atomic tuple integrity (P9-01 BLOCK)', () => {
 // EXPECTED_PRIOR_ENTRIES table is the immutable baseline.
 // ─────────────────────────────────────────────────────────────────────────────
 
+const SQL_PATH_0007 = path.join(ROUTER_ROOT, 'db/migrations/0007_request_log_hook_log.sql');
+const REQUEST_LOG_SCHEMA_PATH = path.join(ROUTER_ROOT, 'src/db/schema/request_log.ts');
+
+// Snapshot of entries[0..6] post-0006 — Test "entries 0..6 unchanged" asserts these
+// stay byte-for-byte unchanged after the 0007 append (P9-01 BLOCK invariant).
+const EXPECTED_PRIOR_ENTRIES_0007 = [
+  ...EXPECTED_PRIOR_ENTRIES,
+  { idx: 6, version: '7', when: 1780281151546, tag: '0006_sessions', breakpoints: true },
+];
+
 describe('Migration 0007 atomic tuple integrity (P9-01 BLOCK)', () => {
-  it.todo('Test 1: SQL file 0007_request_log_hook_log.sql exists');
-  it.todo('Test 1: SQL contains ALTER TABLE "request_log" ADD COLUMN "hook_log" JSONB NULL');
-  it.todo('Test 1: SQL contains COMMENT ON COLUMN "request_log"."hook_log" with Phase 18 + RETR-04 marker');
-  it.todo('Test 1: SQL contains NO CREATE INDEX (write-heavy column per design)');
-  it.todo('Test 2: _journal.json has exactly 8 entries (was 7 after Phase 17)');
-  it.todo('Test 2: _journal.json idx=7 entry has tag "0007_request_log_hook_log" + version "7" + breakpoints true');
-  it.todo('Test 2: _journal.json entries idx 0..6 are unchanged');
-  it.todo('Test 3: Drizzle schema request_log.ts contains hook_log: jsonb("hook_log")');
-  it.todo('Test 3: db/schema/index.ts barrel re-export still exports requestLog (unchanged)');
-  it.todo('Test 4: indivisible tuple — SQL + Drizzle schema + _journal.json all reference 0007 (3-of-3 grep gate)');
+  it('Test 1: SQL file 0007_request_log_hook_log.sql exists', () => {
+    expect(existsSync(SQL_PATH_0007)).toBe(true);
+  });
+
+  it('Test 1: SQL contains ALTER TABLE "request_log" ADD COLUMN "hook_log" JSONB NULL', () => {
+    const sql = readFileSync(SQL_PATH_0007, 'utf-8');
+    // JSONB column declared without NOT NULL → nullable by default.
+    expect(sql).toMatch(/ALTER TABLE\s+"request_log"\s+ADD COLUMN\s+IF NOT EXISTS\s+"hook_log"\s+jsonb/i);
+    expect(sql).not.toMatch(/"hook_log"\s+jsonb\s+NOT NULL/i);
+  });
+
+  it('Test 1: SQL contains COMMENT ON COLUMN "request_log"."hook_log" with Phase 18 + RETR-04 marker', () => {
+    const sql = readFileSync(SQL_PATH_0007, 'utf-8');
+    expect(sql).toMatch(/COMMENT ON COLUMN\s+"request_log"\."hook_log"/);
+    expect(sql).toMatch(/Phase 18/);
+    expect(sql).toMatch(/RETR-04/);
+  });
+
+  it('Test 1: SQL contains NO CREATE INDEX (write-heavy column per design)', () => {
+    const sql = readFileSync(SQL_PATH_0007, 'utf-8');
+    expect(sql).not.toMatch(/CREATE\s+INDEX/i);
+  });
+
+  it('Test 2: _journal.json has exactly 8 entries (was 7 after Phase 17)', () => {
+    const journal = JSON.parse(readFileSync(JOURNAL_PATH, 'utf-8')) as { entries: unknown[] };
+    expect(journal.entries).toHaveLength(8);
+  });
+
+  it('Test 2: _journal.json idx=7 entry has tag "0007_request_log_hook_log" + version "7" + breakpoints true', () => {
+    const journal = JSON.parse(readFileSync(JOURNAL_PATH, 'utf-8')) as {
+      entries: Array<{ idx: number; version: string; when: number; tag: string; breakpoints: boolean }>;
+    };
+    const entry = journal.entries[7];
+    expect(entry).toBeDefined();
+    expect(entry.idx).toBe(7);
+    expect(entry.tag).toBe('0007_request_log_hook_log');
+    expect(entry.version).toBe('7');
+    expect(entry.breakpoints).toBe(true);
+    expect(typeof entry.when).toBe('number');
+    // Monotonic ordering invariant: idx=7 `when` must exceed idx=6's 1780281151546.
+    expect(entry.when).toBeGreaterThan(1780281151546);
+  });
+
+  it('Test 2: _journal.json entries idx 0..6 are unchanged', () => {
+    const journal = JSON.parse(readFileSync(JOURNAL_PATH, 'utf-8')) as {
+      entries: Array<Record<string, unknown>>;
+    };
+    for (let i = 0; i < EXPECTED_PRIOR_ENTRIES_0007.length; i++) {
+      expect(journal.entries[i]).toEqual(EXPECTED_PRIOR_ENTRIES_0007[i]);
+    }
+  });
+
+  it('Test 3: Drizzle schema request_log.ts contains hook_log: jsonb("hook_log")', () => {
+    const schema = readFileSync(REQUEST_LOG_SCHEMA_PATH, 'utf-8');
+    expect(schema).toMatch(/hook_log:\s*jsonb\(['"]hook_log['"]\)/);
+  });
+
+  it('Test 3: db/schema/index.ts barrel re-export still exports requestLog (unchanged)', () => {
+    const idx = readFileSync(SCHEMA_INDEX_PATH, 'utf-8');
+    expect(idx).toMatch(/requestLog/);
+    expect(idx).toMatch(/from\s+['"]\.\/request_log\.js['"]/);
+  });
+
+  it('Test 4: indivisible tuple — SQL + Drizzle schema + _journal.json all reference 0007 (3-of-3 grep gate)', () => {
+    // P9-01 BLOCK enforcement: every one of the three artifacts MUST mention the 0007
+    // marker. If any is missing, the Drizzle migrator silently skips the migration
+    // (project memory project_drizzle_migration_journal.md). All three checked
+    // together in a single test so a partial landing is caught in one assertion.
+    const sql = readFileSync(SQL_PATH_0007, 'utf-8');
+    const schema = readFileSync(REQUEST_LOG_SCHEMA_PATH, 'utf-8');
+    const journal = readFileSync(JOURNAL_PATH, 'utf-8');
+    expect(sql).toMatch(/0007|hook_log/);
+    expect(schema).toMatch(/hook_log/);
+    expect(journal).toMatch(/0007_request_log_hook_log/);
+  });
 });

@@ -50,6 +50,13 @@
       "when": 1780281151546,
       "tag": "0006_sessions",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1780318886848,
+      "tag": "0007_request_log_hook_log",
+      "breakpoints": true
     }
   ]
 }
