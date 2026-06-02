@@ -276,7 +276,7 @@ Plans:
 4. A caller can call `fastify.embeddingProvider.embed(input, opts)` directly (Fastify decorator injected) and receive the same embedding output as `POST /v1/embeddings` — verified by unit test asserting interface conformance (EMBP-01); the `/v1/embeddings` wire shape is byte-identical to pre-Phase-19 (EMBP-02 regression).
 5. Vitest full suite passes with 0 failures; `tsc --noEmit` reports 0 errors.
 
-**Plans:** 7/7 plans complete
+**Plans:** 8/8 plans complete
 
 Plans:
 **Wave 1**
@@ -309,7 +309,7 @@ Plans:
 | 16. /v1/responses Streaming + Tool Calls | 4/4 | Complete   | 2026-05-31 |
 | 17. SessionStore + ContextProvider + SummaryProvider | 7/7 | Complete    | 2026-06-01 |
 | 18. MCP Client + RetrieverProvider + Pre-Completion Hook | 8/8 | Complete    | 2026-06-01 |
-| 19. EmbeddingProvider Formalization + Observability Hardening | 7/7 | Complete   | 2026-06-01 |
+| 19. EmbeddingProvider Formalization + Observability Hardening | 8/8 | Complete   | 2026-06-02 |
 
 ---
 
