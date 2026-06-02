@@ -2594,7 +2594,8 @@ else
         "name": "get_time",
         "description": "Get the current UTC time in ISO-8601 format.",
         "parameters": {"type":"object","properties":{},"required":[]}
-      }]
+      }],
+      "tool_choice": "required"
     }' > "${RESS_TOOLS_FILE}" 2>/dev/null || true
 
   # Assert response.function_call_arguments.delta events present
