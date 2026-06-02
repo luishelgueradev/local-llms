@@ -297,6 +297,7 @@ Plans:
 **Wave 4** *(blocked on Wave 3 completion)*
 
 - [x] 19-07-PLAN.md — OBSV-03 docs (DEPLOY + README EmbeddingProvider sections + v0.11.0 SHIPPED banner) + OBSV-04 re-verify describe block (extend 0007-hook-log.test.ts — D-22 NO new migration) + STATE/ROADMAP/REQUIREMENTS milestone wrap-up [OBSV-03, OBSV-04] — SHIPPED 2026-06-01
+- [x] 19-08-PLAN.md — Post-ship gap closure (RESS-WITH-TOOLS): `openAIChunksToCanonicalEvents` extended with `delta.tool_calls[]` branch — emits canonical `content_block_start(tool_use)` + `content_block_delta(input_json_delta)` + `content_block_stop`; 4-case vitest regression net; smoke gate hardened with `"tool_choice":"required"` [post-ship correctness — no new requirement coverage] — SHIPPED 2026-06-02
 
 ---
 
