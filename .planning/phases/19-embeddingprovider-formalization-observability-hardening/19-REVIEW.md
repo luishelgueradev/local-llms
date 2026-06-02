@@ -23,7 +23,25 @@ findings:
   warning: 5
   info: 3
   total: 10
-status: issues_found
+status: resolved
+resolution:
+  resolved_at: 2026-06-02
+  resolution_commits:
+    - 5267b5c # /code-review --fix sweep — 10 of 15 xhigh findings
+    - 4aa633b # PR #1 — deferred findings (registry race, semaphore, coverage, cardinality)
+  followup_review:
+    invoked_at: 2026-06-02
+    depth: xhigh
+    findings_total: 15
+    findings_applied: 14
+    findings_skipped: 1
+  notes: |
+    The original gsd-code-reviewer pass (standard depth, 10 findings — below)
+    was followed by a second `/code-review 19 --fix` xhigh-effort sweep
+    (9 finder angles + 1 gap-sweep, 15 findings) on 2026-06-02. All 10
+    standard-pass findings either map directly to xhigh findings that were
+    fixed, or were judged superseded by the broader fix. See "Resolution
+    log (2026-06-02)" section below for the mapping and commit references.
 ---
 
 # Phase 19: Code Review Report
@@ -266,3 +284,85 @@ evictable.push(...incomingMessages);
 _Reviewed: 2026-06-01_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: standard_
+
+---
+
+# Resolution log (2026-06-02)
+
+A second review pass was invoked via `/code-review 19 --fix` at xhigh effort
+(9 parallel finder angles — line-by-line, removed-behavior, cross-file
+tracer, language-pitfall, wrapper-correctness, reuse, simplification,
+efficiency, altitude — plus a Phase 3 gap sweep). It surfaced 15 findings.
+All but one were applied; the unfixed item was not a defect (a "live regex
+lowercase metric names" subcomponent that is implementation-tolerant in
+production since router metrics all use lowercase). Two commits closed
+the work:
+
+- **`5267b5c`** — `fix(19): apply /code-review --fix sweep — 10 of 15 findings`
+  Surgical fixes to provider + route + smoke script.
+
+- **`4aa633b`** (PR #1) — `fix(19): apply deferred /code-review findings —
+  registry race, semaphore, coverage, cardinality`
+  Structural fixes that were explicitly deferred from the first sweep
+  because they required interface widening or new test surfaces.
+
+## Mapping — standard review (10) → xhigh review (15) → resolution
+
+| Standard pass finding | xhigh-pass finding | Resolution | Commit |
+|---|---|---|---|
+| CR-01 AbortSignal bypassed | #1 AbortSignal not threaded | Widened `EmbeddingProvider.embed` callOpts with `signal?: AbortSignal`; route passes `controller.signal`; provider forwards to `adapter.embeddings(...)` | `5267b5c` |
+| CR-02 Socket listener leak on success | #2 Same | Restored `req.raw.socket?.off('close', onClose)` before `reply.send(result)` on the success path (was present pre-refactor, lost in EMBP-02 rewrite) | `5267b5c` |
+| WR-01 Float32Array misalignment risk | #15 Same | `decodeBase64Float32` copies into a fresh `ArrayBuffer` (offset 0) before wrapping; also adds explicit %4 length rejection (xhigh #11) | `5267b5c` |
+| WR-02 Duplicate model resolution route↔provider | #9 Registry torn-snapshot race | Widened callOpts with optional `entry: ModelEntry`; route passes already-resolved entry from `applyPreflight`; provider's `registry.resolve` becomes `callOpts.entry ?? registry.resolve(...)` | `4aa633b` (PR #1) |
+| WR-03 `undefined as unknown as AbortSignal` type-lie | Subsumed by #1 | Resolved by the WR-02 / #1 fix — no more cast, real signal threaded | `5267b5c` |
+| WR-04 `fastify.d.ts` non-optional declaration vs reality | (not on xhigh top 15) | Not addressed. The route already defensively casts to `{ embeddingProvider?: ... }` and throws a clear error if absent. Mitigated, not fixed. | — |
+| WR-05 Dual `makeAdapterWithCloudKey` closures (index.ts + app.ts) | (cleanup category — flagged but ranked below the 15-finding cap) | Not addressed. Acknowledged duplication; the comment at `index.ts:229` already documents the parallel-closure intent. | — |
+| IN-01 Cardinality regex doesn't handle label values containing `}` | #13 Same + lowercase-only metric names | Rewrote `checkCardinalityLive` parser: explicit name extraction (per-spec `[a-zA-Z_:][a-zA-Z0-9_:]*` charset) + label-set walker that honors `\\` and `\"` escapes inside quoted values. 4 new tests cover the `}`-in-value, uppercase, `:`-separator, and escaped-quote cases. | `4aa633b` (PR #1) |
+| IN-02 Stale test comment in `embeddings.test.ts:130-132` | (not on xhigh top 15) | Not addressed. Cosmetic; the comment is misleading but does not affect behavior. | — |
+| IN-03 `makeFakeContextProvider` drops non-system turns | (outside Phase 19 scope — `fakes.ts` Phase 17 fake) | Not addressed by this review pass. Should be tracked as a Phase 17 fake-quality follow-up. | — |
+
+## xhigh review findings not on the standard pass
+
+These were caught by the deeper xhigh sweep and applied alongside the
+standard-pass-mapped fixes:
+
+| xhigh # | Finding | Resolution | Commit |
+|---|---|---|---|
+| #3 | Base64 `bypass` metric double-count + predicate drift (route + provider both emitting per-input) | Route stopped emitting `bypass`; provider receives `encoding_format` via callOpts and owns the bypass emission, gated on actual cache presence | `5267b5c` |
+| #4 | Mixed-batch dims-check skipped for cache hits | Single post-loop sweep over every slot replaces two divergent dims paths | `5267b5c` |
+| #5 | Base64 cache pollution (EMB-H06 violation) | Provider's new `cacheActive` predicate skips both `get` and `set` when `encoding_format==='base64'` | `5267b5c` |
+| #6 | Response `model` field regression (alias vs upstream id) | Provider now preserves `upstreamResult.model`, falling back to `entry.name` only on all-cache-hit | `5267b5c` |
+| #7 | `recordFailure` trips breaker on non-backend errors (RegistryUnknownModelError / CapabilityNotSupportedError / EmbeddingsDimsMismatchError) | Catch skip-list widened with these provider-internal error types | `5267b5c` |
+| #8 | `embeddingsDimsTotal` under-counts mixed batches | Single `.inc({model,dims}, inputs.length)` after the post-loop dims sweep | `5267b5c` |
+| #10 | EMBP-01 suite only exercises `makeFakeEmbeddingProvider`; real factory uncovered | New describe block with 12 tests against `makeOpenAIEmbeddingProvider` covering dims enforcement, capability gate, registry resolve, base64 decode, count mismatch, cache hit/miss, base64 cache skip, entry-bypass-resolve, signal forwarding, upstream model id preservation, per-batch dims metric, base64 length rejection | `4aa633b` (PR #1) |
+| #11 | `decodeBase64Float32` silent truncation on non-mod-4 | Explicit `% 4 !== 0` rejection before construction | `5267b5c` |
+| #12 | Semaphore acquired unconditionally before provider call | Semaphore acquisition moved into the provider via per-call `semaphore?: BackendSemaphore` callOpt, scoped to the upstream-call branch only | `4aa633b` (PR #1) |
+| #13 | Structured dims-mismatch operator log lost | Restored `log.error({model, backend, expected_dims, actual_dims, index}, …)` before throw | `5267b5c` |
+| #14 | Smoke test runs `.ts` via bare `node` (fragile on Node <22.6) | Switched to `npx tsx` with `node_modules` / `npx` precondition (skip-instead-of-false-fail) | `5267b5c` |
+| #14b | Live IIFE has no `.catch()` — UnhandledPromiseRejection on fetch failure | Added `.catch()` writing stderr + exit 2 (distinct from exit 1 cardinality violation) so smoke can distinguish scrape failure from real `_id` detection | `4aa633b` (PR #1) |
+
+## Validation footer
+
+- **Test suite:** `npx vitest run` — **1288 passed**, 39 skipped, 2 todo, 0 failed.
+  (Pre-resolution baseline was 1272; +16 = 12 new EMBP-01 real-factory tests + 4 new live-parser tests.)
+- **Typecheck:** `npx tsc --noEmit` — clean.
+- **Baseline rotation:** `router/tests/unit/grep-gates/embeddings-untouched-baseline.json`
+  SHA-256 rotated to `598b3644…` with rationale tying back to PR #1.
+- **GitHub PR:** https://github.com/luishelgueradev/local-llms/pull/1 (merged via rebase 2026-06-02).
+
+## Items intentionally left open
+
+- **WR-04** (`fastify.d.ts` non-optional declaration vs reality) — the route's
+  defensive cast + runtime throw mitigates the practical impact; widening
+  the type to optional everywhere would force every consumer to add a guard.
+  Deferred as a typing-discipline question rather than a defect.
+- **WR-05** (dual `makeAdapterWithCloudKey` closure) — pure DRY violation;
+  no behavioral risk under current single-boot composition. Tracked for
+  a future cleanup pass.
+- **IN-02** (stale comment) — cosmetic.
+- **IN-03** (`makeFakeContextProvider` drops non-system turns) — Phase 17
+  fake-quality issue, not Phase 19 scope. Should be picked up by a Phase 17
+  test-hardening follow-up.
+
+_Resolution recorded by: Claude (interactive `/code-review --fix` + follow-up PR)_
+_Date: 2026-06-02_
