@@ -23,8 +23,9 @@
 
 import type { Logger } from 'pino';
 import type { ValkeyClient } from '../clients/valkey.js';
-import type { RegistryStore } from '../config/registry.js';
+import type { ModelEntry, RegistryStore } from '../config/registry.js';
 import type { AdapterFactory } from '../backends/adapter.js';
+import type { BackendSemaphore } from '../concurrency/semaphore.js';
 import { makeEmbeddingsCache, embeddingsCacheKey, type EmbeddingsCache } from '../embeddings/cache.js';
 import {
   RegistryUnknownModelError,
@@ -68,6 +69,27 @@ export interface EmbeddingProvider {
       encoding_format?: 'float' | 'base64';
       /** Route's AbortController.signal — wired to req.raw.socket 'close' for SC3 propagation. */
       signal?: AbortSignal;
+      /**
+       * Phase 19 review-deferred fix: pre-resolved ModelEntry from the route's
+       * applyPreflight. When provided, the provider SKIPS its own
+       * registry.resolve(model) call, preventing a torn-snapshot race where
+       * a hot-reload between the route's resolve and the provider's resolve
+       * yields different entries (semaphore acquired on one backend, upstream
+       * call against another, recordOutcome stamped with a third). Optional
+       * for backward compatibility — providers without an upstream resolver
+       * (e.g. the test fake) can still ignore it.
+       */
+      entry?: ModelEntry;
+      /**
+       * Phase 19 review-deferred fix: per-call BackendSemaphore. When
+       * provided, the provider acquires a slot ONLY when an upstream call
+       * is needed (missIndices.length > 0), restoring EMB-H01 hot-cache
+       * free-path. Pre-fix the route acquired before delegating, charging
+       * a concurrency slot to all-cache-hit requests too. Threaded
+       * per-call (not at factory level) so the route can resolve the
+       * correct semaphore from its already-resolved `entry.backend`.
+       */
+      semaphore?: BackendSemaphore;
     },
   ): Promise<{
     embeddings: number[][];
@@ -198,9 +220,18 @@ export function makeOpenAIEmbeddingProvider(
       const inputs: string[] = Array.isArray(input) ? input : [input];
 
       // 2. Resolve model — throws RegistryUnknownModelError on miss.
-      const entry = registry.resolve(callOpts.model);
+      // Phase 19 review-deferred fix: when the route already resolved an
+      // entry in applyPreflight, reuse it instead of re-resolving here. A
+      // models.yaml hot-reload between the two .resolve() calls would
+      // otherwise return different ModelEntries — the route's semaphore,
+      // recordOutcome, and request_log stamp would all reference entry A
+      // while the upstream call goes to entry B. Pre-resolved entry passed
+      // via callOpts.entry collapses that window.
+      const entry = callOpts.entry ?? registry.resolve(callOpts.model);
 
       // 3. Capability gate — throws CapabilityNotSupportedError if absent.
+      // When entry came from the route's applyPreflight the gate already
+      // ran there; re-checking is cheap defense-in-depth.
       if (!entry.capabilities.includes('embeddings')) {
         throw new CapabilityNotSupportedError(entry.name, 'embeddings');
       }
@@ -280,68 +311,84 @@ export function makeOpenAIEmbeddingProvider(
       if (missIndices.length > 0) {
         const missInputs = missIndices.map((i) => inputs[i] as string);
 
-        // D-02: always request float from upstream. Phase 19 review fix:
-        // forward the route's AbortSignal so client disconnects actually
-        // cancel the upstream HTTP call (SC3 propagation).
-        const upstreamResult = await adapter.embeddings(
-          missInputs,
-          entry.backend_model,
-          callOpts.signal ?? new AbortController().signal,
-          {
-            encoding_format: 'float',
-            dimensions: callOpts.dimensions,
-            user: callOpts.user,
-          },
-        );
+        // Phase 19 review-deferred fix: acquire the backend semaphore ONLY
+        // when an upstream call is actually needed. Pre-fix the route held a
+        // slot through the cache-lookup path, throttling cache-only requests
+        // (inverting EMB-H01: hot cache should be effectively free). When
+        // callOpts.semaphore is absent (test fixtures that don't care), the
+        // provider skips this and goes straight to the adapter.
+        const release = callOpts.semaphore
+          ? await callOpts.semaphore.acquire(callOpts.signal)
+          : null;
 
-        upstreamModel = upstreamResult.model;
-
-        // Accumulate upstream usage (cache hits contribute 0).
-        upstreamUsage = {
-          prompt_tokens:
-            upstreamUsage.prompt_tokens + (upstreamResult.usage?.prompt_tokens ?? 0),
-          total_tokens:
-            upstreamUsage.total_tokens + (upstreamResult.usage?.total_tokens ?? 0),
-        };
-
-        if (upstreamResult.data.length !== missIndices.length) {
-          throw new Error(
-            `embeddings provider: upstream returned ${upstreamResult.data.length} vectors ` +
-              `for ${missIndices.length} inputs (count mismatch)`,
-          );
-        }
-
-        for (let j = 0; j < upstreamResult.data.length; j++) {
-          const item = upstreamResult.data[j]!;
-          // Decode base64 defensively — provider asked for 'float' (D-02),
-          // but some adapters return base64 regardless.
-          const rawEmbedding = item.embedding;
-          const vec: number[] = Array.isArray(rawEmbedding)
-            ? rawEmbedding
-            : decodeBase64Float32(rawEmbedding);
-
-          const origIdx = missIndices[j]!;
-          slots[origIdx] = vec;
-
-          // Populate cache only when cache is active for this request
-          // (EMB-H06: base64 requests do not pollute the float cache).
-          if (cacheActive) {
-            const key = embeddingsCacheKey({
-              backend: entry.backend,
-              backend_model: entry.backend_model,
+        try {
+          // D-02: always request float from upstream. Phase 19 review fix:
+          // forward the route's AbortSignal so client disconnects actually
+          // cancel the upstream HTTP call (SC3 propagation).
+          const upstreamResult = await adapter.embeddings(
+            missInputs,
+            entry.backend_model,
+            callOpts.signal ?? new AbortController().signal,
+            {
               encoding_format: 'float',
               dimensions: callOpts.dimensions,
-              input: inputs[origIdx] as string,
-            });
-            try {
-              await cache!.set(key, vec);
-            } catch (err) {
-              log.warn(
-                { err, key },
-                'embeddings cache: set failed; vector served but not cached',
-              );
+              user: callOpts.user,
+            },
+          );
+
+          upstreamModel = upstreamResult.model;
+
+          // Accumulate upstream usage (cache hits contribute 0).
+          upstreamUsage = {
+            prompt_tokens:
+              upstreamUsage.prompt_tokens + (upstreamResult.usage?.prompt_tokens ?? 0),
+            total_tokens:
+              upstreamUsage.total_tokens + (upstreamResult.usage?.total_tokens ?? 0),
+          };
+
+          if (upstreamResult.data.length !== missIndices.length) {
+            throw new Error(
+              `embeddings provider: upstream returned ${upstreamResult.data.length} vectors ` +
+                `for ${missIndices.length} inputs (count mismatch)`,
+            );
+          }
+
+          for (let j = 0; j < upstreamResult.data.length; j++) {
+            const item = upstreamResult.data[j]!;
+            // Decode base64 defensively — provider asked for 'float' (D-02),
+            // but some adapters return base64 regardless.
+            const rawEmbedding = item.embedding;
+            const vec: number[] = Array.isArray(rawEmbedding)
+              ? rawEmbedding
+              : decodeBase64Float32(rawEmbedding);
+
+            const origIdx = missIndices[j]!;
+            slots[origIdx] = vec;
+
+            // Populate cache only when cache is active for this request
+            // (EMB-H06: base64 requests do not pollute the float cache).
+            if (cacheActive) {
+              const key = embeddingsCacheKey({
+                backend: entry.backend,
+                backend_model: entry.backend_model,
+                encoding_format: 'float',
+                dimensions: callOpts.dimensions,
+                input: inputs[origIdx] as string,
+              });
+              try {
+                await cache!.set(key, vec);
+              } catch (err) {
+                log.warn(
+                  { err, key },
+                  'embeddings cache: set failed; vector served but not cached',
+                );
+              }
             }
           }
+        } finally {
+          // Idempotent release — buildRelease() inside the semaphore is
+          // already idempotent, so calling here unconditionally is safe.
+          if (release) release();
         }
       }
 

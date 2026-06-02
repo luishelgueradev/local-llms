@@ -185,14 +185,15 @@ export function registerEmbeddingsRoute(
         );
       }
 
-      // Idempotent release closure (Pitfall 1 from Plan 03-04).
-      let released = false;
-      let release: () => void = () => {};
-      const safeRelease = (): void => {
-        if (released) return;
-        released = true;
-        release();
-      };
+      // Phase 19 review-deferred fix: semaphore acquisition moved into the
+      // provider (scoped to the actual adapter.embeddings call), so the
+      // route no longer needs a release closure. Pre-fix the route held a
+      // slot through the entire cache-lookup path, inverting EMB-H01's
+      // intent (hot cache should be free, not throttled). The provider
+      // receives `semaphores` via its factory opts in the composition root.
+      // `safeRelease` retained as a no-op so call sites stay symmetrical
+      // (the catch block + finally still invoke it).
+      const safeRelease = (): void => {};
 
       // Idempotent record closure (Pitfall 8 — Plan 05-02 Task 3 pattern).
       let recorded = false;
@@ -274,11 +275,11 @@ export function registerEmbeddingsRoute(
           );
         }
 
-        // Semaphore acquire — provider delegates to the adapter for cache misses.
-        // Acquire BEFORE the provider call so the slot is held during upstream I/O.
-        const semaphore = opts.semaphores.get(entry.backend);
-        release = await semaphore.acquire(controller.signal);
-        released = false;
+        // Phase 19 review-deferred fix: semaphore acquisition moved inside
+        // the provider, scoped to the actual adapter.embeddings() call. The
+        // route no longer acquires here so all-cache-hit requests don't
+        // consume a concurrency slot. opts.semaphores is still threaded
+        // into the provider via the composition root (index.ts + app.ts).
 
         const providerResult = await provider.embed(inputs, {
           model: body.model,
@@ -293,6 +294,19 @@ export function registerEmbeddingsRoute(
           // (SC3 propagation — was previously dropped at the provider boundary
           // via `undefined as unknown as AbortSignal`).
           signal: controller.signal,
+          // Phase 19 review-deferred fix: pass the already-resolved entry so
+          // the provider does NOT re-resolve. Without this, a models.yaml
+          // hot-reload between applyPreflight (above) and provider.embed
+          // would yield two different ModelEntries — semaphore acquired on
+          // one backend, upstream HTTP call against another. `entry` is from
+          // the same applyPreflight snapshot used for breaker + recordOutcome
+          // + request_log stamping.
+          entry,
+          // Phase 19 review-deferred fix: hand the provider the specific
+          // BackendSemaphore for entry.backend so it acquires ONLY when an
+          // upstream call is needed (cache misses). Pre-fix the route held
+          // a slot through cache-lookups too, inverting EMB-H01.
+          semaphore: opts.semaphores.get(entry.backend),
         });
 
         // Plan 08-04 — fire-and-forget breaker success signal.

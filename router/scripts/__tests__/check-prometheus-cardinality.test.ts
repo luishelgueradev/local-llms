@@ -141,4 +141,39 @@ describe('checkCardinalityLive — D-14 live exposition parser', () => {
     // Line 1 is the comment, line 2 is the metric — so lineNo=1 (0-based) gives lineNo+1=2
     expect(violations[0]?.location).toBe('/metrics:2');
   });
+
+  // Phase 19 review-deferred fix: regex hardening for `}` and uppercase + `:`.
+  it('detects _id label when an earlier label value contains a raw `}`', () => {
+    // Spec: only `\\`, `\n`, `\"` are required escapes inside label values —
+    // `}` is allowed raw. The pre-fix regex `[^}]*` truncated at the first
+    // raw `}`, hiding any subsequent _id label from cardinality enforcement.
+    const exposition = 'router_x{path="/api/v1/{id}",tenant_id="acme"} 1';
+    const violations = checkCardinalityLive(exposition);
+    expect(violations).toHaveLength(1);
+    expect(violations[0]?.forbiddenLabel).toBe('tenant_id');
+  });
+
+  it('detects _id label on a metric whose name contains uppercase letters', () => {
+    // Spec: metric name charset is [a-zA-Z_:][a-zA-Z0-9_:]*. The pre-fix
+    // regex used [a-z0-9_]+ and would never match such a line, so a
+    // third-party-instrumented dep emitting MyMetric{TenantId="x"} would
+    // slip past the cardinality guard entirely.
+    const exposition = 'router_MyMetric{tenant_id="acme"} 1';
+    const violations = checkCardinalityLive(exposition);
+    expect(violations).toHaveLength(1);
+    expect(violations[0]?.forbiddenLabel).toBe('tenant_id');
+    expect(violations[0]?.metricNameHint).toBe('router_MyMetric');
+  });
+
+  it('detects _id label on a metric whose name uses `:` separator (Prometheus rule)', () => {
+    const exposition = 'router:rpc_total{session_id="abc"} 1';
+    const violations = checkCardinalityLive(exposition);
+    expect(violations).toHaveLength(1);
+    expect(violations[0]?.forbiddenLabel).toBe('session_id');
+  });
+
+  it('does not break on escaped quotes inside label values (legitimate path)', () => {
+    const exposition = 'router_x{quote="a\\"b",route="/x"} 1';
+    expect(checkCardinalityLive(exposition)).toEqual([]);
+  });
 });
