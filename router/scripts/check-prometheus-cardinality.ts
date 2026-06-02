@@ -116,12 +116,55 @@ export function checkCardinalityLive(exposition: string): CardinalityViolation[]
   for (let lineNo = 0; lineNo < lines.length; lineNo++) {
     const line = lines[lineNo];
     if (!line || line.startsWith('#')) continue;
-    const labelMatch = line.match(/^([a-z0-9_]+)\{([^}]*)\}/);
-    if (!labelMatch) continue;
-    const metricName = labelMatch[1]!;
-    const labelText = labelMatch[2]!;
-    for (const m of labelText.matchAll(/([a-z0-9_]+)\s*=\s*"/g)) {
-      const labelName = m[1]!;
+
+    // Phase 19 review-deferred fix: previous regex `^([a-z0-9_]+)\{([^}]*)\}`
+    // had two failure modes:
+    //   (a) `[^}]*` stops at the first literal `}` in a label value
+    //       (Prometheus exposition allows raw `}` in label values — only
+    //       `\\`, `\n`, `\"` are required escapes), silently truncating
+    //       label-set parsing for any value containing `}`.
+    //   (b) `[a-z0-9_]+` for the metric name misses uppercase + `:`,
+    //       both permitted by `[a-zA-Z_:][a-zA-Z0-9_:]*` in the spec.
+    //
+    // Parse the metric name explicitly (per spec character set), then
+    // require '{' to begin the label set, then walk the label set as a
+    // sequence of `name="value"[,]` pairs honoring `\\` and `\"` so a
+    // value containing `}` does not prematurely close the set. The line
+    // is rejected only if we cannot find the closing `}` followed by
+    // whitespace + a number.
+    const nameMatch = line.match(/^([a-zA-Z_:][a-zA-Z0-9_:]*)\{/);
+    if (!nameMatch) continue;
+    const metricName = nameMatch[1]!;
+    let cursor = nameMatch[0].length;
+    const labelNames: string[] = [];
+    while (cursor < line.length && line[cursor] !== '}') {
+      // Whitespace + leading comma between pairs.
+      while (cursor < line.length && (line[cursor] === ' ' || line[cursor] === ',')) {
+        cursor++;
+      }
+      // Label name per spec: [a-zA-Z_][a-zA-Z0-9_]*
+      const remaining = line.slice(cursor);
+      const labelNameMatch = remaining.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*"/);
+      if (!labelNameMatch) break;
+      labelNames.push(labelNameMatch[1]!);
+      cursor += labelNameMatch[0].length;
+      // Walk the quoted value, honoring `\\` and `\"` escapes.
+      while (cursor < line.length) {
+        const ch = line[cursor];
+        if (ch === '\\' && cursor + 1 < line.length) {
+          cursor += 2;
+          continue;
+        }
+        if (ch === '"') {
+          cursor++;
+          break;
+        }
+        cursor++;
+      }
+    }
+    if (labelNames.length === 0) continue;
+    const labelText = line.slice(nameMatch[0].length, cursor);
+    for (const labelName of labelNames) {
       if (FORBIDDEN_LABEL_RE.test(labelName)) {
         violations.push({
           location: `/metrics:${lineNo + 1}`,
@@ -144,6 +187,13 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     // Live mode: --live <url-or-dash>
     // target='-' means read from stdin; target=<url> means HTTP GET.
     const target = args[1];
+    // Phase 19 review-deferred fix: previous IIFE had no `.catch()`, so any
+    // fetch/stdin failure escaped as an UnhandledPromiseRejection — Node 22
+    // prints a stack and exits non-zero with no usable signal for operators.
+    // Trap fetch / readFileSync failures explicitly and emit a stderr
+    // message + exit 2 (distinct from exit 1 which signals cardinality
+    // violation, so the smoke wrapper can distinguish "scrape failed" from
+    // "scrape passed and found _id labels").
     (async () => {
       let text: string;
       if (!target || target === '-') {
@@ -164,7 +214,14 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         process.exit(1);
       }
       process.stdout.write('cardinality-check: OK — no /_id$/ labels found (mode=live)\n');
-    })();
+    })().catch((err) => {
+      process.stderr.write(
+        `cardinality-check: live scrape failed before parsing — ${
+          err instanceof Error ? err.message : String(err)
+        }\n`,
+      );
+      process.exit(2);
+    });
   } else {
     // Static mode (default — backward compatible):
     // Usage: node check-prometheus-cardinality.ts [--source] [path]

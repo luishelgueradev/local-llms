@@ -1,8 +1,8 @@
 {
   "file": "router/src/routes/v1/embeddings.ts",
-  "sha256": "c8fc80114788955f75bbdf3f91322ea58e6a3fa137106fb2bf3537aec5c5618b",
+  "sha256": "598b364416cc6e2e1d485776d4f6d7451197ead8e3f04d9260392e8734a69404",
   "captured_at": "2026-06-02",
   "phase": "19",
-  "plan": "19-REVIEW",
-  "rationale": "P7-01 BLOCK — baseline rotated as part of /code-review --fix sweep: (1) restore socket close listener off() on success path (CR-02 leak fix); (2) thread AbortSignal + encoding_format into provider.embed call (SC3 propagation + EMB-H06 honor); (3) drop route-side base64 bypass emission (now owned by provider — eliminates double-count); (4) widen catch-side breaker.recordFailure filter to skip provider-internal errors (RegistryUnknownModelError / CapabilityNotSupportedError / EmbeddingsDimsMismatchError). Wire response model now preserves upstream id (regression fix). All vitest regression on router/tests/routes/embeddings.test.ts passes."
+  "plan": "19-REVIEW-DEFERRED",
+  "rationale": "P7-01 BLOCK — baseline rotated as part of /code-review --fix follow-up PR for the 3 structural findings deferred from the initial sweep: (#9) route now passes already-resolved `entry` into provider.embed to close the torn-snapshot race window between applyPreflight's resolve and the provider's re-resolve under hot-reload; (#12) semaphore acquisition moved out of the route — route now threads `semaphore: opts.semaphores.get(entry.backend)` into provider.embed so the slot is held only when an upstream call actually fires (restores EMB-H01 hot-cache free-path). All vitest regression on router/tests/routes/embeddings.test.ts + new real-factory tests in router/tests/providers/embedding-provider.test.ts pass."
 }
