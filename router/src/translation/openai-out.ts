@@ -473,12 +473,14 @@ export async function* canonicalToOpenAISse(
  * Translate an upstream OpenAI ChatCompletionChunk stream into a canonical event
  * stream. Used by the adapter when the OpenAI-compat backend is the source of truth.
  *
- * NOTE: tool_use chunk-to-canonical translation is not added here in Plan 04-04 —
- * the canonical → OpenAI direction (canonicalToOpenAISse) handles tool_use streaming.
- * Upstream tool_calls in OpenAI chunks would require accumulating arguments fragments
- * across chunks before emitting input_json_delta canonical events; that's a follow-up
- * since the current adapters (Ollama, llama.cpp) handle tool_calls via the non-stream
- * response branch in practice. The text-only stream path is unchanged.
+ * Plan 19-08 (post-ship) lands the upstream-tool_calls translation. The translator
+ * emits canonical tool_use content_block events keyed by tool_call.index, closing
+ * the gap surfaced by the RESS-WITH-TOOLS smoke gate. Per-iteration state map
+ * `toolCallState` tracks `index → { id, name, argsBuffer, blockIndex, opened }`;
+ * `nextToolBlockIndex` starts at 0 (text block reserves index 0) and is monotonically
+ * incremented as new tool_use blocks open. The text block (if any) is closed before
+ * opening any tool_use block to keep block-index ordering monotonic for the
+ * downstream `/v1/responses` FSM. See `.planning/debug/ress-with-tools-empty-output.md`.
  */
 export interface OpenAIChunksToCanonicalOpts {
   /** Registry-facing model name. Used as canonical.message.model on message_start. */
@@ -535,6 +537,17 @@ export async function* openAIChunksToCanonicalEvents(
   // then a separate usage-only chunk — we must capture it before that arrives.
   let upstreamFinishReason: string | null | undefined;
 
+  // Plan 19-08: per-iteration state for upstream delta.tool_calls[] translation.
+  // Keyed by upstream `tool_call.index` (the slot in the parallel tool_calls[] array).
+  // Each entry tracks the canonical block index, the OPEN/CLOSED state, and an
+  // accumulator for arguments fragments. Text block reserves canonical index 0;
+  // tool_use blocks get monotonically increasing indices from 1.
+  const toolCallState = new Map<
+    number,
+    { id: string; name: string; argsBuffer: string; blockIndex: number; opened: boolean }
+  >();
+  let nextToolBlockIndex = 0;
+
   for await (const chunk of chunks) {
     if (!started) {
       started = true;
@@ -581,10 +594,78 @@ export async function* openAIChunksToCanonicalEvents(
       };
     }
 
+    // Plan 19-08: handle upstream delta.tool_calls[]. The OpenAI spec keys
+    // parallel tool calls by `index`; first sighting of a new index requires
+    // id + function.name to register state and emit content_block_start of
+    // type 'tool_use'. Subsequent fragments of function.arguments accumulate
+    // and emit input_json_delta canonical events. Defensive: skip the chunk
+    // if first sighting lacks id or name (malformed upstream).
+    type ChoiceDeltaWithToolCalls = {
+      tool_calls?: Array<{
+        index: number;
+        id?: string;
+        type?: 'function';
+        function?: { name?: string; arguments?: string };
+      }>;
+    };
+    const delta = (choice?.delta ?? {}) as ChoiceDeltaWithToolCalls;
+    const toolCallsDelta = delta.tool_calls;
+    if (Array.isArray(toolCallsDelta)) {
+      for (const tc of toolCallsDelta) {
+        let state = toolCallState.get(tc.index);
+        if (!state) {
+          // First sighting: require id + name to register, else skip until a
+          // later chunk supplies them.
+          if (!tc.id || !tc.function?.name) {
+            continue;
+          }
+          const blockIndex = ++nextToolBlockIndex; // text reserves index 0
+          state = {
+            id: tc.id,
+            name: tc.function.name,
+            argsBuffer: '',
+            blockIndex,
+            opened: false,
+          };
+          toolCallState.set(tc.index, state);
+        }
+        if (!state.opened) {
+          // Close any open text block first so block-index ordering stays
+          // monotonic for the downstream responses-stream FSM.
+          if (textBlockOpen) {
+            yield { type: 'content_block_stop', index: 0 };
+            textBlockOpen = false;
+          }
+          yield {
+            type: 'content_block_start',
+            index: state.blockIndex,
+            content_block: { type: 'tool_use', id: state.id, name: state.name, input: {} },
+          };
+          state.opened = true;
+        }
+        const argFrag = tc.function?.arguments;
+        if (typeof argFrag === 'string' && argFrag.length > 0) {
+          state.argsBuffer += argFrag;
+          yield {
+            type: 'content_block_delta',
+            index: state.blockIndex,
+            delta: { type: 'input_json_delta', partial_json: argFrag },
+          };
+        }
+      }
+    }
+
     if (chunk.usage) {
       if (textBlockOpen) {
         yield { type: 'content_block_stop', index: 0 };
         textBlockOpen = false;
+      }
+      // Plan 19-08: close any open tool_use blocks BEFORE emitting message_delta.
+      for (const [, state] of toolCallState) {
+        if (state.opened) {
+          yield { type: 'content_block_stop', index: state.blockIndex };
+          state.opened = false;
+        }
       }
       // WR-01: use the captured finish_reason (from the last choices-bearing chunk)
       // to set the canonical stop_reason. Hardcoding 'end_turn' here masked
@@ -608,8 +689,17 @@ export async function* openAIChunksToCanonicalEvents(
     }
   }
 
+  // Plan 19-08: post-loop cleanup. Close text first (index 0), then any still-open
+  // tool_use blocks. Reached only when the stream ends without a usage-only chunk.
   if (textBlockOpen) {
     yield { type: 'content_block_stop', index: 0 };
+    textBlockOpen = false;
+  }
+  for (const [, state] of toolCallState) {
+    if (state.opened) {
+      yield { type: 'content_block_stop', index: state.blockIndex };
+      state.opened = false;
+    }
   }
   yield { type: 'message_stop' };
 }
