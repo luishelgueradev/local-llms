@@ -2551,12 +2551,23 @@ echo "[smoke-test-router] EMBP-01 conformance: validated by router/tests/provide
 # Live /metrics cardinality scrape catches runtime-only label drift
 # (CI in-band test catches static + import-time drift; smoke catches
 # runtime drift in the deployed image).
-if curl -sS --max-time 10 "${ROUTER_URL}/metrics" \
-  | node router/scripts/check-prometheus-cardinality.ts --live - >/dev/null 2>&1
-then
-  pass "OBSV-02-LIVE: /metrics exposition has no /_id\$/ labels (live parser)"
+#
+# Phase 19 review fix: invoke the TypeScript script through `npx tsx`
+# instead of bare `node`. Node <22.6 cannot execute .ts directly; bare
+# `node *.ts` exits with SyntaxError and the `else` branch silently
+# masks a healthy deploy as failing. The repo's other TS scripts all
+# run through tsx (see package.json `dev`/`test` scripts).
+if [[ -d router/node_modules ]] && command -v npx >/dev/null 2>&1; then
+  if curl -sS --max-time 10 "${ROUTER_URL}/metrics" \
+    | (cd router && npx tsx scripts/check-prometheus-cardinality.ts --live -) >/dev/null 2>&1
+  then
+    pass "OBSV-02-LIVE: /metrics exposition has no /_id\$/ labels (live parser)"
+  else
+    fail "OBSV-02-LIVE: /metrics exposition contains _id labels"
+  fi
 else
-  fail "OBSV-02-LIVE: /metrics exposition contains _id labels OR script unavailable"
+  echo "[smoke-test-router] SKIP OBSV-02-LIVE — npx/router/node_modules unavailable (run from host with node toolchain)"
+  SKIPS=$((SKIPS + 1))
 fi
 
 # ─── RESS-WITH-TOOLS (D-18) ──────────────────────────────────────────

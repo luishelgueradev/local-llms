@@ -33,11 +33,21 @@ describe('EmbeddingProvider interface — EMBP-01', () => {
     expect(typeof mod.makeOpenAIEmbeddingProvider).toBe('function');
   });
 
-  it('EmbeddingProvider.embed signature: (input: string | string[], opts: { model, dimensions?, user? }) => Promise<{ embeddings, model, usage }>', () => {
+  it('EmbeddingProvider.embed signature: (input, opts: { model, dimensions?, user?, encoding_format?, signal? }) => Promise<{ embeddings, model, usage }>', () => {
+    // Phase 19 review fix: interface widened with optional `encoding_format`
+    // (EMB-H06: provider honors base64-bypasses-cache) and `signal` (SC3:
+    // client-disconnect cancels upstream HTTP call). Both are additive +
+    // optional, so existing callers continue to compile.
     expectTypeOf<EmbeddingProvider['embed']>().toEqualTypeOf<
       (
         input: string | string[],
-        opts: { model: string; dimensions?: number; user?: string },
+        opts: {
+          model: string;
+          dimensions?: number;
+          user?: string;
+          encoding_format?: 'float' | 'base64';
+          signal?: AbortSignal;
+        },
       ) => Promise<{
         embeddings: number[][];
         model: string;

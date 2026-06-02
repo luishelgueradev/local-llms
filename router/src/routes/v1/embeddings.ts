@@ -34,6 +34,8 @@ import { BackendSaturatedError } from '../../concurrency/semaphore.js';
 import {
   BreakerOpenError,
   CapabilityNotSupportedError,
+  EmbeddingsDimsMismatchError,
+  RegistryUnknownModelError,
   mapToHttpStatus,
 } from '../../errors/envelope.js';
 import { applyPreflight } from '../../dispatch/preflight.js';
@@ -248,18 +250,14 @@ export function registerEmbeddingsRoute(
         const inputs = Array.isArray(body.input) ? body.input : [body.input];
         opts.metrics?.embeddingsBatchSize.observe(inputs.length);
 
-        // Risk #2 Option A: route owns the base64 bypass metric because the
-        // provider always works in float (D-02). When the client requests base64
-        // AND a provider is wired (meaning cache would be present if this were
-        // a float request), increment bypass for each input item.
-        // The predicate uses opts.metrics?.embeddingsCacheTotal presence as the
-        // "cache is wired" signal — mirrors the pre-refactor `opts.cache !== undefined`
-        // semantic (only apps/fixtures that wired cache also wire the metric).
-        if (body.encoding_format === 'base64' && opts.metrics?.embeddingsCacheTotal !== undefined) {
-          for (let i = 0; i < inputs.length; i++) {
-            opts.metrics.embeddingsCacheTotal.inc({ result: 'bypass' });
-          }
-        }
+        // Phase 19 review fix (Risk #2): the route NO LONGER emits the
+        // `bypass` metric. The provider now owns it (alongside hit/miss),
+        // because it knows whether the cache is actually wired. Emitting
+        // bypass from the route resulted in:
+        //   - double counts (route bypass + provider hit/miss for the same input)
+        //   - bypass emissions when no cache existed (predicate drifted to
+        //     `metrics presence` instead of `cache presence`)
+        // The provider receives encoding_format via callOpts and decides.
 
         // Phase 19 (EMBP-02 / D-09 / D-10): delegate upstream call + cache +
         // dims-enforcement to EmbeddingProvider. The provider is sourced from:
@@ -286,6 +284,15 @@ export function registerEmbeddingsRoute(
           model: body.model,
           dimensions: body.dimensions,
           user: body.user,
+          // Phase 19 review fix: thread encoding_format so the provider can
+          // honor EMB-H06 (base64 bypasses cache) without the route emitting
+          // a parallel bypass metric.
+          encoding_format: body.encoding_format,
+          // Phase 19 review fix: thread the AbortSignal so the upstream HTTP
+          // call inside the adapter is actually cancelled on client disconnect
+          // (SC3 propagation — was previously dropped at the provider boundary
+          // via `undefined as unknown as AbortSignal`).
+          signal: controller.signal,
         });
 
         // Plan 08-04 — fire-and-forget breaker success signal.
@@ -335,6 +342,12 @@ export function registerEmbeddingsRoute(
             );
           }
         }
+        // Phase 19 review fix (CR-02): remove the socket close listener on the
+        // success path. Pre-Phase-19 the route did this off() here; the refactor
+        // dropped it, leaving the controller closure pinned on keep-alive
+        // sockets and risking phantom abort() on subsequent requests reusing
+        // the same socket. Mirrors the follower (L240) and catch (L350) paths.
+        req.raw.socket?.off('close', onClose);
         return reply.send(result);
       } catch (err) {
         // BackendSaturatedError: set Retry-After before re-throw — same pattern as
@@ -342,9 +355,21 @@ export function registerEmbeddingsRoute(
         if (err instanceof BackendSaturatedError) {
           void reply.header('Retry-After', String(Math.ceil(err.waitedMs / 1000)));
         }
-        // Plan 08-04 — fire-and-forget breaker failure signal (skip BreakerOpenError
-        // to avoid recursive trip on the breaker's own surfaced error).
-        if (!(err instanceof BreakerOpenError)) {
+        // Plan 08-04 — fire-and-forget breaker failure signal.
+        // Skip BreakerOpenError (avoid recursive trip on the breaker's own surfaced error).
+        // Phase 19 review fix (recordFailure scope): also skip provider-internal errors
+        // that do NOT represent a backend failure — RegistryUnknownModelError /
+        // CapabilityNotSupportedError / EmbeddingsDimsMismatchError can be raised
+        // by the provider's internal re-resolve and validation when the registry
+        // is mutated mid-request or when an upstream returns an out-of-contract
+        // shape; attributing those to the backend trips the breaker and takes
+        // out unrelated routes (chat-completions) on the same backend.
+        if (
+          !(err instanceof BreakerOpenError) &&
+          !(err instanceof RegistryUnknownModelError) &&
+          !(err instanceof CapabilityNotSupportedError) &&
+          !(err instanceof EmbeddingsDimsMismatchError)
+        ) {
           void opts.breaker.recordFailure(entry.backend, err);
         }
         req.raw.socket?.off('close', onClose);

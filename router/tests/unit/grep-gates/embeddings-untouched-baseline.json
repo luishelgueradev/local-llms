@@ -1,8 +1,8 @@
 {
   "file": "router/src/routes/v1/embeddings.ts",
-  "sha256": "16e1fc952573c856d5813a3fce0638ce9686ff7f3c1125f9d0db6a354bcbf629",
-  "captured_at": "2026-06-01",
+  "sha256": "c8fc80114788955f75bbdf3f91322ea58e6a3fa137106fb2bf3537aec5c5618b",
+  "captured_at": "2026-06-02",
   "phase": "19",
-  "plan": "19-03",
-  "rationale": "P7-01 BLOCK — baseline rotated as part of EMBP-02 route refactor (delegates to fastify.embeddingProvider per CONTEXT D-09 / D-10). Wire shape verified byte-identical by full vitest regression on router/tests/routes/embeddings.test.ts + smoke Phase 7 EMBED-01 + Phase 12 EMB-H01..06 gates."
+  "plan": "19-REVIEW",
+  "rationale": "P7-01 BLOCK — baseline rotated as part of /code-review --fix sweep: (1) restore socket close listener off() on success path (CR-02 leak fix); (2) thread AbortSignal + encoding_format into provider.embed call (SC3 propagation + EMB-H06 honor); (3) drop route-side base64 bypass emission (now owned by provider — eliminates double-count); (4) widen catch-side breaker.recordFailure filter to skip provider-internal errors (RegistryUnknownModelError / CapabilityNotSupportedError / EmbeddingsDimsMismatchError). Wire response model now preserves upstream id (regression fix). All vitest regression on router/tests/routes/embeddings.test.ts passes."
 }

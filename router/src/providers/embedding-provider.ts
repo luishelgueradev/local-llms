@@ -42,15 +42,33 @@ export { RegistryUnknownModelError, CapabilityNotSupportedError, EmbeddingsDimsM
  * The interface every embedding implementation must satisfy.
  *
  * D-01: Returns normalized { embeddings: number[][], model, usage }.
- * D-02: Provider always works in float — never accepts encoding_format='base64'.
+ * D-02: Provider always works in float internally — when the client requested
+ *       encoding_format='base64' the provider is informed via callOpts and
+ *       responds by skipping the cache (EMB-H06: base64 bypasses cache) and
+ *       still returning number[][] (route re-encodes at the wire boundary).
  * D-03: Dims enforcement lives inside the provider (throws EmbeddingsDimsMismatchError).
  * D-04: embed(input, opts) — provider runs registry.resolve + capability check internally.
  * D-05: Error vocabulary reuses existing types only; NO new error classes.
+ *
+ * Phase 19 review fix:
+ *   - `signal` added so the provider can forward client-disconnect cancellation
+ *     into the upstream adapter call (SC3 propagation), instead of the previous
+ *     `undefined as unknown as AbortSignal` cast.
+ *   - `encoding_format` added so the provider can honor EMB-H06 (base64 bypasses
+ *     cache) without the route having to emit a parallel bypass metric.
  */
 export interface EmbeddingProvider {
   embed(
     input: string | string[],
-    opts: { model: string; dimensions?: number; user?: string },
+    opts: {
+      model: string;
+      dimensions?: number;
+      user?: string;
+      /** Forwarded to adapter; provider also uses this to detect EMB-H06 base64 bypass. */
+      encoding_format?: 'float' | 'base64';
+      /** Route's AbortController.signal — wired to req.raw.socket 'close' for SC3 propagation. */
+      signal?: AbortSignal;
+    },
   ): Promise<{
     embeddings: number[][];
     model: string;
@@ -105,14 +123,31 @@ export interface MakeOpenAIEmbeddingProviderOpts {
  *
  * Each float32 is 4 bytes little-endian, matching the OpenAI base64 encoding
  * convention used by sentence-transformer servers and the OpenAI API itself.
+ *
+ * Phase 19 review fix:
+ *   - Reject non-multiple-of-4 byteLength explicitly instead of silently
+ *     truncating the trailing 1–3 bytes (corrupt payloads must fail loudly,
+ *     not poison the cache).
+ *   - Copy bytes into a fresh ArrayBuffer before wrapping as Float32Array.
+ *     `Buffer.from(str, 'base64')` may return a Buffer whose `byteOffset` is
+ *     not 4-byte aligned (Node Buffer pool stride is implementation-defined),
+ *     and `new Float32Array(buffer, byteOffset, len)` requires alignment or
+ *     throws `RangeError: start offset of Float32Array should be a multiple
+ *     of 4`. Copying into a fresh ArrayBuffer guarantees offset 0.
  */
 function decodeBase64Float32(encoded: string): number[] {
   const binaryString = Buffer.from(encoded, 'base64');
-  const floats = new Float32Array(
-    binaryString.buffer,
-    binaryString.byteOffset,
-    binaryString.byteLength / 4,
-  );
+  if (binaryString.byteLength % 4 !== 0) {
+    throw new Error(
+      `decodeBase64Float32: payload byteLength ${binaryString.byteLength} is not a multiple of 4 ` +
+        `(corrupt upstream base64 vector — refusing to truncate silently)`,
+    );
+  }
+  // Copy into a fresh ArrayBuffer (offset 0) — defensive against Node Buffer
+  // pool alignment quirks. Float32Array length is byteLength / 4.
+  const aligned = new ArrayBuffer(binaryString.byteLength);
+  new Uint8Array(aligned).set(binaryString);
+  const floats = new Float32Array(aligned);
   return Array.from(floats);
 }
 
@@ -177,8 +212,16 @@ export function makeOpenAIEmbeddingProvider(
       const slots: Array<number[] | null> = new Array(inputs.length).fill(null);
       const missIndices: number[] = [];
 
-      // 6. Per-input cache lookup (only when Valkey is wired).
-      if (cache) {
+      // Phase 19 review fix (EMB-H06): when the client requested base64,
+      // skip the cache entirely (both get and set) and emit `bypass` per
+      // input from inside the provider — restoring the pre-Phase-19 contract
+      // and eliminating the route-side double-count. `cacheActive` gates the
+      // cache get/set + the hit/miss metric; the bypass metric is emitted
+      // here exactly once per input when the cache would otherwise apply.
+      const cacheActive = cache !== undefined && callOpts.encoding_format !== 'base64';
+
+      // 6. Per-input cache lookup (only when cache is active for this request).
+      if (cacheActive) {
         for (let i = 0; i < inputs.length; i++) {
           const item = inputs[i] as string;
           const key = embeddingsCacheKey({
@@ -189,7 +232,7 @@ export function makeOpenAIEmbeddingProvider(
             input: item,
           });
           try {
-            const cached = await cache.get(key);
+            const cached = await cache!.get(key);
             if (cached !== null) {
               // Cache hit — slot filled; decode if somehow stored as base64.
               const vec: number[] = Array.isArray(cached)
@@ -214,29 +257,44 @@ export function makeOpenAIEmbeddingProvider(
           }
         }
       } else {
-        // No Valkey — every input is a miss. No cache metrics emitted.
+        // Cache not active (no Valkey, OR base64 client request — EMB-H06).
+        // Every input is a miss; if the cache is wired but skipped (base64),
+        // emit `bypass` per input from the provider.
+        const cacheWiredButSkipped = cache !== undefined && !cacheActive;
         for (let i = 0; i < inputs.length; i++) {
           missIndices.push(i);
+          if (cacheWiredButSkipped) {
+            metrics.embeddingsCacheTotal.inc({ result: 'bypass' });
+          }
         }
       }
 
       // 7. Upstream call for cache misses.
       let upstreamUsage = { prompt_tokens: 0, total_tokens: 0 };
+      // Phase 19 review fix (response model regression): preserve the
+      // upstream-reported model id so the wire response is byte-identical
+      // to the pre-Phase-19 implementation. Falls back to entry.name only
+      // when no upstream call happened (all-cache-hit path).
+      let upstreamModel: string | undefined;
 
       if (missIndices.length > 0) {
         const missInputs = missIndices.map((i) => inputs[i] as string);
 
-        // D-02: always request float from upstream.
+        // D-02: always request float from upstream. Phase 19 review fix:
+        // forward the route's AbortSignal so client disconnects actually
+        // cancel the upstream HTTP call (SC3 propagation).
         const upstreamResult = await adapter.embeddings(
           missInputs,
           entry.backend_model,
-          undefined as unknown as AbortSignal,
+          callOpts.signal ?? new AbortController().signal,
           {
             encoding_format: 'float',
             dimensions: callOpts.dimensions,
             user: callOpts.user,
           },
         );
+
+        upstreamModel = upstreamResult.model;
 
         // Accumulate upstream usage (cache hits contribute 0).
         upstreamUsage = {
@@ -262,21 +320,12 @@ export function makeOpenAIEmbeddingProvider(
             ? rawEmbedding
             : decodeBase64Float32(rawEmbedding);
 
-          // 8. Dims enforcement (D-03): throw before storing the vector.
-          if (entry.dims !== undefined && vec.length !== entry.dims) {
-            throw new EmbeddingsDimsMismatchError(entry.name, entry.dims, vec.length);
-          }
-
-          // Record per-(model,dims) success metric — once per served vector.
-          metrics.embeddingsDimsTotal.inc(
-            { model: entry.name, dims: String(vec.length) },
-          );
-
           const origIdx = missIndices[j]!;
           slots[origIdx] = vec;
 
-          // 9. Populate cache (fail-open on set error — EMB-H04).
-          if (cache) {
+          // Populate cache only when cache is active for this request
+          // (EMB-H06: base64 requests do not pollute the float cache).
+          if (cacheActive) {
             const key = embeddingsCacheKey({
               backend: entry.backend,
               backend_model: entry.backend_model,
@@ -285,7 +334,7 @@ export function makeOpenAIEmbeddingProvider(
               input: inputs[origIdx] as string,
             });
             try {
-              await cache.set(key, vec);
+              await cache!.set(key, vec);
             } catch (err) {
               log.warn(
                 { err, key },
@@ -294,30 +343,51 @@ export function makeOpenAIEmbeddingProvider(
             }
           }
         }
-      } else {
-        // All slots filled from cache — also run dims check on cached vectors.
-        // Cache keys are keyed by (backend, model, encoding_format, dims, input);
-        // a model's dims change in models.yaml would change the key, so this
-        // branch is defense-in-depth rather than a hot path.
-        if (entry.dims !== undefined) {
-          for (let i = 0; i < slots.length; i++) {
-            const vec = slots[i]!;
-            if (vec.length !== entry.dims) {
-              throw new EmbeddingsDimsMismatchError(entry.name, entry.dims, vec.length);
-            }
-            metrics.embeddingsDimsTotal.inc(
-              { model: entry.name, dims: String(vec.length) },
-            );
-          }
-        }
       }
 
-      // 10. Return normalized shape (D-01).
+      // 8. Dims enforcement + dims metric — single post-loop sweep over EVERY
+      // slot (cache hits AND fresh upstream vectors). Phase 19 review fix:
+      // pre-refactor sweep ran on every slot once; the refactored version
+      // split into two branches that skipped hits in mixed batches, dropping
+      // both the safety check and the metric on cached vectors. Restoring
+      // the single-sweep pattern restores both invariants and emits a single
+      // .inc({...}, inputs.length) per request (cheaper + matches pre shape).
+      if (entry.dims !== undefined) {
+        for (let i = 0; i < slots.length; i++) {
+          const vec = slots[i]!;
+          if (vec.length !== entry.dims) {
+            // Structured operator log — was dropped when the throw moved
+            // into the provider; restored here so operators can correlate
+            // the 500 in request_log with the upstream + slot index.
+            log.error(
+              {
+                model: entry.name,
+                backend: entry.backend,
+                expected_dims: entry.dims,
+                actual_dims: vec.length,
+                index: i,
+              },
+              'embeddings dims mismatch: refusing to propagate',
+            );
+            throw new EmbeddingsDimsMismatchError(entry.name, entry.dims, vec.length);
+          }
+        }
+        // Single per-batch inc covers hits + misses — matches pre-Phase-19.
+        metrics.embeddingsDimsTotal.inc(
+          { model: entry.name, dims: String(entry.dims) },
+          inputs.length,
+        );
+      }
+
+      // 9. Return normalized shape (D-01).
       // slots is fully populated at this point — the `?? []` is a defensive
       // fallback that cannot be reached by any non-buggy code path.
+      // model: prefer upstream-reported id when available (byte-identical
+      // wire compat with pre-Phase-19 route); fall back to entry.name on the
+      // all-cache-hit path where no upstream call happened.
       return {
         embeddings: slots.map((v) => v ?? []) as number[][],
-        model: entry.name,
+        model: upstreamModel ?? entry.name,
         usage: upstreamUsage,
       };
     },
