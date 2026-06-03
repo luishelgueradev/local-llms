@@ -79,13 +79,16 @@ afterEach(async () => {
 
 /**
  * Minimal SSE parser. Splits on blank-line boundaries; recovers `event:` and `data:`
- * lines. Drops fastify-sse-v2's initial `retry: 3000\n\n` directive (it carries no
- * data and no event-name, so the resulting parsed block would be `{data: ''}` —
- * filter it out so the event-name sequence assertions in tests are clean).
+ * lines. Defensively drops any retry-only directives (no event-name, no data-line).
+ *
+ * Note: as of the SSE-retry-preamble fix the plugin is registered with
+ * `{ retryDelay: false }`, so `retry: 3000\n\n` no longer appears in router output.
+ * The filter stays as a no-op safety net — keeps the event-name sequence assertions
+ * clean even if some future test fixture re-introduces a retry directive.
  *
  * Mirrors tests/integration/chat-completions.stream.test.ts:51-66 modulo the retry
- * filter (chat-completions asserts on data-presence, this file asserts on event-name
- * order so the empty-data block needs to be dropped).
+ * filter (chat-completions asserts on data-presence; this file asserts on event-name
+ * order, so any empty-data block must be dropped).
  */
 function parseSse(raw: string): Array<{ event?: string; data: string }> {
   const events: Array<{ event?: string; data: string }> = [];

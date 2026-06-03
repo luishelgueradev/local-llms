@@ -409,8 +409,17 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
   app.setSerializerCompiler(serializerCompiler);
 
   // SSE plugin — registered now so plan 02-04's stream branch can call reply.sse(...)
-  // without re-registering. No options — defaults are correct.
-  await app.register(FastifySSEPlugin);
+  // without re-registering.
+  //
+  // retryDelay: false — suppress fastify-sse-v2's default `retry: 3000\n\n` preamble.
+  // That directive is an SSE event with an EMPTY `data:` field, only consumed by browser
+  // EventSource for reconnect hints. Strict OpenAI-compatible SDKs (openai-python, the
+  // Hermes Agent stack, and other non-EventSource clients) do `json.loads("")` over that
+  // empty-data block and raise JSONDecodeError: "Expecting value: line 1 column 1 (char 0)",
+  // breaking streaming for every consumer that isn't a browser. Our streams now start
+  // directly at the first real `data:` chunk (or a `: keep-alive` heartbeat); browsers
+  // simply use the default reconnect cadence, which is what they would have done anyway.
+  await app.register(FastifySSEPlugin, { retryDelay: false });
 
   // Plan 08-02 (CLOUD-01) — wrap defaultMakeAdapter in a closure that pre-binds
   // the cloud apiKey for OllamaCloudAdapter construction. Local adapters ignore

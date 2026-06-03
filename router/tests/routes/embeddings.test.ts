@@ -489,7 +489,7 @@ async function makeP12App(opts: MakeP12AppOpts = {}): Promise<{
   const app = Fastify({ logger: false });
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
-  await app.register(FastifySSEPlugin);
+  await app.register(FastifySSEPlugin, { retryDelay: false });
   app.addHook('onRequest', makeBearerHook(TOKEN));
 
   registerEmbeddingsRoute(app, {
