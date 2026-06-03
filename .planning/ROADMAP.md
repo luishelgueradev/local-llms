@@ -301,7 +301,7 @@ Plans:
 
 **Wave 5** *(post-ship deployment gap closure — UAT diagnosis)*
 
-- [ ] 19-09-PLAN.md — Deployment-only rebuild of router image + container recreate (compose.yml has no `image:` pin so `docker compose up -d` reused the pre-aa4a9c6 cached image dated 2026-06-01T15:42:09Z); flips 19-HUMAN-UAT.md from `status: diagnosed` → `status: complete` after the live RESS-WITH-TOOLS gate emits both `response.function_call_arguments.delta` and `response.completed{incomplete:tool_calls}`; ZERO source code changes [RESS-WITH-TOOLS deployment]
+- [x] 19-09-PLAN.md — Deployment-only rebuild of router image + container recreate (compose.yml has no `image:` pin so `docker compose up -d` reused the pre-aa4a9c6 cached image dated 2026-06-01T15:42:09Z); flips 19-HUMAN-UAT.md from `status: diagnosed` → `status: complete` after the live RESS-WITH-TOOLS gate emits both `response.function_call_arguments.delta` and `response.completed{incomplete:tool_calls}`; ZERO source code changes [RESS-WITH-TOOLS deployment] — SHIPPED 2026-06-03
 
 ---
 
