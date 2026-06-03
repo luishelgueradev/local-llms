@@ -36,7 +36,7 @@
 |----|-------------|--------|
 | CAT-01 | `router/models.yaml` declared `backends:` map contains zero entries that don't correspond to a running compose service OR a documented `disabled: true` (audit-by-grep against `compose.yml` services + a startup probe). The 3 known dead backends (`llamacpp`, `vllm`, `vllm-embed`) are either removed or flagged `disabled: true` with explanatory comment. | ✅ Complete (Phase 20 / Plan 20-01 — 2026-06-03) |
 | CAT-02 | `GET /v1/models` exposes a per-entry `health` or `available` boolean computed from a startup-time backend reachability probe. Consumers can filter unreachable aliases without trial-and-error. Field is additive — existing consumers that ignore it continue to work. | ✅ Complete (Phase 20 / Plan 20-02 — 2026-06-03) |
-| CAT-03 | Naming taxonomy decision is documented in `DEPLOY.md` and `README.md`. EITHER (a) all aliases follow one convention (semantic only, e.g. `chat-local`/`chat-cloud-small`/`embed-local`), OR (b) the mix is explicitly documented as "two taxonomies coexisting on purpose for these reasons". Decision deferred to `/gsd:discuss-phase 20`. | Planned (Phase 20) |
+| CAT-03 | Naming taxonomy decision is documented in `DEPLOY.md` and `README.md`. EITHER (a) all aliases follow one convention (semantic only, e.g. `chat-local`/`chat-cloud-small`/`embed-local`), OR (b) the mix is explicitly documented as "two taxonomies coexisting on purpose for these reasons". Decision deferred to `/gsd:discuss-phase 20`. | ✅ Complete (Phase 20 / Plan 20-05 — 2026-06-03) — Option (b) chosen per D-02 LOCKED. DEPLOY § Naming taxonomy decision = quote block with Spanish rationale citing live consumer constraints; README § Dos esquemas de naming coexistiendo = consumer-facing mirror. |
 | CAT-04 | Backward-compat alias layer: for every alias rename/removal, the old alias remains in `models.yaml` for ≥30 days pointing to the new canonical entry, emitting a deprecation log line (`router_deprecated_alias_used_total` counter) on each use. No breaking change to n8n / Unsloth / artiscrapper without this grace period. | ✅ Complete (Phase 20 / Plan 20-04 — 2026-06-03) |
 
 ### Consumer DX (CDX) — 3 requirements
@@ -44,7 +44,7 @@
 | ID | Description | Status |
 |----|-------------|--------|
 | CDX-01 | `GET /v1/models` per-entry includes a `recommended_for: ["chat","json_mode","tools","tool_use","embeddings","rerank","vision"]` or equivalent capability/role metadata so external consumers can programmatically ask "which alias is the canonical local chat that supports json_mode strict?" without reading docs. Field is additive (existing consumers unaffected). | ✅ Complete (Phase 20 / Plan 20-03 — 2026-06-03) |
-| CDX-02 | `README.md` and `DEPLOY.md` contain a "Which model when?" decision tree subsection: chat vs chat+tools vs chat+json strict vs embed vs rerank vs vision, each pointing to the recommended alias for both `local` and `cloud` profiles. Covers the artiscrapper case (chat + json_mode strict + local). | Planned (Phase 20) |
+| CDX-02 | `README.md` and `DEPLOY.md` contain a "Which model when?" decision tree subsection: chat vs chat+tools vs chat+json strict vs embed vs rerank vs vision, each pointing to the recommended alias for both `local` and `cloud` profiles. Covers the artiscrapper case (chat + json_mode strict + local). | ✅ Complete (Phase 20 / Plan 20-05 — 2026-06-03) — README § Which model when? (v0.12.0) = decision table covering all 6 use cases × local/cloud + curl/jq flow resolving the artiscrapper case in 5 lines. DEPLOY cross-references the README and adds operator-side depth. |
 | CDX-03 | Migration guide for downstream consumers (`docs/CONSUMER-MIGRATION-v0.12.0.md` or similar) when any v0.11.0 alias changes: lists every alias rename, the old→new mapping, and the recommended n8n / Unsloth / Open WebUI / generic OpenAI-client update steps. Empty file is acceptable if no renames happened. | Planned (Phase 20) |
 
 ### Deploy Hygiene (OPS) — 2 requirements
@@ -62,10 +62,10 @@
 |--------|-------|--------|
 | CAT-01 | Phase 20 / Plan 20-01 | ✅ Complete (2026-06-03) |
 | CAT-02 | Phase 20 / Plan 20-02 | ✅ Complete (2026-06-03) |
-| CAT-03 | Phase 20 | Planned |
+| CAT-03 | Phase 20 / Plan 20-05 | ✅ Complete (2026-06-03) |
 | CAT-04 | Phase 20 / Plan 20-04 | ✅ Complete (2026-06-03) |
 | CDX-01 | Phase 20 / Plan 20-03 | ✅ Complete (2026-06-03) |
-| CDX-02 | Phase 20 | Planned |
+| CDX-02 | Phase 20 / Plan 20-05 | ✅ Complete (2026-06-03) |
 | CDX-03 | Phase 20 | Planned |
 | OPS-01 | Phase 20 / Plan 20-06 | ✅ Complete (2026-06-03) |
 | OPS-02 | Phase 20 / Plan 20-06 | ✅ Complete (2026-06-03) |
