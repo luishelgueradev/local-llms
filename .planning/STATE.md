@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v0.12.0
 milestone_name: External Consumer DX + Catalog Hygiene
 status: executing
-last_updated: "2026-06-03T12:10:18.000Z"
-last_activity: 2026-06-03 — Phase 20 Plan 20-03 SHIPPED (Wave 2 — recommended_for + recommendations map on /v1/models; CDX-01 closed). 1 atomic commit fb7ec53. Fixed 7-tag taxonomy enum + operator-configurable top-level recommendations map (auto-derived when absent) + per-entry recommended_for projection (always present). models.yaml ships with 10 operator-declared recommendation keys pointing at SEMANTIC role aliases per D-02 LOCKED. 13 new tests (7 unit + 6 integration). Full sweep 1341 pass / 1 known flake. POL-06 + P7-01 BLOCK preserved. RESS-WITH-TOOLS PASS attempt 1/3. 4/7 plans complete (57%).
+last_updated: "2026-06-03T13:10:00.000Z"
+last_activity: 2026-06-03 — Plan 20-06 SHIPPED (Wave 5 — OPS-01 + OPS-02 closed: bin/deploy-router.sh + BUILD_SHA + /version); 5/7 plans complete (71%)
 progress:
   total_phases: 6
   completed_phases: 6
@@ -82,9 +82,9 @@ progress:
 ## Current Position
 
 Phase: 20 — Model Catalog Hygiene + External Consumer DX + Deploy Hygiene
-Plan: 20-03 SHIPPED (Wave 2 — recommended_for + recommendations map on /v1/models / CDX-01 closed). Next: Wave 4 (CAT-03 + CDX-02 docs) + Wave 5 (OPS-01 + OPS-02 deploy hygiene) + Wave 6 (CDX-03 migration guide).
+Plan: 20-06 SHIPPED (Wave 5 — bin/deploy-router.sh + BUILD_SHA + /version endpoint + /healthz extension + smoke Phase 20 section / OPS-01 + OPS-02 closed). Next: Wave 4 (20-05 CAT-03 + CDX-02 docs) + Wave 6 (20-07 CDX-03 migration guide).
 Status: in_progress
-Last activity: 2026-06-03 — Plans 20-01 + 20-02 + 20-03 + 20-04 shipped + deployed; CAT-01 + CAT-02 + CAT-04 + CDX-01 closed; 4/7 plans complete (57%)
+Last activity: 2026-06-03 — Plan 20-06 SHIPPED (3 atomic commits 4532b31 + cb813e9 + 4621353). OPS-01 + OPS-02 closed: bin/deploy-router.sh (full/config-only/check subcommands) + Dockerfile BUILD_SHA + /version public endpoint + /healthz additive extension + 6-gate Phase 20 smoke section. 5/7 plans complete (71%).
 
 ### Progress
 

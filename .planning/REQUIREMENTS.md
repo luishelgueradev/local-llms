@@ -51,8 +51,8 @@
 
 | ID | Description | Status |
 |----|-------------|--------|
-| OPS-01 | A `just` (or `make`, or `bin/`) script wraps the canonical deploy path `docker compose build router && docker compose up -d --force-recreate router && bash bin/smoke-test-router.sh --phase 19` as a single atomic command. Documents Valkey `DEL` of registry cache as a sibling sub-command when only `models.yaml` changed. Eliminates the "edit but never rebuild" failure class that Plan 19-09 fixed once. | Planned (Phase 20) |
-| OPS-02 | Pre-deploy or boot-time check compares `git rev-parse HEAD:router/src/translation/openai-out.ts` (or a `BUILD_SHA` env baked at image build) against a value the running container exposes via `/healthz` or `/version`. Surfaces source/image skew before traffic hits the stale binary. Catches the next class of "fix on disk, not in container" silently. | Planned (Phase 20) |
+| OPS-01 | A `just` (or `make`, or `bin/`) script wraps the canonical deploy path `docker compose build router && docker compose up -d --force-recreate router && bash bin/smoke-test-router.sh --phase 19` as a single atomic command. Documents Valkey `DEL` of registry cache as a sibling sub-command when only `models.yaml` changed. Eliminates the "edit but never rebuild" failure class that Plan 19-09 fixed once. | ✅ Complete (Plan 20-06 — 2026-06-03 — bin/deploy-router.sh full/config-only/check) |
+| OPS-02 | Pre-deploy or boot-time check compares `git rev-parse HEAD:router/src/translation/openai-out.ts` (or a `BUILD_SHA` env baked at image build) against a value the running container exposes via `/healthz` or `/version`. Surfaces source/image skew before traffic hits the stale binary. Catches the next class of "fix on disk, not in container" silently. | ✅ Complete (Plan 20-06 — 2026-06-03 — Dockerfile BUILD_SHA + /version + /healthz extension + check subcommand) |
 
 ---
 
@@ -67,8 +67,8 @@
 | CDX-01 | Phase 20 / Plan 20-03 | ✅ Complete (2026-06-03) |
 | CDX-02 | Phase 20 | Planned |
 | CDX-03 | Phase 20 | Planned |
-| OPS-01 | Phase 20 | Planned |
-| OPS-02 | Phase 20 | Planned |
+| OPS-01 | Phase 20 / Plan 20-06 | ✅ Complete (2026-06-03) |
+| OPS-02 | Phase 20 / Plan 20-06 | ✅ Complete (2026-06-03) |
 
 **Total:** 9 requirements across 1 phase (Phase 20). The phase may split into 20/21/22 during `/gsd:discuss-phase 20` if scope warrants — the requirement IDs stay stable across any phase split.
 
