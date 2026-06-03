@@ -3,9 +3,9 @@
 > Stack autohospedado en Docker que sirve LLMs locales sobre GPU NVIDIA y los unifica, junto con modelos remotos de Ollama Cloud, detras de un **unico endpoint HTTP** compatible con **OpenAI y Anthropic**. Single host, single user, agent-first.
 
 [![Status](https://img.shields.io/badge/status-shipping-green)](.planning/MILESTONES.md)
-[![Version](https://img.shields.io/badge/version-v0.10.0-blue)](.planning/MILESTONES.md)
-[![Tests](https://img.shields.io/badge/tests-780_pass-brightgreen)](#tests)
-[![Smoke](https://img.shields.io/badge/smoke-79_PASS_4_SKIP-brightgreen)](#smoke-live-stack)
+[![Version](https://img.shields.io/badge/version-v0.12.0-blue)](.planning/MILESTONES.md)
+[![Tests](https://img.shields.io/badge/tests-1355_pass-brightgreen)](#tests)
+[![Smoke](https://img.shields.io/badge/smoke-PASS-brightgreen)](#smoke-live-stack)
 
 ## Que hace
 
@@ -33,6 +33,9 @@ cambias modelos/backends/quants/cuotas debajo sin tocar el codigo del cliente.
 - **Observability** — Prometheus `/metrics` (router + vLLM + GPU exporter) + Grafana dashboard
 - **Edge** — Traefik v3.7 (Tailscale-friendly, Cloudflare Tunnel-friendly) + Open WebUI con basic-auth
 - **Ops** — pg_dump cron + restic off-host backup + disk-alert + bearer-token rotation runbook + GC de modelos huerfanos
+- **Consumer DX (v0.12.0):** `GET /v1/models` con campos additivos `health: {status, checked_at}` (boot probe + 60s lazy refresh) + `recommended_for[]` por entrada (7-value taxonomy) + `recommendations` map operator-configurable — los agentes pickean alias por capability sin trial-and-error ni hardcodear strings. Backward-compat alias layer (`X-Deprecated-Alias` header + Prometheus counter + ≥30 dia grace) ship disarmed per D-02 LOCKED, listo para v0.13.0+.
+- **Deploy hygiene (v0.12.0):** `bin/deploy-router.sh` (full / config-only / check) + Dockerfile `BUILD_SHA` + nuevo endpoint publico `/version` + `/healthz` extendido — elimina el modo de falla 19-09 (fix on disk pero imagen stale en container).
+- **Streaming compatible (v0.12.0 post-ship):** `fastify-sse-v2` registrado con `{ retryDelay: false }` — suprime el `retry: 3000\n\n` preamble que crasheaba todo SDK OpenAI-compatible no-EventSource (openai-python, Hermes Agent, n8n LangChain en streaming mode).
 
 ## Estado del proyecto
 
@@ -40,7 +43,8 @@ cambias modelos/backends/quants/cuotas debajo sin tocar el codigo del cliente.
 |-----------|--------|------------|
 | **v0.9.0** MVP | ✅ shipped 2026-05-28 | 76 reqs / 9 phases / 55 plans · router multi-backend + cloud + observability + ops |
 | **v0.10.0** Cognitive Primitives | ✅ shipped 2026-05-29 | 26 reqs / 4 phases · JSON mode · Reranker · Embeddings hardening · Cost obs + `/v1/responses` |
-| **v0.11.0** Retrieval-Ready Infrastructure | ✅ shipped 2026-06-01 | 48 reqs / 6 phases · Policy primitives · MCP host + client · Streaming Responses · Sessions/Context · Pre-completion hooks · EmbeddingProvider + observability hardening |
+| **v0.11.0** Retrieval-Ready Infrastructure | ✅ shipped 2026-06-03 | 48 reqs / 6 phases · Policy primitives · MCP host + client · Streaming Responses · Sessions/Context · Pre-completion hooks · EmbeddingProvider + observability hardening |
+| **v0.12.0** External Consumer DX + Catalog Hygiene | ✅ shipped 2026-06-03 | 13 reqs / 2 phases / 9 plans · disabled-flag dead-backend cleanup · health-aware `/v1/models` · `recommendations` map + `recommended_for` taxonomy · backward-compat alias layer (disarmed per D-02) · `bin/deploy-router.sh` + BUILD_SHA + `/version` skew check · `docs/CONSUMER-MIGRATION-v0.12.0.md` · post-ship hygiene closure (undici 180s cold-load + curl-in-image + smoke guards + vitest timeout + SSE retry-preamble fix unblocking Hermes Agent / openai-python / n8n LangChain streaming) |
 
 Full archive: `.planning/MILESTONES.md` · `.planning/milestones/*-ROADMAP.md` · `.planning/RETROSPECTIVE.md`
 
@@ -54,8 +58,20 @@ curl -sL https://raw.githubusercontent.com/luishelgueradev/local-llms/master/ins
 
 El instalador es autosuficiente — instala Docker + nvidia-container-toolkit, clona el repo en
 `/opt/luishelgueradev/local-llms`, crea `/srv/local-llms/...`, verifica passthrough GPU,
-pregunta los secretos faltantes, levanta el stack, baja `qwen2.5:7b` + `bge-m3` y verifica
-`/healthz`. Detalles completos en **[DEPLOY.md](DEPLOY.md)**.
+pregunta los secretos faltantes, builda el router con `BUILD_SHA` baked (v0.12.0 OPS-02),
+levanta el stack, baja `qwen2.5:7b` + `bge-m3`, verifica `/healthz`, y corre un drift check
+`/version` vs git HEAD. Detalles completos en **[DEPLOY.md](DEPLOY.md)**.
+
+### Re-deploys (despues de la instalacion inicial)
+
+```bash
+cd /opt/luishelgueradev/local-llms
+bash bin/deploy-router.sh full         # rebuild router + force-recreate + healthz + smoke
+bash bin/deploy-router.sh config-only  # solo models.yaml: Valkey DEL + force-recreate
+bash bin/deploy-router.sh check        # drift check: git HEAD vs running build_sha
+```
+
+Phase 20 OPS-01 — el wrapper canonico para mantener el stack en sync.
 
 ### Requisitos
 
@@ -300,7 +316,7 @@ El registry v0.12.0 sirve cada workhorse local bajo DOS nombres equivalentes:
 Ambos esquemas son first-class citizens, ninguno deprecado. La eleccion es deliberada
 (commit `a4580e0` agrego el alias `qwen2.5:7b-instruct-q4_K_M` como sibling de
 `chat-local` con el mismo `backend_url` / `backend_model`) — ver
-[20-CONTEXT.md §D-02 LOCKED](.planning/phases/20-model-catalog-hygiene-external-consumer-dx/20-CONTEXT.md)
+[20-CONTEXT.md §D-02 LOCKED](.planning/milestones/v0.12.0-phases/20-model-catalog-hygiene-external-consumer-dx/20-CONTEXT.md)
 para el rationale completo (live consumers en n8n + Unsloth + artiscrapper sin downtime).
 La recomendacion para codigo nuevo es usar el role alias.
 
@@ -670,13 +686,14 @@ para tu hostname — sino bloquea el `User-Agent: OpenAI/*` que mandan los SDKs.
 
 | Capa | Tech | Version pinneada |
 |------|------|------------------|
-| **Router** | Node 22 + Fastify v5 + TypeScript 5.6 + zod v4 + pino v10 | locked en `router/package.json` |
-| **HTTP SDK** | openai@^6.37 + @anthropic-ai/sdk@^0.95 + ioredis + drizzle-orm + pg | locked |
-| **Inference** | Ollama 0.23 · llama.cpp server-cuda-b9115 · vLLM 0.21-cu129 | pinned en `compose.yml` |
+| **Router** | Node 22 + Fastify v5.8.5 + TypeScript 5.6 + zod v4.4 + pino v10.3 | locked en `router/package.json` |
+| **HTTP SDK** | openai@^6.37 + @anthropic-ai/sdk@^0.95.1 + @modelcontextprotocol/sdk@^1.29 + fastify-sse-v2@^4.2.2 + ioredis@^5.4 + drizzle-orm@^0.36 + pg | locked |
+| **Inference** | Ollama 0.23.4 · llama.cpp server-cuda-b9115 · vLLM 0.21.0-cu129 | pinned en `compose.yml` |
 | **Datos** | Postgres 17-alpine + Valkey 8-alpine + pgvector (opt) | pinned |
 | **Edge** | Traefik 3.7.1 + Open WebUI 0.9.0 | pinned |
-| **Observability** | Prometheus 3.10 + Grafana OSS 12.4 + nvidia_gpu_exporter 1.4.1 | pinned |
+| **Observability** | Prometheus 3.10 + Grafana OSS 12.4.3 + nvidia_gpu_exporter 1.4.1 | pinned |
 | **Cloud fallback** | Ollama Cloud (https://ollama.com/v1) | — |
+| **Deploy hygiene (v0.12.0)** | `bin/deploy-router.sh` (full / config-only / check) · Dockerfile `BUILD_SHA` + `BUILD_TIME` ARGs · `/version` endpoint · undici 180s cold-load timeout | locked |
 
 Decisiones de stack documentadas en `CLAUDE.md` (~26 KB con rationale per tech).
 
@@ -690,11 +707,12 @@ o pedir features. La guia interna de desarrollo (GSD framework, fases, planning)
 
 ## Documentos relacionados
 
-- **[DEPLOY.md](DEPLOY.md)** — Guia completa de deploy + operacion + troubleshooting
+- **[DEPLOY.md](DEPLOY.md)** — Guia completa de deploy + operacion + troubleshooting (~1280 lineas, cubre v0.9.0 → v0.12.0 + Phase 21 post-ship hygiene)
+- **[docs/CONSUMER-MIGRATION-v0.12.0.md](docs/CONSUMER-MIGRATION-v0.12.0.md)** — Guia para consumers externos (artiscrapper, n8n, Unsloth) sobre las 3 features nuevas opcionales de v0.12.0 + el SSE fix companion
 - **[CLAUDE.md](CLAUDE.md)** — Instrucciones para Claude Code en este repo (stack, conventions, anti-patterns)
-- **[.planning/MILESTONES.md](.planning/MILESTONES.md)** — Resumen de cada milestone shipped (v0.9.0 + v0.10.0)
+- **[.planning/MILESTONES.md](.planning/MILESTONES.md)** — Resumen de cada milestone shipped (v0.9.0 + v0.10.0 + v0.11.0 + v0.12.0)
 - **[.planning/RETROSPECTIVE.md](.planning/RETROSPECTIVE.md)** — Retros por milestone (que funciono, que fue ineficiente, lecciones)
-- **[.planning/milestones/](.planning/milestones/)** — Archivos por milestone: ROADMAP, REQUIREMENTS, MILESTONE-AUDIT
+- **[.planning/milestones/](.planning/milestones/)** — Archivos por milestone: ROADMAP, REQUIREMENTS, MILESTONE-AUDIT, phases archivadas
 - **[README.legacy.md](README.legacy.md)** — README historico con narrativa fase-por-fase (preservado por archeologia; este README lo reemplaza para uso diario)
 
 ## Licencia
