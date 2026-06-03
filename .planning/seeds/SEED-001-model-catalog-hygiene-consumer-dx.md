@@ -1,9 +1,11 @@
 ---
 id: SEED-001
-status: dormant
+status: implemented
 planted: 2026-06-03
 planted_during: v0.11.0 / post-Phase 19 (49/49 plans shipped)
-trigger_when: next milestone scope = router consumer surface, model catalog UX, or external project integration
+implemented: 2026-06-03
+implemented_by: v0.12.0 / Phase 20 (7 plans, 9 REQs: CAT-01..04 + CDX-01..03 + OPS-01..02)
+trigger_when: (resolved — see implemented_by)
 scope: medium
 ---
 
@@ -125,3 +127,24 @@ Touches sensitive areas (`models.yaml`, smoke gates, cardinality CI guard, Open 
 - The user's flow choice: complete v0.11.0 → start v0.12.0 → this seed becomes Phase 1 candidate.
 - Recommended entry point when surfaced: `/gsd:discuss-phase 1` (design conversation needed; not a single-shot fix).
 - This seed deliberately does NOT prescribe the taxonomy — that's the discuss-phase's job.
+
+## Resolution (2026-06-03)
+
+This seed surfaced at the start of v0.12.0 and became the entire scope of Phase 20. All 9 REQs derived from the three categories of friction the seed identified have shipped:
+
+| Category | Seed's stated problem | Closed by |
+|----------|----------------------|-----------|
+| Hard bug — catalog drift | 3 entries point to non-running backends (llamacpp/vllm/vllm-embed) → ENOTFOUND timeout | **CAT-01** (Wave 0 / Plan 20-01): `disabled: true` flag + filter; 11 entries on `/v1/models`, dead aliases return 404 |
+| Naming chaos | Quant-encoded mixed with semantic; no guide | **CAT-03** (Wave 4 / Plan 20-05): D-02 LOCKED — two schemes coexist on purpose, documented in DEPLOY § Naming taxonomy + README § Dos esquemas |
+| No external-consumer contract | Consumers can't ask "which alias for X?" programmatically | **CDX-01** (Wave 2 / Plan 20-03): `recommendations` map + per-entry `recommended_for` on `/v1/models` |
+
+Additional infrastructure that future renames will need (preventively shipped per D-03):
+- **CAT-04** (Plan 20-04): backward-compat alias layer + deprecation counter + `X-Deprecated-Alias` header — currently empty (no v0.12.0 renames)
+- **CAT-02** (Plan 20-02): per-entry `health` field + backend probe
+- **CDX-02** (Plan 20-05): "Which model when?" decision tree in README + DEPLOY
+- **CDX-03** (Plan 20-07): `docs/CONSUMER-MIGRATION-v0.12.0.md` — empty old→new mapping per D-09
+- **OPS-01** + **OPS-02** (Plan 20-06): `bin/deploy-router.sh` + Dockerfile `BUILD_SHA` + `/version` endpoint — closes the 19-09-class deploy-skew bug class
+
+Verifier confirmed 12/12 success criteria PASS (`20-VERIFICATION.md`).
+
+Consumer impact: zero breaking changes to live consumers (n8n at objetiva.com.ar, Unsloth Studio, artiscrapper, Open WebUI). Existing v0.11.0 client code continues to work; new features are opt-in.
