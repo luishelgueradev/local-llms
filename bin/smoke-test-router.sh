@@ -485,6 +485,23 @@ echo ""
 echo "[smoke-test-router] === Phase 3: Multi-backend dispatch ==="
 echo "[smoke-test-router] (this section tears down + restarts compose with --profile swaps; takes ~2 min)"
 
+# Phase 21 / HYG-03: soft-skip Phase 3 when no llamacpp model is enabled in the
+# registry. Wave 0 of Phase 20 (CAT-01 / D-01) disabled the llamacpp-backed
+# alias `qwen2.5-7b-instruct-q4km` on this host (project_vram_budget memory —
+# 16 GB VRAM does not host Ollama + Whisper + llamacpp concurrently). With no
+# enabled llamacpp model in /v1/models there is nothing for the profile-swap
+# assertions to prove, and the compose --profile llamacpp dance is pure noise.
+P3_PRECHECK_MODELS=$(curl -sf -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+  "${ROUTER_URL}/v1/models" 2>/dev/null || echo '{"data":[]}')
+if ! echo "${P3_PRECHECK_MODELS}" | jq -e '.data[] | select(.id == "qwen2.5-7b-instruct-q4km")' >/dev/null 2>&1; then
+  skip "Phase 3 multi-backend dispatch (no enabled llamacpp model — qwen2.5-7b-instruct-q4km is disabled per Phase 20 / CAT-01 / D-01; flip disabled→false + start --profile llamacpp to re-include)"
+  echo "[smoke-test-router] === Phase 3 section complete (skipped) ==="
+  echo ""
+  P3_SKIPPED=1
+fi
+
+if [[ "${P3_SKIPPED:-0}" != "1" ]]; then
+
 PHASE3_BASE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "${PHASE3_BASE_DIR}" || { fail "could not cd to project root"; exit 1; }
 
@@ -784,6 +801,8 @@ fi  # end "if GGUF present"
 
 echo ""
 echo "[smoke-test-router] === Phase 3 section complete ==="
+
+fi  # end "if not P3_SKIPPED" — Phase 21 / HYG-03 llamacpp guard
 
 # =============================================================================
 # Phase 4 section — Anthropic surface + tool calling + vision (Plan 04-05)
@@ -1413,13 +1432,19 @@ else
 fi
 
 # 3. Capability gate — chat-only model on /v1/embeddings must return 400.
+# Phase 21 / HYG-03: fixture flipped from `qwen2.5-7b-instruct-awq` (disabled in
+# v0.12.0 via Wave 0 — vllm backend not running on this host) to `chat-local`,
+# the always-enabled semantic alias that maps to the active Ollama chat model.
+# `chat-local` has capabilities [chat, tools, json_mode] — no `embeddings` —
+# so the registry-enforced capability gate is still the assertion under test.
+# The old fixture also returned 400, but as a model_not_found 400 (wrong reason).
 STATUS=$(curl -s -o /dev/null -w '%{http_code}' \
   -X POST "${ROUTER_URL}/v1/embeddings" \
   -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
   -H "Content-Type: application/json" \
-  -d '{"model":"qwen2.5-7b-instruct-awq","input":"x"}' 2>/dev/null || echo "000")
+  -d '{"model":"chat-local","input":"x"}' 2>/dev/null || echo "000")
 if [[ "${STATUS}" == "400" ]]; then
-  pass "Phase 7: capability gate — chat-only model returns 400 (registry-enforced)"
+  pass "Phase 7: capability gate — chat-only model (chat-local) returns 400 on /v1/embeddings (registry-enforced)"
 else
   fail "Phase 7: capability gate returned ${STATUS} (expected 400)"
 fi
