@@ -15,6 +15,7 @@
 ### 🚧 v0.12.0 External Consumer DX + Catalog Hygiene — In Progress
 
 - [ ] **Phase 20: Model Catalog Hygiene + External Consumer DX + Deploy Hygiene** — Close the three categories of consumer fricion that `artiscrapper` exposed on 2026-06-03 (catalog drift to dead backends, naming chaos, no programmatic capability contract) AND formalize deploy hygiene so the next 19-09-class skew bug doesn't recur. Conservative defaults locked: no breaking changes to live consumers (n8n at objetiva.com.ar, Unsloth Studio, artiscrapper), additive `/v1/models` fields only, ≥30-day backward-compat alias grace period for any rename.
+  - [x] **Wave 0 (Plan 20-01) ✅ 2026-06-03** — Disabled-flag dead-backend aliases (CAT-01 closed). 3 entries (`qwen2.5-7b-instruct-q4km`, `qwen2.5-7b-instruct-awq`, `bge-m3-vllm`) flagged `disabled: true` with explanatory comments; `enabledModels()` filter + `resolve()` anti-leak gate; `/v1/models` returns 10 entries (was 13); each disabled alias returns 404 `model_not_found` envelope identical to a fully-unknown alias (T-20-01). RESS-WITH-TOOLS smoke gate PASS post-deployment.
 **Mode:** mvp (single deployable slice; may split into 20/21/22 if discuss-phase warrants)
 **Depends on:** v0.11.0 SHIPPED (Phases 14-19), [SEED-001](./seeds/SEED-001-model-catalog-hygiene-consumer-dx.md)
 **Requirements:** CAT-01, CAT-02, CAT-03, CAT-04, CDX-01, CDX-02, CDX-03, OPS-01, OPS-02
@@ -334,6 +335,7 @@ Plans:
 | 17. SessionStore + ContextProvider + SummaryProvider | 7/7 | Complete    | 2026-06-01 |
 | 18. MCP Client + RetrieverProvider + Pre-Completion Hook | 8/8 | Complete    | 2026-06-01 |
 | 19. EmbeddingProvider Formalization + Observability Hardening | 8/9 | Complete (post-ship deploy gap open) | 2026-06-02 |
+| 20. Model Catalog Hygiene + External Consumer DX + Deploy Hygiene | 1/7 | In Progress (Wave 0 shipped) | — |
 
 ---
 
