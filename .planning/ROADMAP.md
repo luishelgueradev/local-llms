@@ -276,7 +276,7 @@ Plans:
 4. A caller can call `fastify.embeddingProvider.embed(input, opts)` directly (Fastify decorator injected) and receive the same embedding output as `POST /v1/embeddings` — verified by unit test asserting interface conformance (EMBP-01); the `/v1/embeddings` wire shape is byte-identical to pre-Phase-19 (EMBP-02 regression).
 5. Vitest full suite passes with 0 failures; `tsc --noEmit` reports 0 errors.
 
-**Plans:** 8/8 plans complete
+**Plans:** 9/9 plans complete (8 ship-time plans + 19-09 post-ship deployment gap closure)
 
 Plans:
 **Wave 1**
@@ -299,6 +299,10 @@ Plans:
 - [x] 19-07-PLAN.md — OBSV-03 docs (DEPLOY + README EmbeddingProvider sections + v0.11.0 SHIPPED banner) + OBSV-04 re-verify describe block (extend 0007-hook-log.test.ts — D-22 NO new migration) + STATE/ROADMAP/REQUIREMENTS milestone wrap-up [OBSV-03, OBSV-04] — SHIPPED 2026-06-01
 - [x] 19-08-PLAN.md — Post-ship gap closure (RESS-WITH-TOOLS): `openAIChunksToCanonicalEvents` extended with `delta.tool_calls[]` branch — emits canonical `content_block_start(tool_use)` + `content_block_delta(input_json_delta)` + `content_block_stop`; 4-case vitest regression net; smoke gate hardened with `"tool_choice":"required"` [post-ship correctness — no new requirement coverage] — SHIPPED 2026-06-02
 
+**Wave 5** *(post-ship deployment gap closure — UAT diagnosis)*
+
+- [ ] 19-09-PLAN.md — Deployment-only rebuild of router image + container recreate (compose.yml has no `image:` pin so `docker compose up -d` reused the pre-aa4a9c6 cached image dated 2026-06-01T15:42:09Z); flips 19-HUMAN-UAT.md from `status: diagnosed` → `status: complete` after the live RESS-WITH-TOOLS gate emits both `response.function_call_arguments.delta` and `response.completed{incomplete:tool_calls}`; ZERO source code changes [RESS-WITH-TOOLS deployment]
+
 ---
 
 ## Progress
@@ -310,7 +314,7 @@ Plans:
 | 16. /v1/responses Streaming + Tool Calls | 4/4 | Complete   | 2026-05-31 |
 | 17. SessionStore + ContextProvider + SummaryProvider | 7/7 | Complete    | 2026-06-01 |
 | 18. MCP Client + RetrieverProvider + Pre-Completion Hook | 8/8 | Complete    | 2026-06-01 |
-| 19. EmbeddingProvider Formalization + Observability Hardening | 8/8 | Complete   | 2026-06-02 |
+| 19. EmbeddingProvider Formalization + Observability Hardening | 8/9 | Complete (post-ship deploy gap open) | 2026-06-02 |
 
 ---
 
