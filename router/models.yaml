@@ -306,6 +306,20 @@ models:
     # pre_completion_hooks:               # name references to BuildAppOpts.preCompletionHooks Map
     #   - doc_retriever                   # NOT validated at parse time — buildApp checks at boot
 
+  # Raw-name alias for the same qwen2.5:7b workhorse — added in Phase 20 (v0.12.0)
+  # so consumers can pin the canonical model name explicitly instead of the role alias.
+  # Both `chat-local` and `qwen2.5:7b-instruct-q4_K_M` resolve to the same Ollama backend
+  # / backend_model; user-facing decision was D-02-style coexistence (no rename, no removal).
+  - name: qwen2.5:7b-instruct-q4_K_M
+    backend: ollama
+    backend_url: http://ollama:11434/v1
+    backend_model: qwen2.5:7b-instruct-q4_K_M
+    capabilities: [chat, tools, json_mode]
+    vram_budget_gb: 0    # pointer — VRAM already budgeted under chat-local
+    concurrency: 2
+    max_model_len: 8192
+    profile: ollama
+
   - name: vision-local
     backend: ollama
     backend_url: http://ollama:11434/v1
