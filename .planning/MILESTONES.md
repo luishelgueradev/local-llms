@@ -1,5 +1,42 @@
 # Milestones
 
+## v0.11.0 Retrieval-Ready Infrastructure (Shipped: 2026-06-03)
+
+**Phases completed:** 6 phases, 49 plans, 96 tasks
+
+**Key accomplishments:**
+
+- Shared `applyPreflight(model, opts)` helper at `router/src/dispatch/preflight.ts` consolidating the `registry.resolve → applyPolicyGate → breaker.check` trio, with Option A sentinel return so HTTP and MCP callers add their own context before throwing BreakerOpenError.
+- Two new prom-client series (counter + gauge) for MCP tool calls and active sessions, plus the OutcomeContext.protocol union widened to accept 'mcp' — Wave 4 tool handlers can now push observations + request_log rows without type casts.
+- Working /mcp endpoint: initialize handshake + 401 bearer enforcement + session lifecycle (idle GC + 5s SIGTERM race) — Wave 4 tool registrations now have a stable plug-in surface.
+- First MCP tool (chat_completion) wired to the canonical OpenAI chat pipeline via applyPreflight → adapter, with full D-01..D-14 invariants verified by 8-test unit matrix.
+- Wires the `create_response` MCP tool to the existing `/v1/responses` pipeline — single export `registerCreateResponseTool(server, deps, capturedReq)` that mirrors RESEARCH §Pattern 3 chat-completion template with the Phase-13 Responses-API wire shape on the structuredContent surface and the joined `output_text` blocks on the content stamp.
+- create_embedding MCP tool wrapping /v1/embeddings adapter with D-03 stamp `embedded N inputs, dims=D, model=M` and vector payload riding exclusively in structuredContent
+- registerRerankTool wraps POST /v1/rerank as the MCP `rerank` tool with D-03 stamp ("reranked N docs vs query, model=M") and full per-doc score payload in structuredContent — third independent capability surface in the MCP host after chat + embeddings.
+- registerListModelsTool ships as the fifth MCP tool, wires all 5 tools into buildServerForRequest with a hard-coded P1-05 allowlist, and proves end-to-end tools/call round-trips for both list_models (T-3-A2 anti-leak) and chat_completion (MCPS-01 #3 assistant text).
+- HTTP /v1/models + /v1/models/:id now mirror the MCP list_models tool exactly — same allowlist filter, same `policy.cloud_allowed` annotation, same single-lens 404 semantics — and 3 new integration tests lock D-05/D-06 request_log writes, D-07 /metrics observability, and D-10/D-11 dual-surface parity.
+- Phase 15 closes with 7 deliverables locking the 5 ROADMAP success criteria + the 3 BLOCK-level pitfalls (P1-01 / P1-03 / P1-04) into automated tests. All 6 MCPS requirements (MCPS-01..06) verified end-to-end. Vitest 949/0/7 green; typecheck clean; smoke script extended; operator docs land in DEPLOY.md + README.md.
+- Empty translator unit-suite + 6 golden fixture placeholders + route integration suite skeleton + P9-02 regression fixture, establishing the tests/routes/golden/ directory convention — Nyquist gate met before any translator/route code lands.
+- Phase 16 protocol translator landed: `canonicalToResponsesSse` async generator with explicit `OutputItemStateMachine` FSM, locking wire correctness for RESS-01..04 via 26 unit tests + 6 captured golden fixtures.
+- Phase 16 route streaming branch landed: `/v1/responses?stream=true` now serves the full Responses-API SSE sequence end-to-end. 14 of 15 integration cases (R1..R15) flipped from `it.todo` to passing real tests; R4 (heartbeat) explicitly deferred to Plan 16-04 smoke with documented rationale.
+- Phase 16 SHIPPED. Plan 16-04 lands the four production-lockdown gates that turn the streaming branch from "works in tests" to "regressions fail CI immediately": a byte-identical non-stream wire-body golden snapshot (P9-02), a `reply.raw.write(...heartbeat...)` grep gate (P3-04), a smoke section that exercises the live `/v1/responses` stream end-to-end, and the STATE/ROADMAP/REQUIREMENTS wrap-up that flips Phase 16 to SHIPPED.
+- SessionStore interface (6 methods, agent_id-mandatory positional) + 4 error classes (1 bubbles, 3 caught locally per Pitfall 17-B) + PostgresSessionStore default impl with pg_advisory_xact_lock(hashtext) P4-02 BLOCK + 1s Promise.race SESS-04 fail-open + Q6 sliding TTL — 11 real it() + 1 deferred it.todo for Q5.
+- ContextProvider interface + DefaultContextProvider impl (sliding-window default, truncate opt-in with 100-turn hard cap, system-pin invariant via top-level CanonicalRequest.system, Pitfall 17-G incoming-privilege runtime invariant) — 1 new file (336 lines) + 9 real it() + 1 it.todo deferred to Plan 17-05.
+- Supporting wiring layer for Phase 17 — 2 new files (244 lines) + 12 modified files (4 production + 5 test fixtures + 3 docs/yaml/env-example), 19 new real `it()` assertions across 3 test files (5 SUMP + 6 SESS + 8 CTXP), and the SESS-06 byte-identical regression contract verified by 1068 passing tests (was 1049 pre-plan).
+- 5-file indivisible-tuple ship in ONE commit (P9-01 BLOCK)
+- Six pure-TS leaf modules: RetrieverProvider interface (Frame-01 BLOCK — zero classes), fence/char-cap injection helper, MCP tool sanitize + prefix utilities, plus two barrels.
+- Two production files (524 lines) shipping the load-bearing McpClientRegistry: lazy outbound MCP `Client` holder with per-alias Valkey-backed `tools/list` cache, P2-04 BLOCK auth isolation enforced at the type-signature level, and 5s SIGTERM-race dispose lifecycle.
+- MCPC-04 dispatch loop ships — 166-LOC `runMcpToolLoop` drives the model→external-MCP-tool→model cycle with a hard 10-iteration cap, parallel-within-iter tool dispatch via Promise.all, abort-signal threading through every adapter call, and structured `mcp_tool_loop_exceeded` error mapped to HTTP 502.
+- Wave 6 ships — 265-LOC `runHookChain` drives the sequential pre-completion hook chain with a cancellable Promise.race timeout (P5-02 BLOCK: no setTimeout leak), SHA256 audit-trail producer over post-truncate fenced content (P5-05: hook_log NEVER stores full content), defense-in-depth bearer redaction + 500-char truncate on error_message, first-fail-only X-Hook-Error signal (RESOLVED #8), and type-level `on_timeout` enforcement (P5-01 BLOCK).
+- Wave-0 test harness for EmbeddingProvider (EMBP-01) and OBSV-02 live cardinality check — 2 runtime RED sentinels + 6 it.todo + makeFakeEmbeddingProvider factory + FastifyInstance.embeddingProvider type augmentation
+- EmbeddingProvider interface (D-01..D-05) + makeOpenAIEmbeddingProvider factory with Valkey per-input cache, dims enforcement, and base64 decode — Frame-01 object literal (no class); Wave-0 it.todo flipped to 5 passing tests
+- Thin route delegating to EmbeddingProvider via opts.embeddingProvider / req.server.embeddingProvider — P7-01 SHA-256 baseline rotated atomically from b53c6ba...0 to 16e1fc9...9 (D-24 invariant honored)
+- Production EmbeddingProvider wired at composition root (index.ts) and threaded through BuildAppOpts.embeddingProvider into app.decorate; makeEmbeddingsCache block removed from buildApp (cache lives in provider per D-06); Frame-01 BLOCK: factory returns object literal — one atomic commit.
+- OBSV-02 CI-side coverage closed: checkCardinalityLive parser exported, CLI dispatches dual-mode (--live stdin/URL + --source/default), vitest integration test boots a real app and asserts zero /_id$/ violations on the rendered /metrics exposition
+- Phase 19 smoke section inserted: OBSV-02-LIVE live cardinality gate + RESS-WITH-TOOLS cloud function-call SSE gate + 5 cite lines + summary banner updated to /18/19
+
+---
+
 ## v0.10.0 Cognitive Primitives — Structured outputs · Reranker · Embeddings hardening · Cost obs + Responses API (Shipped: 2026-05-29)
 
 **Phases completed:** 4 phases (10–13) · single-shot freeform commit per phase · 26/26 requirements

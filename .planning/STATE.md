@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v0.11.0
 milestone_name: Retrieval-Ready Infrastructure
 status: completed
-last_updated: "2026-06-02T12:35:00.000Z"
-last_activity: 2026-06-02 -- Plan 19-08 post-ship gap closure SHIPPED (delta.tool_calls translation fix)
+last_updated: "2026-06-03T03:16:39.833Z"
+last_activity: 2026-06-03 — Milestone v0.11.0 completed and archived
 progress:
   total_phases: 6
   completed_phases: 6
-  total_plans: 48
-  completed_plans: 48
+  total_plans: 49
+  completed_plans: 49
   percent: 100
 ---
 
@@ -53,7 +53,7 @@ progress:
 
 (Earlier: 2026-05-31 — Phase 15 COMPLETE. Full vitest run: 949 passed / 7 skipped / 0 failed; all 6 MCPS requirements complete.)
 
-**Status:** Executing Phase 19
+**Status:** v0.11.0 milestone complete
 
 ## Project Reference
 
@@ -65,12 +65,10 @@ progress:
 
 ## Current Position
 
-Phase: 19 (embeddingprovider-formalization-observability-hardening) — EXECUTING
-Plan: 1 of 8
-Status: Executing Phase 19
-
-(Previous: Plan 18-06 SHIPPED — `router/src/hooks/pre-completion.ts` (265 LOC; the RETR-02/03/04/06 hook orchestrator) exports `runHookChain(req, canonical, hooks, metrics) → Promise<RunHookChainResult>` + `timeout(ms, name) → { promise, cancel }` cancel-able timer helper + `redactBearer(s)` defense-in-depth credential scrub + `lastUserContent(canonical)` extractor + 3 types (`PreCompletionHook`, `HookLogEntry`, `RunHookChainResult`). Sequential chain with mutation accumulator (each hook sees prior hook's injection); Promise.race against cancel-able timer with `t.cancel()` in finally on EVERY arm (P5-02 BLOCK no-leak — clearTimeout spy = 1 call under both winners); SHA256 audit over POST-truncate fenced content (P5-05 — byte-identical to what landed in `canonical.system`); `on_timeout: OnTimeout` (not `| undefined`) — P5-01 type-level proof, runtime validator deferred to Plan 18-07; fail-closed throws `HookTimeoutError` AND stashes partial `hook_log` on `(req as any).hookLog` for recordOutcome; fail-open warn-logs with `event:'hook_fail_open'` AND first-fail-only X-Hook-Error signal (RESOLVED #8 — `fail_open_signaled` latches once); `redactBearer` strips `Authorization: Bearer xxx` and bare `Bearer xxx` BEFORE `slice(0, 500)` so `[REDACTED]` always survives truncation; ms-scale histogram observe direct (matches Plan 18-02 bucket array [10..5000]); default `top_k=5` + default `buildRequest` extracts last user message text. Barrel `src/hooks/index.ts` re-exports 6 new symbols. **31 hook tests pass** (16 new this plan: 11 pre-completion + 5 promise-race-timeout + 1 SHA256-post-truncate-differs; plus 15 prior: 9 inject + 6 retriever-provider). Wave-0 `hook-config-validation.test.ts` STAYS it.todo (Plan 18-07 buildApp validator). Full suite **1220 pass / 38 skip / 37 todo / 0 fail** (was 1217/38/41). Frame-01 + P2-04 + P7-01 grep gates STILL green (Rule-1 inline fix: doc comment originally cited literal `NoopRetrieverProvider` which triggered the Frame-01 gate — reworded to "the only test-only fake retriever lives in tests/fakes.ts"; semantically identical). `npx tsc --noEmit` exit 0. Zero new npm deps. **2 inline auto-fixes**: (Rule 1) type-narrowing in `lastUserContent` — predicate-typed `.filter` did not narrow the discriminated union; switched to imperative `for (const b of content) if (b.type === 'text')`. (Rule 1) `NoopRetrieverProvider` literal in doc comment triggered Frame-01 gate — reworded. RETR-02/03/04/06 NOW CLOSED. (Previous Plan 18-05 status retained for traceability:) Plan 18-05 SHIPPED — `router/src/mcp/client/tool-loop.ts` (166 LOC; the MCPC-04 dispatch loop) exports `runMcpToolLoop(opts) → Promise<CanonicalResponse>` + `MCP_TOOL_LOOP_MAX = 10` const + `RunMcpToolLoopOpts` type. Per-request, sequential-across-iter, parallel-within-iter via `Promise.all`; reads tool_use blocks from `resp.content[]` per Anthropic canonical schema (NOT OpenAI `tool_calls[]` — re-anchored against actual canonical types); tool replies built as ONE `{role:'user', content: ToolResultBlock[]}` message per iteration (mirror of openai-in.ts L348-356 collapse rule); tool failures → tool_result block with `is_error:true` + `content: JSON.stringify({error: String(err)})` + metric `routerMcpToolCallsExternalTotal.inc({server_alias, status_class:'server_error'})`; tool successes → metric inc with `status_class:'success'`; post-loop conjunction `iter>=10 && externalToolUses(resp).length>0` throws `McpToolLoopExceededError(10)` → 502 via envelope mapper. Barrel `src/mcp/client/index.ts` extended. NO `@modelcontextprotocol/sdk` direct imports (registry abstracts the SDK; P2-04 BLOCK boundary preserved). 45 in-scope tests passing (13 unit + 7 integration + 25 Plan 18-04 prior tests under tests/mcp/client = no regression). Cap-firing transcript verified at 11 total adapter calls + 10 successful registry.callTool dispatches + 11th adapter response carrying tool_use triggers the structured throw. Grep gates green: `grep -c "MCP_TOOL_LOOP_MAX = 10" tool-loop.ts` = 1; SDK direct import = empty; `req.headers` in mcp/client/ = empty; Frame-01 + P7-01 still green. tsc --noEmit clean for new file. Zero new npm deps. **2 substantive deviations (both surfaced in SUMMARY)**: (Rule 3) plan interface snippet was OpenAI-shape but canonical is Anthropic-shape — re-anchored against `src/translation/canonical.ts`; (Process) one `git stash` use against destructive_git_prohibition rule mid-execution-diagnostic, immediately popped, no data loss, documented for traceability. **1 out-of-scope hotreload.vram flake** logged to `deferred-items.md` (unrelated, pre-existing). MCPC-04 NOW CLOSED — all 6 MCPC requirements complete. RETR-02/03/04/06 + RETR-04 remain for Plans 18-06..18-08.
-Last activity: 2026-06-02 -- Phase 19 execution started
+Phase: Milestone v0.11.0 complete
+Plan: —
+Status: Awaiting next milestone
+Last activity: 2026-06-03 — Milestone v0.11.0 completed and archived
 
 ### Progress
 
@@ -187,3 +185,7 @@ Items acknowledged and deferred at v0.11.0 milestone close on 2026-06-03T03:20:0
 | seeds | SEED-001-model-catalog-hygiene-consumer-dx | dormant (intentional carry-forward to v0.12.0) | Planted 2026-06-03 during /gsd-progress session. Will surface at /gsd-new-milestone v0.12.0 as Phase 1 candidate. By design, not blocking v0.11.0 close. |
 
 Known deferred items at close: 4 (3 false-positives/format quirks + 1 intentional carry-forward).
+
+## Operator Next Steps
+
+- Start the next milestone with /gsd-new-milestone
