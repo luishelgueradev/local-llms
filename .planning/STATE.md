@@ -174,3 +174,16 @@ Milestone v0.9.0:  ██████████ 100% — SHIPPED 2026-05-28 (a
 - 2026-06-01T03:50:00Z — Stopped at: Completed 17-06-PLAN.md (3-route session attach wire-up — /v1/chat/completions + /v1/messages + /v1/responses; SESS-01,03,05,06 + CTXP-01..03 + SUMP-02 closed at the route layer; 16 it.todo → 16 real it() + 1 documented Q5 deferred; Pitfall 17-D + 17-E + 17-F verified; SESS-06 byte-identical regression preserved via P9-02 golden snapshot pass). Commits: `9b9a243` (Task 1), `3bf6e7b` (Task 2), `7237595` (Task 3). Resume file: None.
 - 2026-06-01T02:42:15Z — Stopped at: Completed 17-02-PLAN.md (migration 0006 indivisible tuple — SQL + Drizzle schema + journal entry + barrel re-export in commit d4034c5; live psql apply + drizzle.__drizzle_migrations registration; 30 it.todo → real it()). Resume file: None.
 - 2026-05-31T21:15:00Z — Stopped at: Completed 16-04-PLAN.md (P9-02 byte-identical golden + P3-04 heartbeat grep gate + smoke RESS section + STATE/ROADMAP/REQUIREMENTS wrap-up). Phase 16 SHIPPED. Resume file: None.
+
+## Deferred Items
+
+Items acknowledged and deferred at v0.11.0 milestone close on 2026-06-03T03:20:00Z:
+
+| Category | Item | Status | Notes |
+|----------|------|--------|-------|
+| uat_gaps | 14-HUMAN-UAT.md | resolved (audit false positive) | Phase 14 UAT already `status: resolved`; 0 open scenarios. Auditor flags any HUMAN-UAT.md regardless of resolution status. No action needed. |
+| quick_tasks | 260510-v8z-phase-01-script-cleanup-non-blocking-war | actually-complete (audit format quirk) | SUMMARY.md `status: complete`, commit `20d57d2` (2026-05-10). Audit reports `status: missing` because PLAN.md frontmatter lacks the status field the auditor expects. Work was shipped during Phase 01 era; not blocking. |
+| quick_tasks | 260525-0hr-perfil-solo-ollama-optimizado-nombres-de | actually-complete (PLAN frontmatter outdated) | SUMMARY.md `status: complete`, commit `c7b0e82` (2026-05-25). PLAN.md frontmatter still shows `status: in-progress` — outdated. This task IS the origin of the project_vram_budget decision ("vllm/llamacpp redundantes"). Carried forward as part of SEED-001's diagnosis (the dead-backend entries remain in models.yaml). |
+| seeds | SEED-001-model-catalog-hygiene-consumer-dx | dormant (intentional carry-forward to v0.12.0) | Planted 2026-06-03 during /gsd-progress session. Will surface at /gsd-new-milestone v0.12.0 as Phase 1 candidate. By design, not blocking v0.11.0 close. |
+
+Known deferred items at close: 4 (3 false-positives/format quirks + 1 intentional carry-forward).
