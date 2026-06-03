@@ -75,6 +75,15 @@ export interface RegisterRerankOpts {
   breaker: CircuitBreaker;
   breakerCooldownSec: number;
   idempotency?: IdempotencyMultiplexer;
+  /**
+   * Phase 20 (v0.12.0 — CAT-04 / D-03 LOCKED): narrow metrics slice for the
+   * deprecation surface. Optional so existing rerank fixtures keep compiling.
+   * Production wiring threads opts.metrics.routerDeprecatedAliasUsedTotal from
+   * app.ts. When undefined the deprecation surface still fires header + log.
+   */
+  metrics?: {
+    routerDeprecatedAliasUsedTotal?: import('prom-client').Counter<'old_name' | 'new_name'>;
+  };
 }
 
 export function registerRerankRoute(app: FastifyInstance, opts: RegisterRerankOpts): void {
@@ -89,11 +98,36 @@ export function registerRerankRoute(app: FastifyInstance, opts: RegisterRerankOp
       // applyPreflight runs resolve → applyPolicyGate → breaker.check in one
       // helper, shared with MCP tool handlers (Wave 4). breakerState='open' is
       // RETURNED so the HTTP caller stamps Retry-After before BreakerOpenError.
-      const { entry, breakerState } = await applyPreflight(body.model, {
+      const { entry, breakerState, deprecation_meta } = await applyPreflight(body.model, {
         registry: opts.registry,
         breaker: opts.breaker,
       });
       req.resolvedBackend = entry.backend;
+
+      // ─── Phase 20 deprecation surface (CAT-04 / D-03 LOCKED) ──────────────
+      // Identical block as chat-completions / messages / responses. See
+      // chat-completions.ts for the canonical version + rationale.
+      if (deprecation_meta) {
+        void reply.header('X-Deprecated-Alias', deprecation_meta.new_name);
+        req.log.warn(
+          {
+            event: 'deprecated_alias_used',
+            old_name: deprecation_meta.old_name,
+            new_name: deprecation_meta.new_name,
+            deprecated_since: deprecation_meta.deprecated_since,
+            removal_target: deprecation_meta.removal_target,
+          },
+          'deprecated alias resolved to canonical target',
+        );
+        opts.metrics?.routerDeprecatedAliasUsedTotal
+          ?.labels({
+            old_name: deprecation_meta.old_name,
+            new_name: deprecation_meta.new_name,
+          })
+          .inc();
+      }
+      // ─── End Phase 20 deprecation surface ─────────────────────────────────
+
       // Plan 08-04 (CLOUD-03) — sentinel-open branch.
       if (breakerState === 'open') {
         void reply.header('Retry-After', String(opts.breakerCooldownSec));

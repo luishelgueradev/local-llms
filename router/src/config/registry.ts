@@ -178,6 +178,29 @@ export const RegistrySchema = z.object({
   // Empty / absent = no external MCP servers (Frame-01 default — the router
   // ships with zero retrievers / MCP servers wired in production).
   mcp_servers: z.array(McpServerConfigSchema).optional(),
+  // Phase 20 (v0.12.0 — CAT-04 / D-03 LOCKED): top-level operator-declared
+  // deprecation map. Each key is a DEPRECATED alias the consumer might still
+  // be calling (typically a Wave 0 disabled entry); each value points to the
+  // CANONICAL alias to redirect to plus version metadata for the warn log
+  // and the X-Deprecated-Alias header.
+  //
+  // Empty / absent = no deprecation routing (v0.12.0 default — D-02 LOCKED
+  // chose coexistence over renames, so NOTHING was renamed in this milestone;
+  // the infrastructure ships preventive for future renames).
+  //
+  // Cross-field validation (superRefine below): each target MUST be the name
+  // of an ENABLED model entry; each deprecated key MUST be a known model name
+  // in the registry (typically a disabled entry — keeping the disabled stub
+  // around is what CAT-01 + CAT-04 compose to: invisible at /v1/models,
+  // resolvable at dispatch).
+  deprecated_aliases: z.record(
+    z.string(),
+    z.object({
+      target: z.string().min(1),
+      deprecated_since: z.string().min(1),
+      removal_target: z.string().min(1),
+    }),
+  ).optional(),
 }).superRefine((reg, ctx) => {
   // Read env at refinement time (not module load) — allows operators to change VRAM_ENVELOPE_GB
   // via `docker compose restart router` without rebundling, AND lets tests toggle per-case
@@ -279,6 +302,40 @@ export const RegistrySchema = z.object({
           message: `Config error: model "${m.name}" references mcp_servers_enabled: "${ref}" but no such alias is declared in mcp_servers[]`,
         });
       }
+    }
+  }
+
+  // Phase 20 (v0.12.0 — CAT-04 / D-03 LOCKED): cross-field validation of the
+  // operator-declared deprecated_aliases block. Two invariants:
+  //   (a) `target` MUST be the name of an ENABLED model entry (a deprecation
+  //       that points to a disabled or missing entry would 404 at dispatch —
+  //       catch that at boot, not at first consumer hit).
+  //   (b) The deprecated key itself MUST be a known model name in the registry.
+  //       This composes with CAT-01 (Wave 0 disabled-flag): the typical pattern
+  //       is "leave the entry in models.yaml with disabled: true, AND add a
+  //       deprecated_aliases entry that redirects it to the canonical target".
+  //       Without rule (b), a typo (deprecated_aliases.fooo → chat-local where
+  //       no `fooo` model entry exists) would silently route any consumer
+  //       calling `fooo` to chat-local without the surface ever advertising
+  //       the alias — confusing and operationally opaque. Requiring the
+  //       deprecated key to exist in models[] forces the operator to maintain
+  //       the disabled-entry stub explicitly.
+  const enabledNames = new Set(reg.models.filter((m) => !m.disabled).map((m) => m.name));
+  const allNames = new Set(reg.models.map((m) => m.name));
+  for (const [oldName, entry] of Object.entries(reg.deprecated_aliases ?? {})) {
+    if (!enabledNames.has(entry.target)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['deprecated_aliases', oldName, 'target'],
+        message: `Config error: deprecated_aliases["${oldName}"].target = "${entry.target}" but no enabled model has that name. Enabled: ${[...enabledNames].sort().join(', ')}`,
+      });
+    }
+    if (!allNames.has(oldName)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['deprecated_aliases', oldName],
+        message: `Config error: deprecated_aliases key "${oldName}" must be a known model name (typically a disabled entry retained for backward compat); not present in models[]`,
+      });
     }
   }
 });

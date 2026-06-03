@@ -33,6 +33,8 @@
 import type { RegistryStore, ModelEntry } from '../config/registry.js';
 import type { CircuitBreaker, BreakerState } from '../resilience/circuitBreaker.js';
 import { applyPolicyGate } from '../policy/gate.js';
+import { resolveAlias } from '../config/deprecation.js';
+import type { DeprecationMeta } from '../config/deprecation.js';
 
 export interface ApplyPreflightOpts {
   registry: RegistryStore;
@@ -42,6 +44,20 @@ export interface ApplyPreflightOpts {
 export interface ApplyPreflightResult {
   entry: ModelEntry;
   breakerState: BreakerState;
+  /**
+   * Phase 20 (v0.12.0 — CAT-04 / D-03 LOCKED): populated ONLY when the
+   * `requested_model` was a deprecated alias that was redirected to a canonical
+   * target via the operator-declared `deprecated_aliases` map. Route handlers
+   * consume this to:
+   *   1. Stamp the `X-Deprecated-Alias: <new_name>` response header.
+   *   2. Emit a structured pino warn log (event='deprecated_alias_used').
+   *   3. Increment `router_deprecated_alias_used_total{old_name, new_name}`.
+   *
+   * Undefined for the canonical-name happy path AND for unknown aliases
+   * (unknown aliases pass through resolveAlias unchanged; downstream
+   * registry.resolve() raises RegistryUnknownModelError as usual).
+   */
+  deprecation_meta?: DeprecationMeta;
 }
 
 /**
@@ -62,17 +78,42 @@ export async function applyPreflight(
   // entry from snapshot N and policies from snapshot N+1.
   const snapshot = opts.registry.get();
 
-  // Step 1: resolve. Lets RegistryUnknownModelError propagate verbatim so the
-  // centralized error handler maps it to 404 (envelope.ts mapToHttpStatus).
-  const entry = opts.registry.resolve(requested_model);
+  // Phase 20 (v0.12.0 — CAT-04 / D-03 LOCKED): operator-declared deprecation
+  // map intercepts BEFORE registry.resolve(). If the requested_model is in
+  // `deprecated_aliases`, the canonical target is what we actually dispatch
+  // against; the deprecation_meta rides through to the route handler so it
+  // can stamp the X-Deprecated-Alias header + warn log + increment the
+  // counter. Unknown / non-deprecated aliases pass through unchanged
+  // (canonical === requested_model, deprecation_meta === undefined).
+  //
+  // Composition with Wave 0 (CAT-01): a disabled entry whose name is also in
+  // the deprecation map RESOLVES at dispatch time (via the canonical target)
+  // even though it is invisible at /v1/models. This intentional asymmetry
+  // gives consumers a grace window without auto-enabling the disabled stub.
+  // See 20-CONTEXT.md §6.
+  const aliasResult = resolveAlias(requested_model, snapshot);
+  const canonical = aliasResult.canonical;
 
-  // Step 2: policy gate. Lets AllowlistViolationError / CloudNotAllowedError
-  // propagate verbatim so the centralized error handler maps each to 403.
-  // POL-05 invariant: this MUST execute before step 3 — a thrown policy error
-  // short-circuits before the breaker counter could ever be mutated.
-  applyPolicyGate(snapshot.policies, entry, requested_model);
+  // Step 1: resolve the CANONICAL alias. RegistryUnknownModelError still
+  // propagates verbatim for genuinely-unknown aliases (resolveAlias's
+  // pass-through case → registry.resolve throws → centralized handler 404).
+  // For redirected aliases, the canonical target MUST exist + be enabled (the
+  // RegistrySchema.superRefine cross-field validation rejects YAML where a
+  // deprecation target is missing or disabled).
+  const entry = opts.registry.resolve(canonical);
+
+  // Step 2: policy gate runs against the canonical target's policy block (NOT
+  // the deprecated alias's policy — once redirected, the deprecated entry's
+  // policy is moot). The third argument to applyPolicyGate is the model name
+  // used for error messages; passing the canonical so the AllowlistViolationError
+  // / CloudNotAllowedError messages reflect the actual dispatched alias.
+  applyPolicyGate(snapshot.policies, entry, canonical);
 
   // Step 3: breaker check. RETURN the state via the sentinel; do NOT throw.
   const breakerResult = await opts.breaker.check(entry.backend);
-  return { entry, breakerState: breakerResult.state };
+  return {
+    entry,
+    breakerState: breakerResult.state,
+    deprecation_meta: aliasResult.deprecation_meta,
+  };
 }

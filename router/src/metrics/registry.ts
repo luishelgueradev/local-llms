@@ -196,6 +196,31 @@ export function makeMetricsRegistry() {
     registers: [register],
   });
 
+  // Phase 20 (v0.12.0 — CAT-04 / D-03 LOCKED + POL-06 BLOCK preserved):
+  // deprecated alias usage counter. Incremented once per successful dispatch
+  // whose `requested_model` was redirected through `deprecated_aliases` to a
+  // canonical target.
+  //
+  // Labels: `old_name` (the deprecated alias the consumer called) +
+  //         `new_name` (the canonical target the dispatch actually resolved to).
+  //
+  // POL-06 invariant: labels MUST NOT end in '_id' — explicitly verified by
+  // `scripts/check-prometheus-cardinality.ts`. The `old_name`/`new_name` naming
+  // was chosen by 20-CONTEXT.md §C9 to make the POL-06 compliance obvious by
+  // construction; a careless `old_alias_id`/`new_alias_id` would have tripped
+  // the cardinality guard (which scans labelNames arrays for `/_id$/`).
+  //
+  // Cardinality bound: at most `|deprecated_aliases|` series per registry,
+  // which is operator-declared and typically 0-10 entries. v0.12.0 ships with
+  // ZERO entries declared (D-02 LOCKED — no renames in this milestone), so the
+  // metric registers but never increments until an operator opts in.
+  const routerDeprecatedAliasUsedTotal = new Counter({
+    name: 'router_deprecated_alias_used_total',
+    help: 'Deprecated alias resolutions by old_name + new_name (CAT-04)',
+    labelNames: ['old_name', 'new_name'] as const,
+    registers: [register],
+  });
+
   return {
     register,
     requestsTotal,
@@ -212,6 +237,7 @@ export function makeMetricsRegistry() {
     routerSessionAppendFailedTotal,
     routerHookDurationMs,
     routerMcpToolCallsExternalTotal,
+    routerDeprecatedAliasUsedTotal,
   };
 }
 

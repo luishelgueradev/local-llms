@@ -1050,6 +1050,9 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
       jsonValidationTotal: opts.metrics.jsonValidationTotal,
       routerHookDurationMs: opts.metrics.routerHookDurationMs,
       routerMcpToolCallsExternalTotal: opts.metrics.routerMcpToolCallsExternalTotal,
+      // Phase 20 (v0.12.0 — CAT-04 / D-03 LOCKED): deprecated alias counter.
+      // See dispatch/preflight.ts + routes/v1/chat-completions.ts for the surface.
+      routerDeprecatedAliasUsedTotal: opts.metrics.routerDeprecatedAliasUsedTotal,
     },
     // Phase 17 (v0.11.0 — SESS-01..06 / CTXP-01..03 / SUMP-02): pass-through.
     // When opts.sessionStore is undefined the route is byte-identical to
@@ -1084,6 +1087,8 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
     metrics: {
       routerHookDurationMs: opts.metrics.routerHookDurationMs,
       routerMcpToolCallsExternalTotal: opts.metrics.routerMcpToolCallsExternalTotal,
+      // Phase 20 (v0.12.0 — CAT-04 / D-03 LOCKED): same deprecated alias counter.
+      routerDeprecatedAliasUsedTotal: opts.metrics.routerDeprecatedAliasUsedTotal,
     },
     mcpClientRegistry: opts.mcpClientRegistry,
     preCompletionHooks: opts.preCompletionHooks,
@@ -1135,6 +1140,12 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
     breaker,
     breakerCooldownSec,
     idempotency,
+    // Phase 20 (v0.12.0 — CAT-04 / D-03 LOCKED): deprecated alias counter
+    // threaded through the same shared MetricsRegistry. When undefined the
+    // rerank route still stamps header + warn log but skips the counter inc.
+    metrics: {
+      routerDeprecatedAliasUsedTotal: opts.metrics.routerDeprecatedAliasUsedTotal,
+    },
   });
 
   // Phase 13 (v0.10.0 — RESP-01..04) — POST /v1/responses (minimal, non-stream).
@@ -1156,6 +1167,8 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
     metrics: {
       routerHookDurationMs: opts.metrics.routerHookDurationMs,
       routerMcpToolCallsExternalTotal: opts.metrics.routerMcpToolCallsExternalTotal,
+      // Phase 20 (v0.12.0 — CAT-04 / D-03 LOCKED): same deprecated alias counter.
+      routerDeprecatedAliasUsedTotal: opts.metrics.routerDeprecatedAliasUsedTotal,
     },
     mcpClientRegistry: opts.mcpClientRegistry,
     preCompletionHooks: opts.preCompletionHooks,

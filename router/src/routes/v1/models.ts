@@ -53,8 +53,31 @@ export function registerModelsRoute(
    * `registry.getCreatedAtSec()` so all entries in a single response share
    * the same snapshot timestamp (D-C3 revision 1).
    */
+  // Phase 20 (v0.12.0 — CAT-04 / D-03 LOCKED): build a reverse-lookup map from
+  // canonical name → array of deprecated aliases that redirect to it. Used to
+  // annotate each enabled entry with its deprecation history so consumers can
+  // discover via /v1/models which aliases their workflow might still be using.
+  // Computed per-request (cheap — typically 0-10 entries) so hot-reloads are
+  // automatically reflected without restart.
+  const buildReverseDeprecationMap = (
+    reg: Registry,
+  ): Record<string, Array<{ old_name: string; deprecated_since: string; removal_target: string }>> => {
+    const out: Record<string, Array<{ old_name: string; deprecated_since: string; removal_target: string }>> = {};
+    for (const [oldName, dep] of Object.entries(reg.deprecated_aliases ?? {})) {
+      const list = out[dep.target] ?? [];
+      list.push({
+        old_name: oldName,
+        deprecated_since: dep.deprecated_since,
+        removal_target: dep.removal_target,
+      });
+      out[dep.target] = list;
+    }
+    return out;
+  };
+
   const filterAndProject = (reg: Registry, created: number) => {
     const allow = reg.policies?.default?.model_allowlist ?? [];
+    const reverseDeprecation = buildReverseDeprecationMap(reg);
     return enabledModels(reg)
       .filter((m) => allow.length === 0 || allow.includes(m.name))
       .map((m) => {
@@ -71,9 +94,17 @@ export function registerModelsRoute(
         };
         // Phase 20 / CAT-02 — additive optional `health` field. Omitted entirely
         // when the plugin is not wired (test fixtures without Valkey).
-        return backendHealth
+        const withHealth = backendHealth
           ? { ...base, health: backendHealth.get(m.backend) }
           : base;
+        // Phase 20 / CAT-04 — additive optional `deprecated_aliases` field
+        // (informational; lists ALL deprecated aliases that redirect to this
+        // canonical entry). Omitted when no deprecation entry targets this
+        // entry, so the wire shape stays clean for the common case.
+        const dep = reverseDeprecation[m.name];
+        return dep && dep.length > 0
+          ? { ...withHealth, deprecated_aliases: dep }
+          : withHealth;
       });
   };
 
@@ -129,8 +160,15 @@ export function registerModelsRoute(
       // D-11: same annotation as the list route. Defaults to true.
       policy: { cloud_allowed: entry.policy?.cloud_allowed ?? true },
     };
-    return backendHealth
+    const withHealth = backendHealth
       ? { ...base, health: backendHealth.get(entry.backend) }
       : base;
+    // Phase 20 / CAT-04 — same informational `deprecated_aliases` projection
+    // as the list endpoint. Lists deprecated aliases targeting THIS canonical.
+    const reverse = buildReverseDeprecationMap(reg);
+    const dep = reverse[entry.name];
+    return dep && dep.length > 0
+      ? { ...withHealth, deprecated_aliases: dep }
+      : withHealth;
   });
 }

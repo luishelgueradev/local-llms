@@ -151,6 +151,8 @@ export interface RegisterMessagesRouteOpts {
   metrics?: {
     routerHookDurationMs?: import('prom-client').Histogram<'hook_name' | 'status'>;
     routerMcpToolCallsExternalTotal?: import('prom-client').Counter<'server_alias' | 'status_class'>;
+    /** Phase 20 (v0.12.0 — CAT-04 / D-03 LOCKED): see chat-completions opts header for shape rationale. */
+    routerDeprecatedAliasUsedTotal?: import('prom-client').Counter<'old_name' | 'new_name'>;
   };
   /** Phase 18 (v0.11.0 — MCPC-01..06): optional MCP client registry. */
   mcpClientRegistry?: McpClientRegistry;
@@ -232,11 +234,38 @@ export function registerMessagesRoute(
       // `Retry-After` BEFORE raising BreakerOpenError. POL-05 (gate-before-breaker)
       // is preserved structurally inside applyPreflight — a thrown gate never reaches
       // the breaker.check step. (See dispatch/preflight.ts header comments.)
-      const { entry, breakerState } = await applyPreflight(body.model, {
+      const { entry, breakerState, deprecation_meta } = await applyPreflight(body.model, {
         registry: opts.registry,
         breaker: opts.breaker,
       });
       req.resolvedBackend = entry.backend;       // Plan 08-03 (ROUTE-10) — stamp for onSend hook
+
+      // ─── Phase 20 deprecation surface (CAT-04 / D-03 LOCKED) ──────────────
+      // See chat-completions.ts for the identical block + rationale. Header
+      // sits AFTER anthropic-version echo (line 222) and BEFORE breaker sentinel
+      // so the X-Deprecated-Alias header rides on any response shape from this
+      // point forward.
+      if (deprecation_meta) {
+        void reply.header('X-Deprecated-Alias', deprecation_meta.new_name);
+        req.log.warn(
+          {
+            event: 'deprecated_alias_used',
+            old_name: deprecation_meta.old_name,
+            new_name: deprecation_meta.new_name,
+            deprecated_since: deprecation_meta.deprecated_since,
+            removal_target: deprecation_meta.removal_target,
+          },
+          'deprecated alias resolved to canonical target',
+        );
+        opts.metrics?.routerDeprecatedAliasUsedTotal
+          ?.labels({
+            old_name: deprecation_meta.old_name,
+            new_name: deprecation_meta.new_name,
+          })
+          .inc();
+      }
+      // ─── End Phase 20 deprecation surface ─────────────────────────────────
+
       // Plan 08-04 (CLOUD-03) — circuit-breaker sentinel branch. On state='open',
       // stamp Retry-After BEFORE the throw so the centralized error handler's envelope
       // carries the back-off hint; on 'half-open', this caller IS the probe — fall
