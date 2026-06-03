@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { Registry, RegistryStore } from '../../config/registry.js';
 import { enabledModels } from '../../config/registry.js';
+import type { BackendHealthDecoration } from '../../plugins/backend-health-plugin.js';
 
 /**
  * GET /v1/models — returns the D-C1 shape with capabilities extension.
@@ -25,12 +26,23 @@ import { enabledModels } from '../../config/registry.js';
  * / backend_url / backend_model / vram_budget_gb are structurally impossible
  * to leak (T-3-A2 anti-leak preserved). HTTP and MCP share the same lens.
  */
-export function registerModelsRoute(app: FastifyInstance, registry: RegistryStore): void {
+export function registerModelsRoute(
+  app: FastifyInstance,
+  registry: RegistryStore,
+  backendHealth?: BackendHealthDecoration,
+): void {
   // Phase 20 (v0.12.0 — CAT-01 / D-01): disabled entries are invisible to the
   // public surface. enabledModels() applies the filter once; the allowlist filter
   // stacks on top. /v1/models/:id returns 404 model_not_found for a disabled id
   // (uniform surface — consumer does not learn whether an alias is unknown vs
   // intentionally offline).
+  //
+  // Phase 20 (v0.12.0 — CAT-02 / D-04): when `backendHealth` is wired (production
+  // composition; tests that omit Valkey + plugin pass undefined), each projected
+  // entry gains an additive `health: { status, checked_at }` field. NO auto-
+  // filtering — per D-04 LOCKED, `status: 'down'` entries STILL appear; the
+  // consumer decides whether to use the alias. The cloud entry reports
+  // `status: 'unknown'` because Ollama Cloud has no bearer-accessible /healthz.
   /**
    * Filter the registry snapshot by `policies.default.model_allowlist` (D-10)
    * and project each survivor to the public OpenAI-compatible shape (T-3-A2
@@ -45,20 +57,32 @@ export function registerModelsRoute(app: FastifyInstance, registry: RegistryStor
     const allow = reg.policies?.default?.model_allowlist ?? [];
     return enabledModels(reg)
       .filter((m) => allow.length === 0 || allow.includes(m.name))
-      .map((m) => ({
-        id: m.name,
-        object: 'model' as const,
-        created,
-        owned_by: 'local-llms' as const,
-        // T-3-A2: explicit field list — no spread of ModelEntry,
-        // so backend_url, backend, backend_model never leak to clients.
-        capabilities: m.capabilities,
-        // D-11: annotation defaults to true (Phase 14 default cloud_allowed).
-        policy: { cloud_allowed: m.policy?.cloud_allowed ?? true },
-      }));
+      .map((m) => {
+        const base = {
+          id: m.name,
+          object: 'model' as const,
+          created,
+          owned_by: 'local-llms' as const,
+          // T-3-A2: explicit field list — no spread of ModelEntry,
+          // so backend_url, backend, backend_model never leak to clients.
+          capabilities: m.capabilities,
+          // D-11: annotation defaults to true (Phase 14 default cloud_allowed).
+          policy: { cloud_allowed: m.policy?.cloud_allowed ?? true },
+        };
+        // Phase 20 / CAT-02 — additive optional `health` field. Omitted entirely
+        // when the plugin is not wired (test fixtures without Valkey).
+        return backendHealth
+          ? { ...base, health: backendHealth.get(m.backend) }
+          : base;
+      });
   };
 
   app.get('/v1/models', async () => {
+    // Phase 20 / CAT-02 — trigger lazy refresh if the in-memory cache is stale
+    // (ttlSec from env.ROUTER_BACKEND_HEALTH_TTL_SEC). No-op when cache is warm.
+    if (backendHealth) {
+      await backendHealth.ensureFresh();
+    }
     return {
       object: 'list' as const,
       data: filterAndProject(registry.get(), registry.getCreatedAtSec()),
@@ -91,7 +115,12 @@ export function registerModelsRoute(app: FastifyInstance, registry: RegistryStor
         },
       };
     }
-    return {
+    // Phase 20 / CAT-02 — single-entry retrieval also surfaces the health field
+    // when the plugin is wired. ensureFresh triggers a lazy refresh if stale.
+    if (backendHealth) {
+      await backendHealth.ensureFresh();
+    }
+    const base = {
       id: entry.name,
       object: 'model' as const,
       created: registry.getCreatedAtSec(),
@@ -100,5 +129,8 @@ export function registerModelsRoute(app: FastifyInstance, registry: RegistryStor
       // D-11: same annotation as the list route. Defaults to true.
       policy: { cloud_allowed: entry.policy?.cloud_allowed ?? true },
     };
+    return backendHealth
+      ? { ...base, health: backendHealth.get(entry.backend) }
+      : base;
   });
 }

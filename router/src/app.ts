@@ -52,6 +52,9 @@ import type { SummaryProvider } from './providers/summary-provider.js';
 import { countTokens } from './translation/count-tokens.js';
 import { closeValkey, type ValkeyClient } from './clients/valkey.js';
 import { mcpHostPlugin } from './mcp/host/index.js';
+// Phase 20 (v0.12.0 — CAT-02 / D-04 / Open Q1 → plugin): backend reachability
+// probe + Valkey-cached lazy refresh + per-entry health field on /v1/models.
+import { backendHealthPlugin } from './plugins/backend-health-plugin.js';
 // Phase 19 (v0.11.0 — EMBP-01 / D-06): makeEmbeddingsCache removed from buildApp.
 // Cache construction now lives inside makeOpenAIEmbeddingProvider (providers/embedding-provider.ts).
 import { makeCircuitBreaker, type CircuitBreaker } from './resilience/circuitBreaker.js';
@@ -269,7 +272,12 @@ export interface BuildAppOpts {
     Partial<Pick<Env, 'MCP_ENABLED' | 'MCP_SESSION_TTL_SEC' | 'MCP_GC_INTERVAL_MS'>> &
     // Phase 15.1 housekeeping — upstream backend timeout. Partial so existing
     // test fixtures keep working; index.ts always passes the env value.
-    Partial<Pick<Env, 'ROUTER_BACKEND_TIMEOUT_MS'>>;
+    Partial<Pick<Env, 'ROUTER_BACKEND_TIMEOUT_MS'>> &
+    // Phase 20 (v0.12.0 — CAT-02 / D-04) — backend health probe TTL. Partial so
+    // existing test fixtures continue to work; when omitted, buildApp passes a
+    // sensible default (60s) to the plugin. Production wiring (index.ts) always
+    // supplies the real env value.
+    Partial<Pick<Env, 'ROUTER_BACKEND_HEALTH_TTL_SEC'>>;
   /**
    * Plan 08-04 — test injection seam for the breaker's clock. Tests can pass
    * a custom `now` so they can advance fake-time without real timers. When
@@ -738,6 +746,21 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
   // without a Valkey client — they exercise routes that don't touch it.
   if (opts.valkey) app.decorate('valkey', opts.valkey);
 
+  // Phase 20 (v0.12.0 — CAT-02 / D-04 / Open Q1 → Fastify plugin):
+  // Register the backend-health plugin AFTER Valkey is decorated (the plugin
+  // write-throughs cache hits into Valkey under `backend-health:{backend}`) and
+  // BEFORE `registerModelsRoute` (which consumes `app.backendHealth.get(...)`
+  // and `ensureFresh()`). When opts.valkey is undefined, the plugin still loads
+  // and operates in-memory only — production wiring always provides Valkey.
+  //
+  // The plugin's `onReady` hook fires the boot probe once when `app.ready()` is
+  // awaited (or when `app.listen()` is called in index.ts).
+  await app.register(backendHealthPlugin, {
+    registry: opts.registry,
+    valkey: opts.valkey,
+    ttlSec: opts.env?.ROUTER_BACKEND_HEALTH_TTL_SEC ?? 60,
+  });
+
   // Phase 19 (v0.11.0 — EMBP-01 / D-10 + Plan 19-03 Rule 3 fix): construct the
   // EmbeddingProvider. When opts.embeddingProvider is supplied (production composition
   // root in index.ts / Plan 19-04 or test fixtures that pass one), use it directly.
@@ -1068,7 +1091,12 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
   registerCountTokensRoute(app, { registry: opts.registry });
 
   // GET /v1/models — bearer-gated; lists all registry models (Plan 03-02, OAI-03).
-  registerModelsRoute(app, opts.registry);
+  // Phase 20 (v0.12.0 — CAT-02 / D-04): pass through the backendHealth decorator
+  // so per-entry response includes the additive `health: { status, checked_at }`
+  // field. Defensive optional chaining: in the (unlikely) case the plugin failed
+  // to decorate (test fixture skipping plugin registration), the route falls back
+  // to omitting the field entirely — additive contract preserved.
+  registerModelsRoute(app, opts.registry, app.backendHealth);
 
   // Plan 07-04 (OAI-02, EMBED-01):
   //  - POST /v1/embeddings — OpenAI-compat embedding endpoint dispatching to

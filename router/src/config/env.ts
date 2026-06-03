@@ -123,6 +123,17 @@ const EnvSchema = z.object({
   // Threaded into PostgresSessionStore.createSession via the production
   // composition root (Plan 17-07).
   SESSION_TTL_DAYS: z.coerce.number().int().min(1).default(7),
+  /**
+   * Phase 20 (v0.12.0 — CAT-02 / D-04). TTL (seconds) for the Valkey-cached
+   * `/v1/models` health field. Default 60 — operator can shorten during a
+   * deploy to surface backend recovery sooner. The plugin probes each declared
+   * backend once at boot and lazily refreshes (on the next /v1/models request)
+   * whenever any cached entry is older than this value.
+   *
+   * Min 5s so a misconfigured 0 / negative cannot collapse the plugin into a
+   * "probe on every request" hot loop.
+   */
+  ROUTER_BACKEND_HEALTH_TTL_SEC: z.coerce.number().int().min(5).default(60),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

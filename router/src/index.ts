@@ -293,6 +293,10 @@ async function main(): Promise<void> {
       // (ollama/llamacpp/vllm). 300_000 default tolerates cold model loads on
       // WSL2 + shared GPU. See config/env.ts ROUTER_BACKEND_TIMEOUT_MS rationale.
       ROUTER_BACKEND_TIMEOUT_MS: env.ROUTER_BACKEND_TIMEOUT_MS,
+      // Phase 20 (v0.12.0 — CAT-02 / D-04): TTL for the Valkey-cached backend
+      // health field on /v1/models. Default 60s — operator can shorten via env
+      // during a deploy to surface backend recovery sooner.
+      ROUTER_BACKEND_HEALTH_TTL_SEC: env.ROUTER_BACKEND_HEALTH_TTL_SEC,
     },
   });
 

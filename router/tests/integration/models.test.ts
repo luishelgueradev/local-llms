@@ -90,9 +90,10 @@ describe('GET /v1/models — D-C1 shape, auth, no-leak, liveness-decoupled, D-C3
     expect(body.object).toBe('list');
     expect(body.data).toHaveLength(2);
     // First entry — Phase 15 Plan 15-11 (D-11) adds `policy` to the projection.
+    // Phase 20 Plan 20-02 (CAT-02 / D-04) adds `health` to the projection.
     const first = body.data[0]! as typeof body.data[0] & { policy: { cloud_allowed: boolean } };
     expect(Object.keys(first).sort()).toEqual(
-      ['capabilities', 'created', 'id', 'object', 'owned_by', 'policy'].sort(),
+      ['capabilities', 'created', 'health', 'id', 'object', 'owned_by', 'policy'].sort(),
     );
     expect(first.id).toBe('llama3.2:3b-instruct-q4_K_M');
     expect(first.object).toBe('model');
@@ -235,8 +236,9 @@ describe('GET /v1/models — D-C1 shape, auth, no-leak, liveness-decoupled, D-C3
       policy: { cloud_allowed: boolean };
     }>();
     // Phase 15 Plan 15-11 (D-11) adds `policy` to the projection.
+    // Phase 20 Plan 20-02 (CAT-02 / D-04) adds `health` to the projection.
     expect(Object.keys(body).sort()).toEqual(
-      ['capabilities', 'created', 'id', 'object', 'owned_by', 'policy'].sort(),
+      ['capabilities', 'created', 'health', 'id', 'object', 'owned_by', 'policy'].sort(),
     );
     expect(body.id).toBe('qwen2.5-7b-instruct-q4km');
     expect(body.object).toBe('model');
