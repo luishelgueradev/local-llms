@@ -37,6 +37,16 @@ RUN --mount=type=cache,target=/root/.npm \
 # ---- 4) runtime: minimal final image ----
 FROM node:22-bookworm-slim AS runtime
 WORKDIR /app
+# Phase 21 (v0.12.0 post-ship hygiene — HYG-02): bake `curl` into the runtime image.
+# `bash bin/smoke-test-router.sh --profile prod` shells into this container via
+# `docker compose exec router curl ...` to probe /healthz, /readyz, /v1/models, etc.
+# from inside the network — the prod profile drops the host port (Plan 06-02), so a
+# container-side probe is the only path. Without curl baked in, --profile prod
+# fails with "curl: not found" at the first probe. --no-install-recommends keeps
+# the image lean (~+3 MB). apt-list cleanup avoids retaining the package index.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl \
+ && rm -rf /var/lib/apt/lists/*
 # Phase 20 (v0.12.0 — OPS-02): ARG at runtime-stage top so the ENV below sees them.
 # Docker ARG scope is per-stage; declaring here (NOT inheriting from a global)
 # keeps each stage's contract self-contained.
