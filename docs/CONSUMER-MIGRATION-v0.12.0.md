@@ -248,17 +248,77 @@ Si encontrás un comportamiento inesperado:
 
 ---
 
-## 7. Cross-references
+## 7. Post-ship hygiene fixes (Phase 21 — 2026-06-03)
+
+Después del ship original de v0.12.0 (Phase 20), Phase 21 cerró cuatro hallazgos de un audit unattended más un fix companion que se materializaron como cambios consumer-facing relevantes. **Ninguno requiere cambios de código en tu consumer** — son fixes silenciosos que arreglan modos de falla pre-existentes. Documentados acá para que sepas que pasaron si veías alguno de los síntomas abajo.
+
+### 7.1 SSE streaming ya no rompe SDKs estrictos (commit `e113192`)
+
+**Síntoma previo:** SDKs OpenAI-compatible que NO son `EventSource` de navegador (`openai-python`, Hermes Agent stack de NousResearch, n8n LangChain nodes configurados para streaming, scripts custom que hacen `json.loads(data)` sobre cada chunk SSE) crasheaban con:
+
+```
+JSONDecodeError: Expecting value: line 1 column 1 (char 0)
+```
+
+…en la **primera línea** de cualquier respuesta streaming (`/v1/chat/completions`, `/v1/messages`, `/v1/responses` con `stream:true`). Non-streaming andaba perfecto. Open WebUI (que usa `EventSource` del browser) no sufría el bug.
+
+**Causa raíz:** el plugin `fastify-sse-v2` emitía por default un evento `retry: 3000\n\n` al inicio de cada stream — un hint de reconexión que solo consume el `EventSource` del navegador. Ese evento tiene el campo `data:` vacío, y los SDKs estrictos hacían `json.loads("")` sobre él.
+
+**Fix:** registrar el plugin con `{ retryDelay: false }`. El stream ahora arranca directamente en el primer `data:` real (o un `: keep-alive` heartbeat). Verificación en vivo:
+
+```bash
+$ curl -sN -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+    -d '{"model":"chat-local","stream":true,"messages":[{"role":"user","content":"ok"}],"max_tokens":5}' \
+    https://local-llms.luishelguera.dev/v1/chat/completions | head -3
+data: {"id":"chatcmpl-...","object":"chat.completion.chunk", ...}
+data: {"id":"chatcmpl-...","object":"chat.completion.chunk", ...}
+data: [DONE]
+```
+
+(antes la primera línea era `retry: 3000`). EventSource del navegador sigue funcionando — usa su cadencia de reconexión default, que es lo que hacía antes.
+
+**Quién se beneficia explícitamente:**
+- Hermes Agent (NousResearch) configurado contra el router como provider `custom` OpenAI-compatible.
+- artiscrapper si invoca `chat.completions.create(..., stream=True)`.
+- Workflows de n8n que usan **streaming** en el OpenAI Chat Model node (los no-streaming ya funcionaban).
+- Cualquier script Python/Go/Rust con un SDK OpenAI-compatible que no sea `EventSource`.
+
+### 7.2 Primera request post-eviction (cold-load) ya no devuelve 504 (HYG-01 — commit `0f9880a`)
+
+**Síntoma previo:** cuando `qwen2.5:7b` NO está residente en VRAM (porque el sistema lo evictó para hacer lugar a Whisper / a otro modelo, o porque el host se reinició recientemente), la **primera** request a un alias chat (`chat-local` por ejemplo) podía devolver:
+
+```
+HTTP 504 upstream_timeout
+```
+
+…después de ~45 s. Las requests subsiguientes andaban en <1 s (el modelo ya estaba caliente).
+
+**Causa raíz:** el `headersTimeout` / `bodyTimeout` del Agent undici del router estaba seteado en 45 s, valor defensivo de un debug session anterior. El cold-load de qwen2.5:7b en WSL2 + GPU compartida tarda **~50–55 s** — el ceiling clipping arriba del cold-load real.
+
+**Fix:** subir ambos a 180 s (3 min). Margen 3× sobre el cold-load real, queda muy por debajo del ceiling de 300 s del SDK. Verificación en vivo: probe deliberado post-eviction devuelve HTTP 200 con contenido válido en **84 s** (vs. el 504 anterior a los 45 s).
+
+**Quién se beneficia explícitamente:**
+- artiscrapper en su primer batch del día (`chat-local` con json_mode strict).
+- n8n en `objetiva.com.ar` cuando un workflow scheduled corre después de un período de inactividad.
+- Cualquier consumer cuya primera request golpee un modelo no-residente.
+
+Si tu consumer ya implementaba retry-with-backoff en 504, **podés sacarlo** — el escenario que lo justificaba ya no se da. (Tener el retry no hace daño; simplemente no se va a disparar.)
+
+---
+
+## 8. Cross-references
 
 - [README → Which model when?](../README.md#which-model-when-v0120) — decision tree consumer-facing + curl/jq flow
 - [DEPLOY → Model Catalog Hygiene](../DEPLOY.md#model-catalog-hygiene-phase-20--v0120) — referencia operator-side de los 4 config blocks (`disabled` / `health` / `recommendations` / `deprecated_aliases`) + recipes
 - [`20-CONTEXT.md`](../.planning/phases/20-model-catalog-hygiene-external-consumer-dx/20-CONTEXT.md) — rationale completo de las decisiones D-01..D-09 (incluyendo D-02 + D-09 LOCKED)
 - [REQUIREMENTS.md](../.planning/REQUIREMENTS.md) — matriz completa de los 9 REQs de v0.12.0 (CAT-01..04, CDX-01..03, OPS-01..02)
 - [SEED-001](../.planning/seeds/SEED-001-model-catalog-hygiene-consumer-dx.md) — el root-cause analysis (sesión artiscrapper del 2026-06-03) que originó v0.12.0
+- [21-VERIFICATION.md](../.planning/phases/21-v0.12.0-post-ship-hygiene/21-VERIFICATION.md) — reporte de verificación de Phase 21 (HYG-01..04 + el fix SSE companion)
 
 ---
 
-*Última actualización: v0.12.0 (Phase 20) — 2026-06-03.*
+*Última actualización: v0.12.0 (Phase 20 + Phase 21 hygiene closeout) — 2026-06-03.*
 *Guía corta a propósito: cero breaking changes by design (per CONTEXT.md D-02 + D-09 LOCKED).*
+*Phase 21 agregó §7 con dos fixes consumer-facing silenciosos (SSE streaming + cold-load timeout) que no requieren cambios de código en tu consumer pero arreglan modos de falla pre-existentes.*
 
-**END OF FILE — CDX-03 closure.**
+**END OF FILE — CDX-03 closure + Phase 21 hygiene update.**
