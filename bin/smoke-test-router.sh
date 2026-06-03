@@ -2624,11 +2624,90 @@ fi
 
 echo "[smoke-test-router] === Phase 19 section complete ==="
 
+# ────────────────────────────────────────────────────────────────────────────
+# Phase 20 (v0.12.0 — CAT-01..04 + CDX-01..03 + OPS-01..02): Model Catalog
+# Hygiene + External Consumer DX + Deploy Hygiene
+# ────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "[smoke-test-router] === Phase 20 — Catalog Hygiene + Consumer DX + Deploy Hygiene (CAT-01..04 + CDX-01..03 + OPS-01..02) ==="
+
+# Gate 1 — OPS-02: /healthz exposes build_sha
+HEALTHZ_BODY=$(curl -sf "${ROUTER_URL}/healthz" 2>/dev/null || echo "")
+if [[ -n "$HEALTHZ_BODY" ]] && echo "$HEALTHZ_BODY" | jq -e '.build_sha' >/dev/null 2>&1; then
+  pass "OPS-02: /healthz includes build_sha field"
+else
+  fail "OPS-02: /healthz missing build_sha field — Dockerfile may not have rebuilt or BUILD_SHA arg not threaded"
+fi
+
+# Gate 2 — OPS-02: /version is public + returns same SHA as /healthz
+VERSION_BODY=$(curl -sf "${ROUTER_URL}/version" 2>/dev/null || echo "")
+if [[ -n "$VERSION_BODY" ]]; then
+  VERSION_SHA=$(echo "$VERSION_BODY" | jq -r '.build_sha // "missing"')
+  HEALTHZ_SHA=$(echo "$HEALTHZ_BODY" | jq -r '.build_sha // "missing"' 2>/dev/null || echo "missing")
+  if [[ "$VERSION_SHA" == "$HEALTHZ_SHA" && "$VERSION_SHA" != "missing" ]]; then
+    pass "OPS-02: /version and /healthz return matching build_sha (${VERSION_SHA:0:7})"
+  else
+    fail "OPS-02: SHA mismatch between /version (${VERSION_SHA:0:7}) and /healthz (${HEALTHZ_SHA:0:7})"
+  fi
+else
+  fail "OPS-02: /version did not return 200 — route may not be registered (registerVersionRoute) or /version not in PUBLIC_PATHS"
+fi
+
+# Gate 3 — CAT-02: /v1/models entries include health field
+MODELS_BODY=$(curl -sf -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" "${ROUTER_URL}/v1/models" 2>/dev/null || echo "")
+if [[ -n "$MODELS_BODY" ]] && echo "$MODELS_BODY" | jq -e '.data[0].health.status' >/dev/null 2>&1; then
+  pass "CAT-02: /v1/models entries include health.status"
+else
+  fail "CAT-02: /v1/models missing health field on entries"
+fi
+
+# Gate 4 — CDX-01: /v1/models response includes recommendations map
+if [[ -n "$MODELS_BODY" ]] && echo "$MODELS_BODY" | jq -e '.recommendations | has("embed-default")' 2>/dev/null | grep -q true; then
+  pass "CDX-01: /v1/models includes top-level recommendations map (embed-default present)"
+else
+  fail "CDX-01: /v1/models missing recommendations map or embed-default key"
+fi
+
+# Gate 5 — CAT-01: enabled count < 13 (3 dead-backend aliases disabled in Wave 0)
+if [[ -n "$MODELS_BODY" ]]; then
+  ENABLED_COUNT=$(echo "$MODELS_BODY" | jq '.data | length' 2>/dev/null || echo "0")
+  if [[ "$ENABLED_COUNT" == "10" ]]; then
+    pass "CAT-01: /v1/models shows 10 enabled entries (3 dead-backend aliases disabled)"
+  elif [[ "$ENABLED_COUNT" =~ ^[0-9]+$ ]] && [[ "$ENABLED_COUNT" -gt "0" ]] && [[ "$ENABLED_COUNT" -lt "13" ]]; then
+    pass "CAT-01: /v1/models shows ${ENABLED_COUNT} entries (< 13 — disabled filter active; operator may have customized the catalog)"
+  else
+    fail "CAT-01: /v1/models shows ${ENABLED_COUNT} entries — expected < 13 (operator may have re-enabled disabled entries, verify intent)"
+  fi
+else
+  fail "CAT-01: could not parse /v1/models body"
+fi
+
+# Gate 6 — CAT-04: deprecated alias returns X-Deprecated-Alias header
+# Soft-skip when models.yaml has no deprecated_aliases block declared (v0.12.0
+# ships with the map empty per D-02 LOCKED — no renames triggered).
+DEPRECATED_HEADERS=$(curl -s -i -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"qwen2.5-7b-instruct-q4km","messages":[{"role":"user","content":"hi"}],"max_tokens":3}' \
+  "${ROUTER_URL}/v1/chat/completions" 2>&1 | tr -d '\r')
+if echo "$DEPRECATED_HEADERS" | grep -i -q "^x-deprecated-alias:"; then
+  pass "CAT-04: deprecated alias qwen2.5-7b-instruct-q4km returned X-Deprecated-Alias header"
+else
+  # Check if it was a model-not-found (operator didn't add the deprecated_aliases yaml block)
+  if echo "$DEPRECATED_HEADERS" | grep -q "model_not_found\|UnknownModel\|not found"; then
+    skip "CAT-04: deprecated_aliases block not present in models.yaml — operator opt-in required (v0.12.0 ships empty per D-02 LOCKED)"
+  else
+    fail "CAT-04: missing X-Deprecated-Alias header on deprecated-alias dispatch"
+  fi
+fi
+
+echo ""
+echo "[smoke-test-router] === Phase 20 section complete ==="
+
 # Final summary
 echo ""
 echo "[smoke-test-router] ================================================================"
 if [[ "${FAILURES}" -eq 0 ]]; then
-  echo "[smoke-test-router]  Phase 2/3/4/5/7/8/12/13/15/16/17/18/19 router verification: COMPLETE."
+  echo "[smoke-test-router]  Phase 2/3/4/5/7/8/12/13/15/16/17/18/19/20 router verification: COMPLETE."
   echo "[smoke-test-router]  Model used : ${MODEL}"
   echo "[smoke-test-router]  Router URL : ${ROUTER_URL}"
   echo "[smoke-test-router]  Skipped    : ${SKIPS:-0} (vision sections require llama3.2-vision pull + outbound HTTPS)"
