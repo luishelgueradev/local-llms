@@ -2,11 +2,15 @@
 
 Out-of-scope discoveries logged per execute-plan SCOPE BOUNDARY rule.
 
+> **2026-06-03 — ALL FOUR ITEMS CLOSED by Phase 21.** The "future smoke-hygiene plan" cited throughout this document landed as Phase 21 (HYG-01..04). Per-item resolution is tagged inline below; the file is kept verbatim as the original audit trail.
+
 ## Pre-existing smoke-test-router.sh failures (NOT caused by Plan 20-06)
 
 After running `bash bin/smoke-test-router.sh --router-url http://127.0.0.1:3210` against the live router post-Plan-20-06 deploy, **3 pre-existing FAILures surfaced** that are unrelated to OPS-01/OPS-02:
 
 ### 1. Phase 3 — `/v1/models did not list both models` (multi-backend dispatch test)
+
+> **✅ RESOLVED — Phase 21 / Plan 21-02 / HYG-03 — commit `95ad0eb` (2026-06-03).** The Phase 3 multi-backend section now soft-skips when `qwen2.5-7b-instruct-q4km` is absent from `/v1/models`, with a traceable rationale ("no enabled llamacpp model — qwen2.5-7b-instruct-q4km is disabled per Phase 20 / CAT-01 / D-01; flip disabled→false + start --profile llamacpp to re-include"). Operators who re-enable llamacpp continue to exercise the full Phase 3 matrix unchanged.
 
 - **Smoke gate:** Phase 3 multi-backend dispatch test expects BOTH an `ollama` and a `llamacpp` model in `/v1/models`.
 - **Root cause:** Wave 0 / Plan 20-01 disabled the 3 llamacpp/vllm/vllm-embed dead-backend aliases (`qwen2.5-7b-instruct-q4km`, `qwen2.5-7b-instruct-awq`, `bge-m3-vllm`). The router no longer has any enabled llamacpp model.
@@ -16,10 +20,14 @@ After running `bash bin/smoke-test-router.sh --router-url http://127.0.0.1:3210`
 
 ### 2. Phase 3 — `POST /v1/chat/completions to llamacpp model failed or returned empty`
 
+> **✅ RESOLVED — Phase 21 / Plan 21-02 / HYG-03 — commit `95ad0eb` (2026-06-03).** Folded into item #1's fix: the early-out skip wraps the entire Phase 3 section (`if [[ "${P3_SKIPPED:-0}" != "1" ]]; then ... fi`), so the dispatch-against-disabled-llamacpp probe no longer runs when there is nothing to test.
+
 - **Same root cause as #1:** the test dispatches to a llamacpp alias that is now disabled. The router correctly returns model_not_found.
 - **Fix scope:** Same as #1 — Phase 3 smoke section needs llamacpp-disabled guard.
 
 ### 3. Phase 7 — `capability gate returned 404 (expected 400)`
+
+> **✅ RESOLVED — Phase 21 / Plan 21-02 / HYG-03 — commit `95ad0eb` (2026-06-03).** Capability-gate fixture flipped from disabled `qwen2.5-7b-instruct-awq` to always-enabled `chat-local` (capabilities [chat, tools, json_mode] — no embeddings). The gate now asserts the registry-enforced capability check on a real, dispatchable model and returns 400 for the right reason (not model_not_found by accident).
 
 - **Smoke gate:** Phase 7 capability gate test expects 400 (capability mismatch) but received 404 (model not found).
 - **Probable cause:** The model the test probes against was disabled by Wave 0 or removed from models.yaml at some point; the router correctly 404s before reaching capability validation.
@@ -37,6 +45,8 @@ All 3 failures pre-date Plan 20-06 and are downstream consequences of Wave 0 (Pl
 - CAT-04 deprecated alias header: SKIP (D-02 LOCKED — v0.12.0 ships with deprecated_aliases empty)
 
 ## Additional pre-existing issue: smoke-test-router.sh --profile prod broken
+
+> **✅ RESOLVED — Phase 21 / Plan 21-02 / HYG-02 — commit `f88eec3` (2026-06-03).** The router runtime stage now installs `curl` via `apt-get install -y --no-install-recommends curl` (~+3 MB). `--profile prod` runs its `docker compose exec -T router curl ...` probes without "curl: not found". Verified live post-rebuild: `docker exec local-llms-router curl --version` → `curl 7.88.1`. A companion smoke gate ("HYG-02: curl present in router runtime image") in the Phase 21 section of `bin/smoke-test-router.sh` flips fail → PASS automatically on every smoke run, locking the regression closed.
 
 `bash bin/smoke-test-router.sh --profile prod` fails at Pre-flight because the runtime
 router image does NOT have `curl` installed, and `--profile prod` routes router-bound
