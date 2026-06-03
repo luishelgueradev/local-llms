@@ -61,17 +61,41 @@ For each gray area surfaced by SEED-001, I record: (a) the decision I'm making f
 
 ### D-02: Naming taxonomy — keep BOTH coexisting + document explicitly (option (b) from SEED-001 gray areas)
 
-**Decision:** Both naming schemes (semantic `chat-local`/`embed-local`/`big-cloud`/`vision-local` AND quant-encoded `qwen2.5-7b-instruct-q4km`) continue to coexist in `models.yaml`. The semantic aliases are documented as the **recommended consumer-facing surface**; the quant-encoded ones are documented as **deprecated-but-still-resolving** (per D-03 below). No mass rename in this milestone.
+**Status: CONFIRMED by user 2026-06-03 (post-overnight review). Locked.**
 
-**Why conservative:**
+**Decision:** Both naming schemes (semantic `chat-local`/`embed-local`/`big-cloud`/`vision-local` AND raw model names like `llama3.2:3b-instruct-q4_K_M`, `gpt-oss:20b-cloud`, and now `qwen2.5:7b-instruct-q4_K_M`) continue to coexist in `models.yaml`. The semantic aliases are documented as the **recommended consumer-facing surface for new code**; the raw model names provide a path for consumers that want to pin the exact model by its Ollama/cloud-vendor identifier. No mass rename in this milestone.
+
+**Why conservative (confirmed valid by user):**
 - A mass rename is a breaking change to n8n stored workflows + Unsloth Studio picker (C4, C5, C6)
-- The semantic aliases already exist and work — they're the right v0.12.0 surface; we don't need to remove the quant-encoded ones, just deprecate them
+- The semantic aliases already exist and work — they're the right v0.12.0 surface
+- Raw names give consumers escape-hatch when they want to pin "exactly this model, not whatever chat-local points to today"
+- Both naming styles are equal-class first-citizens; neither is deprecated
 - Option (a) from SEED-001 ("all semantic") would be cleaner long-term but risks n8n downtime
-- Option (c) ("status quo + dead entries removed") leaves naming chaos unaddressed — partial fix
+- Option (c) ("status quo + dead entries removed") was completed by Wave 0 already (dead entries flagged `disabled: true`)
 
-**What would change my mind:** If you tell me "all n8n consumers can be updated in one push; downtime is fine; I want the clean break". Then option (a) wins.
+**Pattern confirmed in code (commit `a4580e0`, 2026-06-03):**
+The raw-name alias `qwen2.5:7b-instruct-q4_K_M` was added as a sibling to `chat-local` in `router/models.yaml`. Both point to the same Ollama backend / backend_model. The new entry uses `vram_budget_gb: 0` (pointer convention — VRAM already budgeted under the canonical entry). Pattern for future raw-name aliases:
+```yaml
+  - name: <raw-model-name>            # e.g. qwen2.5:7b-instruct-q4_K_M
+    backend: ollama                   # same as the canonical semantic alias
+    backend_url: http://ollama:11434/v1
+    backend_model: <raw-model-name>   # same string as `name`
+    capabilities: [chat, tools, json_mode]   # mirror the canonical entry
+    vram_budget_gb: 0                 # pointer — avoids double-counting
+    concurrency: 2
+    max_model_len: 8192
+    profile: ollama
+```
+
+**What would change my mind:** If you tell me "all n8n consumers can be updated in one push; downtime is fine; I want the clean break". Then option (a) wins. (User explicitly chose against this on 2026-06-03.)
 
 **OVERRIDE flag:** `D-02: pick-option-a-rename-aggressively` or `D-02: pick-option-c-status-quo-no-deprecation`
+
+**Downstream impact on later waves:**
+- **Wave 2 (CDX-01, recommendations map):** The `recommendations` map should point to the **semantic alias** as canonical (e.g. `chat-local-default: "chat-local"`, NOT `chat-local-default: "qwen2.5:7b-instruct-q4_K_M"`), even though both work. This signals to new consumers that the role alias is the recommended path; the raw name is the escape-hatch.
+- **Wave 3 (CAT-04, deprecation layer):** NO renames triggered by D-02 → the deprecation counter/header machinery still ships (per OPS hygiene + future-readiness), but it has zero entries in the deprecated-aliases map for v0.12.0.
+- **Wave 4 (CAT-03 + CDX-02, docs):** "Which model when?" decision tree explicitly documents the coexistence as intentional. README + DEPLOY both show the dual-name pattern with this qwen2.5:7b example as the worked case.
+- **Wave 6 (CDX-03, migration guide):** Stays empty/short — no v0.11.0 → v0.12.0 breaking renames to migrate.
 
 ### D-03: Backward-compat alias layer — log warning, NO model registry shim
 
