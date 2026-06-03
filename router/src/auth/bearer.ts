@@ -22,7 +22,11 @@ function secretEqual(a: string, b: string): boolean {
 // removes that binding — DO NOT FORGET TO ADD THE PATH BLACKLIST when
 // Traefik lands. The /metrics surface is operational telemetry (request
 // rates, error rates per backend) and IS reconnaissance data for an attacker.
-export const PUBLIC_PATHS: ReadonlySet<string> = new Set(['/healthz', '/readyz', '/metrics']);
+// Phase 20 (v0.12.0 — OPS-02 / D-08): /version added — public endpoint exposing
+// build metadata (build_sha, build_time, node_version, git_dirty) for operator
+// tooling (bin/deploy-router.sh check). Same trust model as /healthz which
+// already exposes phase + registry_models (T-20-14 accepted in plan threat register).
+export const PUBLIC_PATHS: ReadonlySet<string> = new Set(['/healthz', '/readyz', '/metrics', '/version']);
 
 export function makeBearerHook(expectedToken: string) {
   if (!expectedToken || expectedToken.length < 8) {

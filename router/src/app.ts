@@ -13,6 +13,10 @@ import { loggerOptions } from './log/logger.js';
 import { makeBearerHook } from './auth/bearer.js';
 import type { RegistryStore } from './config/registry.js';
 import { registerHealthz } from './routes/healthz.js';
+// Phase 20 (v0.12.0 — OPS-02 / D-08): new public GET /version endpoint exposing
+// BUILD_SHA + BUILD_TIME + node version + git_dirty. Consumed by
+// bin/deploy-router.sh check for source/image drift detection.
+import { registerVersionRoute } from './routes/version.js';
 import { registerChatCompletionsRoute } from './routes/v1/chat-completions.js';
 import { registerMessagesRoute } from './routes/v1/messages.js';
 import { registerCountTokensRoute } from './routes/v1/count-tokens.js';
@@ -1013,6 +1017,11 @@ export async function buildApp(opts: BuildAppOpts): Promise<FastifyInstance> {
   // -------------------------------------------------------------------------
 
   registerHealthz(app, opts.registry);
+
+  // Phase 20 (v0.12.0 — OPS-02 / D-08): public GET /version. Same trust boundary
+  // as /healthz (in PUBLIC_PATHS) — exposes build_sha + build_time + node_version
+  // + git_dirty for source/image drift detection by bin/deploy-router.sh check.
+  registerVersionRoute(app);
 
   // GET /readyz — public, per-backend liveness summary (Plan 03-03, ROUTE-06).
   // Plan 05-04 (D-G2): when pool is supplied, /readyz also includes a postgres
