@@ -10,44 +10,24 @@ Un endpoint único, estable y multi-protocolo para que los agentes del usuario c
 
 ## Current State
 
-**Shipped: v0.10.0 Cognitive Primitives (2026-05-29)** — 26/26 new requirements delivered across 4 phases (10–13) shipped as freeform single-shot `feat(NN):` commits.
+**Shipped: v0.11.0 Retrieval-Ready Infrastructure (2026-06-03)** — 48/48 new requirements delivered across 6 phases (14–19), 49 plans, 96 tasks. Audit PASSED: 48/48 requirements, 7/7 integration wiring pairs, 5/5 E2E flows, 3/3 grep gates. Full archive in [`milestones/v0.11.0-ROADMAP.md`](./milestones/v0.11.0-ROADMAP.md) + audit + requirements traceability.
 
-- **JSON mode** with AJV validation + single-shot repair + `json_mode` capability gate
-- **`POST /v1/rerank`** Cohere/Jina-compatible cross-encoder endpoint (`bge-reranker-v2-m3` default via Ollama native `/api/rerank`)
-- **Embeddings cache** in Valkey (fail-open, 24h TTL, swap-invalidating key) + registry-enforced `dims` contract + 3 new Prometheus metrics
-- **`X-Cost-Cents`** response header + `cost_cents NUMERIC(10,4)` column + `cost_per_agent_daily` view (migrations 0003 + 0004)
-- **`POST /v1/responses`** minimal non-stream surface — closes the n8n "Message a Model" 404 gap permanently
+- **Policy primitives** — Model allowlists + cloud restrictions + tenant/project/agent IDs threaded through all 5 dispatch routes + 4 MCP tools via shared `applyPreflight()` helper (Phase 14, POL-01..06)
+- **MCP Host** — `/mcp` over Streamable HTTP with 5 tools (`chat_completion`, `create_response`, `create_embedding`, `rerank`, `list_models`), bearer-gated, session lifecycle with SIGTERM-race cleanup (Phase 15, MCPS-01..06)
+- **`/v1/responses` streaming + tool calls** — full Responses API SSE sequence with `OutputItemStateMachine` FSM, `function_call_arguments.delta` events, and `response.completed` always last (Phase 16, RESS-01..05 — RESS-05 closed by 19-08/19-09 post-ship fixes)
+- **Sessions + Context + Summary** — Postgres-backed `SessionStore` with `pg_advisory_xact_lock` + 1s fail-open, `DefaultContextProvider` sliding-window + truncate, `NoopSummaryProvider` seam (Phase 17, SESS+CTXP+SUMP 13 reqs)
+- **MCP Client + RetrieverProvider + Pre-Completion Hook** — lazy outbound MCP client registry with `{alias}__{tool}` prefix, `runMcpToolLoop` (10-iter cap, parallel-within-iter), `RetrieverProvider` interface seam, pre-completion hook chain with cancellable Promise.race timeout + SHA256 audit trail in `request_log.hook_log` JSONB column (Phase 18, MCPC-01..06 + RETR-01..06)
+- **EmbeddingProvider formalization + observability hardening** — `EmbeddingProvider` interface + Valkey per-input cache + dims enforcement, `/v1/embeddings` route byte-identical (P7-01 SHA), live `/metrics` cardinality CI guard (POL-06), Phase 19 smoke section (Phase 19, EMBP-01..02 + OBSV-01..04)
 
-Full v0.10.0 archive in [`milestones/v0.10.0-ROADMAP.md`](./milestones/v0.10.0-ROADMAP.md) + audit + requirements traceability. Previous milestone (v0.9.0 MVP, shipped 2026-05-28) archived in [`milestones/v0.9.0-ROADMAP.md`](./milestones/v0.9.0-ROADMAP.md).
+Prior milestones: v0.10.0 Cognitive Primitives (2026-05-29) — 26/26 reqs across 4 phases (10–13), archived in [`milestones/v0.10.0-ROADMAP.md`](./milestones/v0.10.0-ROADMAP.md). v0.9.0 MVP (2026-05-28) — 76/76 v1 reqs across 9 phases (1–9), archived in [`milestones/v0.9.0-ROADMAP.md`](./milestones/v0.9.0-ROADMAP.md).
 
 Consumed in production by the user's agents (n8n in a remote VPS over Cloudflare Tunnel `https://local-llms.luishelguera.dev`) and by the local Whisper sidecar via the same host. Workhorse local model: `qwen2.5:7b-instruct-q4_K_M` (alias `chat-local`). Cloud fallback: `gpt-oss:120b-cloud` / `gpt-oss:20b-cloud` via Ollama Cloud (alias `big-cloud`). Cost telemetry: per-1M-token pricing for cloud models declared in `models.yaml` (placeholder rates until Ollama publishes formal pricing); operator updates as the rates firm up.
 
-## Current Milestone: v0.11.0 Retrieval-Ready Infrastructure
+## Next Milestone
 
-**Goal:** Convertir el router en infraestructura *retrieval-ready* exponiendo las cinco interfaces (`SessionStore`, `ContextProvider`, `RetrieverProvider`, `EmbeddingProvider`, `SummaryProvider`), MCP en ambas direcciones, streaming first-class, y los policy primitives mínimos — sin que el router asuma una sola línea de lógica de retrieval, memoria semántica, ni esquemas de negocio.
+**v0.12.0 candidate scope captured in `.planning/seeds/SEED-001-model-catalog-hygiene-consumer-dx.md`** — external consumer DX hardening triggered by an artiscrapper integration session on 2026-06-03 that surfaced three distinct issues: (1) catalog drift — 3 `models.yaml` entries point to backends (`llamacpp`/`vllm`/`vllm-embed`) that no longer run; (2) naming chaos — quant-encoded aliases mixed with semantic aliases; (3) no programmatic contract surface — consumers can't ask "which alias works for chat+json_mode+local right now?". Run `/gsd:new-milestone` to formally open v0.12.0; the seed auto-surfaces as Phase 1 candidate.
 
-**Strategic frame:** *"Retrieval Interfaces, not Retrieval Logic"* · *"Memory Abstraction Layer, not Memory implementation"* · *"local-llms = infraestructura; RAG/KB empresarial = consumidor downstream"*.
-
-**Priority order (locked):**
-
-| # | Bloque | Qué entrega |
-|---|---|---|
-| **P1** | **MCP-as-server (host first-class) + MCP client (generic capability)** | Host: expone `chat`/`embeddings`/`rerank`/`responses` como MCP tools. Client: capability genérica para consumir MCP servers externos — **no una retrieval framework**. |
-| **P2** | **`/v1/responses` streaming + tools** | Cierra deuda v0.10.0 Phase 13. First-class streaming para UIs, MCP, Responses API compat. |
-| **P3** | **Knowledge hooks — `RetrieverProvider` + pre-completion hook seam** | MCP tool-driven retrieval primary; pre-completion hook como extension point opcional. Hooks aceptan payload rico (filtros, top-k, metadata, hybrid flags) **sin orquestar retrieval**. |
-| **P4** | **Memory abstraction — `SessionStore` + `ContextProvider` + `SummaryProvider`** | `SessionStore`: Postgres-backed default, persistencia opcional. `ContextProvider`: history loading + window management, sin memoria semántica. `SummaryProvider`: seam declarado, comportamiento diferido. |
-| **+** | **Policy primitives (slim)** | Model allowlists · cloud restrictions · sensitive-workload routing · tenant/project/agent IDs en tracing/`request_log`/metadata. **NO el policy engine completo.** |
-
-**Constraints (locked):**
-- Stack downstream = TS/Node → MCP HTTP/SSE first, stdio second.
-- Topología same WSL2 host hoy, portable a VPS/LAN futuro → auth bearer + MCP-token capability.
-- Integration patterns: (a) RAG→router + (c) RAG→router→RAG (tool-call) **primary** · (b) router→MCP externos **secondary** · (d) router como retrieval orchestrator **rechazada por diseño**.
-- Contenido: texto only (docs, código, PDF text, audio transcripts pre-procesados). Multimodal/vision OUT.
-- Primer consumidor real: n8n agentes/workflows ya en producción. Human-facing chat = secundario.
-- Multi-tenant downstream esperado → tenant/project/agent IDs en tracing desde día 1, policy engine completo difiere.
-- Production-oriented: interfaces stable-from-day-1, reference impls minimales.
-
-**Continuación normal:** phase numbering desde Phase 14 (no reset). v0.11.0 es continuación, no major.
+Also pending operator action (deferred from v0.11.0): live tunnel rebuild of the production router container at `https://local-llms.luishelguera.dev` to deploy the post-Phase-17 Phase 18 + Phase 19 code (same `compose.yml build: ./router` no-image-pin pattern that Plan 19-09 already worked around once — captured in SEED-001's scope).
 
 ## Requirements
 
