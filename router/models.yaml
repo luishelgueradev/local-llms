@@ -182,6 +182,7 @@ models:
     concurrency: 2
     max_model_len: 8192
     profile: ollama
+    recommended_for: [chat]    # Phase 20 / CDX-01 — small chat-only model; no tools/json_mode/vision
 
   - name: qwen2.5-7b-instruct-q4km
     backend: llamacpp
@@ -203,6 +204,7 @@ models:
     concurrency: 2
     max_model_len: 8192
     profile: ollama
+    recommended_for: [chat, vision]    # Phase 20 / CDX-01 — vision-capable chat; no tools/json_mode
 
   # Phase 7 (Plan 07-03) — vLLM chat model with AWQ Marlin quant + native tool calling.
   - name: qwen2.5-7b-instruct-awq
@@ -228,6 +230,7 @@ models:
     concurrency: 4
     max_model_len: 8192
     profile: ollama
+    recommended_for: [embeddings]    # Phase 20 / CDX-01 — pure embedding model
 
   # Phase 7 (Plan 07-03) — bge-m3 embeddings served by vLLM (cross-validates dispatch
   # heterogeneity at the dimensions level — same model, different backend).
@@ -265,6 +268,7 @@ models:
     concurrency: 4
     max_model_len: 65536
     profile: cloud
+    recommended_for: [chat, chat-tools, chat-json-strict, function-calling]    # Phase 20 / CDX-01 — large cloud chat workhorse with tools + json_mode
 
   - name: gpt-oss:20b-cloud
     backend: ollama-cloud
@@ -278,6 +282,7 @@ models:
     concurrency: 4
     max_model_len: 32768
     profile: cloud
+    recommended_for: [chat, chat-tools, chat-json-strict, function-calling]    # Phase 20 / CDX-01 — cheaper cloud chat with tools + json_mode
 
   # ── Logical role aliases (260525-0hr) ──────────────────────────────────────
   # Stable role-based names so agents/n8n target a ROLE, not a model tag. These
@@ -296,6 +301,7 @@ models:
     concurrency: 2
     max_model_len: 8192
     profile: ollama
+    recommended_for: [chat, chat-tools, chat-json-strict, function-calling]    # Phase 20 / CDX-01 — workhorse local chat (qwen2.5:7b) with tools + json_mode
     # ── Phase 18 (v0.11.0 — MCPC-03 / RETR-02) per-entry fields (both optional) ──
     # Frame-01 invariant: production ships with these EMPTY. Operators opt-in by
     # uncommenting and providing implementations via the composition root.
@@ -319,6 +325,7 @@ models:
     concurrency: 2
     max_model_len: 8192
     profile: ollama
+    recommended_for: [chat, chat-tools, chat-json-strict, function-calling]    # Phase 20 / CDX-01 — raw-name escape-hatch alias for the same qwen2.5:7b workhorse
 
   - name: vision-local
     backend: ollama
@@ -329,6 +336,7 @@ models:
     concurrency: 2
     max_model_len: 8192
     profile: ollama
+    recommended_for: [chat, vision]    # Phase 20 / CDX-01 — vision role alias (llama3.2-vision:11b)
 
   # Phase 11 (v0.10.0 — RERANK-03). Cross-encoder reranker. Ollama serves
   # bge-reranker-v2-m3 via native /api/rerank (the OllamaOpenAIAdapter.rerank
@@ -343,6 +351,7 @@ models:
     vram_budget_gb: 0
     concurrency: 4
     profile: ollama
+    recommended_for: [rerank]    # Phase 20 / CDX-01 — cross-encoder reranker
 
   - name: embed-local
     backend: ollama
@@ -354,6 +363,7 @@ models:
     concurrency: 4
     max_model_len: 8192
     profile: ollama
+    recommended_for: [embeddings]    # Phase 20 / CDX-01 — local embedding role alias (bge-m3, 1024-dim)
 
   - name: big-cloud
     backend: ollama-cloud
@@ -368,3 +378,46 @@ models:
     concurrency: 4
     max_model_len: 65536
     profile: cloud
+    recommended_for: [chat, chat-tools, chat-json-strict, function-calling]    # Phase 20 / CDX-01 — large cloud role alias (gpt-oss:120b)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CONSUMER RECOMMENDATIONS (Phase 20 — v0.12.0 — CDX-01 / D-05 LOCKED)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Programmatic answer to "which alias should I use for this use case on this
+# stack?". Returned at the TOP LEVEL of GET /v1/models — consumers read this
+# map to avoid hardcoding alias strings.
+#
+# Each value MUST be a non-disabled model `name` declared above. Cross-field
+# validation at registry-parse time catches typos before boot
+# (RegistrySchema.superRefine — see router/src/config/registry.ts).
+#
+# D-02 LOCKED convention: values point at SEMANTIC role aliases (chat-local,
+# big-cloud, embed-local, vision-local, bge-reranker-local) NOT raw model
+# names (qwen2.5:7b-instruct-q4_K_M, gpt-oss:20b-cloud) — the semantic alias
+# is the consumer-facing canonical; raw names are escape-hatches for
+# consumers that want to pin a specific model version. Both work as
+# recommendation targets; the convention guides operators toward the role
+# alias as the recommended path.
+#
+# Hot-reload: same Valkey-DEL + force-recreate recipe documented under POLICY
+# PRIMITIVES above (project_models_yaml_hot_edit). Editing this block alone
+# is a CONFIG change — no `docker compose build` needed; force-recreate is
+# enough after the Valkey DEL.
+#
+# Naming convention: "<use-case>-<profile>-default" (profile ∈ {local, cloud}).
+# When operators omit this block entirely, the router auto-derives the map
+# from each entry's recommended_for tags (first matching enabled entry wins
+# per (tag, profile) pair).
+recommendations:
+  chat-local-default: chat-local
+  chat-cloud-default: big-cloud
+  chat-json-strict-default: chat-local           # covers artiscrapper case (local + json_mode)
+  chat-json-strict-cloud-default: big-cloud      # fallback when local is cold
+  chat-tools-default: chat-local
+  chat-tools-cloud-default: big-cloud
+  embed-default: embed-local
+  rerank-default: bge-reranker-local
+  vision-default: vision-local
+  function-calling-default: chat-local
+# ─────────────────────────────────────────────────────────────────────────────

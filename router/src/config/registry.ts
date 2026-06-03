@@ -71,6 +71,35 @@ export const ModelEntrySchema = z.object({
    * a 1-line flip + Valkey DEL + force-recreate (per project_models_yaml_hot_edit).
    */
   disabled: z.boolean().default(false),
+  /**
+   * Phase 20 / CDX-01 (v0.12.0 — D-05 LOCKED) — operator-authored capability
+   * tags for consumer recommendations. Fixed taxonomy (chat | chat-tools |
+   * chat-json-strict | embeddings | rerank | vision | function-calling).
+   *
+   * When omitted, the /v1/models route handler auto-derives the value from
+   * `capabilities` via the exported `deriveRecommendedFor()` helper. When
+   * present, the operator-declared values WIN over derivation — letting an
+   * operator hide a capability from the recommendations map (e.g. a chat
+   * model that technically supports json_mode but produces flaky output can
+   * be tagged `[chat, chat-tools]` only).
+   *
+   * Surfaced on each /v1/models entry as a top-level `recommended_for` array
+   * AND aggregated into the top-level `recommendations` map (see
+   * RegistrySchema.recommendations below). Both are ADDITIVE — pre-existing
+   * /v1/models consumers (Open WebUI, n8n model picker) continue to work
+   * because unknown fields are ignored per OpenAI-compat client semantics.
+   *
+   * Fixed taxonomy rationale (vs free-form strings): bounds the consumer
+   * contract — every value is documented; no "what does this tag mean?"
+   * ambiguity. The 7 tags cover the dispatch surface (chat/embeddings/rerank
+   * /vision) plus the two cross-cutting OpenAI/Anthropic SDK vocabulary
+   * variants for tool-use (`chat-tools` and `function-calling` are synonyms;
+   * both ship so SDKs that look for either find a match).
+   */
+  recommended_for: z.array(z.enum([
+    'chat', 'chat-tools', 'chat-json-strict',
+    'embeddings', 'rerank', 'vision', 'function-calling',
+  ])).optional(),
   // Phase 17 (v0.11.0 — CTXP-04): per-model context window + strategy.
   // Both default to safe values so existing models.yaml entries continue to
   // load without modification. When SessionStore is wired and ContextProvider
@@ -201,6 +230,35 @@ export const RegistrySchema = z.object({
       removal_target: z.string().min(1),
     }),
   ).optional(),
+  // Phase 20 (v0.12.0 — CDX-01 / D-05 LOCKED / Open Q4 resolved YES): top-level
+  // operator-configurable recommendations map. Each key is a canonical use-case
+  // name (e.g. `chat-local-default`, `chat-cloud-default`, `embed-default`);
+  // each value is the ENABLED model name the operator wants consumers to use
+  // by default for that use case.
+  //
+  // Empty / absent = the /v1/models route handler auto-derives the map from
+  // each entry's `recommended_for` tags (first matching enabled entry wins
+  // per (tag, profile) pair where profile ∈ {local, cloud}, with local =
+  // `backend !== 'ollama-cloud'`).
+  //
+  // Cross-field validation (superRefine below): each value MUST be the name
+  // of an ENABLED (non-disabled) model entry; otherwise boot fails fast with
+  // an operator-actionable error pointing at the offending key.
+  //
+  // Wave-0 invariant (CAT-01) composition: disabled entries CANNOT appear as
+  // recommendation targets — the operator-declared recommendations map
+  // structurally aligns with the public surface (which only shows enabled
+  // entries). A future re-enable of a disabled backend (flip disabled: false)
+  // automatically makes that name a valid target.
+  //
+  // D-02 LOCKED guidance: operators should point recommendations at the
+  // SEMANTIC aliases (chat-local, big-cloud, embed-local, vision-local,
+  // bge-reranker-local) rather than raw model names (qwen2.5:7b-instruct-q4_K_M,
+  // gpt-oss:20b-cloud) — the semantic alias is the consumer-facing canonical;
+  // raw names are escape-hatches for consumers who want to pin a specific
+  // model version. The schema does NOT enforce this (both work) but the
+  // shipping models.yaml follows the convention.
+  recommendations: z.record(z.string(), z.string()).optional(),
 }).superRefine((reg, ctx) => {
   // Read env at refinement time (not module load) — allows operators to change VRAM_ENVELOPE_GB
   // via `docker compose restart router` without rebundling, AND lets tests toggle per-case
@@ -338,6 +396,23 @@ export const RegistrySchema = z.object({
       });
     }
   }
+
+  // Phase 20 (v0.12.0 — CDX-01 / D-05 LOCKED): cross-field validation of the
+  // operator-declared recommendations map. Every value MUST point to an
+  // ENABLED model entry — pointing at a disabled or non-existent name would
+  // surface a recommendation that consumers can't actually use (the
+  // recommended alias would 404 on /v1/models AND on dispatch). Catch the
+  // typo at boot instead of at first consumer hit. Reuses the `enabledNames`
+  // set built above for the deprecated_aliases check.
+  for (const [key, target] of Object.entries(reg.recommendations ?? {})) {
+    if (!enabledNames.has(target)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['recommendations', key],
+        message: `Config error: recommendations["${key}"] = "${target}" but no enabled (non-disabled) model has that name. Enabled: ${[...enabledNames].sort().join(', ')}`,
+      });
+    }
+  }
 });
 
 export type ModelEntry = z.infer<typeof ModelEntrySchema>;
@@ -415,6 +490,59 @@ export function makeRegistryStore(initial: Registry): RegistryStore {
  */
 export function enabledModels(reg: Registry): ModelEntry[] {
   return reg.models.filter((m) => !m.disabled);
+}
+
+/**
+ * Phase 20 / CDX-01 (v0.12.0 — D-05 LOCKED): fixed-taxonomy capability tag
+ * union. The 7 values are the universe of valid `recommended_for` entries
+ * and recommendation map use-case categories. Imported by /v1/models route
+ * handler + unit tests that assert taxonomy bounds.
+ */
+export type RecommendedForTag =
+  | 'chat'
+  | 'chat-tools'
+  | 'chat-json-strict'
+  | 'embeddings'
+  | 'rerank'
+  | 'vision'
+  | 'function-calling';
+
+/**
+ * Phase 20 / CDX-01 (v0.12.0 — D-05 LOCKED): derive a `recommended_for` tag
+ * array from a model entry's capabilities. Operator-declared
+ * `entry.recommended_for` (when present and non-empty) WINS over derivation —
+ * lets operators hide a tag the model technically supports but produces
+ * unreliable output for (e.g. flaky json_mode adherence).
+ *
+ * Derivation rules (apply when entry.recommended_for is absent or empty):
+ *   - chat capability               → push 'chat'
+ *   - chat + tools                  → push 'chat-tools' AND 'function-calling'
+ *   - chat + json_mode              → push 'chat-json-strict'
+ *   - chat + vision                 → push 'vision'
+ *   - embeddings                    → push 'embeddings'
+ *   - rerank                        → push 'rerank'
+ *
+ * Order is deterministic (matches the rule order above). Empty array is a
+ * legal return value — a capability set the taxonomy doesn't cover (e.g. a
+ * future hypothetical 'audio' capability) results in an empty
+ * recommended_for array rather than an error; consumers see an entry with
+ * no recommended_for tags and skip it from their auto-pick logic.
+ */
+export function deriveRecommendedFor(entry: ModelEntry): RecommendedForTag[] {
+  if (entry.recommended_for && entry.recommended_for.length > 0) {
+    return entry.recommended_for;
+  }
+  const caps = new Set(entry.capabilities);
+  const out: RecommendedForTag[] = [];
+  if (caps.has('chat')) out.push('chat');
+  if (caps.has('chat') && caps.has('tools')) {
+    out.push('chat-tools', 'function-calling');
+  }
+  if (caps.has('chat') && caps.has('json_mode')) out.push('chat-json-strict');
+  if (caps.has('chat') && caps.has('vision')) out.push('vision');
+  if (caps.has('embeddings')) out.push('embeddings');
+  if (caps.has('rerank')) out.push('rerank');
+  return out;
 }
 
 export { RegistryUnknownModelError } from '../errors/envelope.js';

@@ -1,7 +1,61 @@
 import type { FastifyInstance } from 'fastify';
-import type { Registry, RegistryStore } from '../../config/registry.js';
-import { enabledModels } from '../../config/registry.js';
+import type { Registry, RegistryStore, RecommendedForTag } from '../../config/registry.js';
+import { enabledModels, deriveRecommendedFor } from '../../config/registry.js';
 import type { BackendHealthDecoration } from '../../plugins/backend-health-plugin.js';
+
+/**
+ * Phase 20 / CDX-01 (v0.12.0 — D-05 LOCKED / Open Q4 resolved YES): compute
+ * the top-level `recommendations` map for a /v1/models response.
+ *
+ * Two-path semantics:
+ *   1. Operator-declared (registry.recommendations non-empty) → passthrough
+ *      (subject to schema cross-field validation at registry parse time which
+ *      already verified every target is an enabled model name).
+ *   2. Auto-derived (registry.recommendations absent or empty) → first
+ *      matching enabled entry per (tag, profile) pair wins, where:
+ *        - profile=local : backend !== 'ollama-cloud'      → key `<tag>-default`
+ *        - profile=cloud : backend === 'ollama-cloud'      → key `<tag>-cloud-default`
+ *      "First match" is the order entries appear in models.yaml — operators
+ *      who want a specific entry to be the default for a use-case either
+ *      (a) list it first in models.yaml, or (b) declare a `recommendations:`
+ *      block explicitly. Option (b) is the recommended path; auto-derivation
+ *      is for stacks that haven't customized models.yaml.
+ *
+ * NOT exported — internal helper consumed only by GET /v1/models.
+ */
+const ALL_TAGS: readonly RecommendedForTag[] = [
+  'chat',
+  'chat-tools',
+  'chat-json-strict',
+  'embeddings',
+  'rerank',
+  'vision',
+  'function-calling',
+];
+
+function computeRecommendations(reg: Registry): Record<string, string> {
+  if (reg.recommendations && Object.keys(reg.recommendations).length > 0) {
+    // Operator-declared — passthrough. Cross-field validation at parse time
+    // guarantees every target points to an enabled model name (T-20-08
+    // mitigation lives in RegistrySchema.superRefine).
+    return reg.recommendations;
+  }
+  // Auto-derive path. Walk enabled entries once per (tag, profile) and pick
+  // the first match. Deterministic for any given registry snapshot.
+  const out: Record<string, string> = {};
+  const enabled = enabledModels(reg);
+  for (const tag of ALL_TAGS) {
+    const local = enabled.find(
+      (m) => m.backend !== 'ollama-cloud' && deriveRecommendedFor(m).includes(tag),
+    );
+    const cloud = enabled.find(
+      (m) => m.backend === 'ollama-cloud' && deriveRecommendedFor(m).includes(tag),
+    );
+    if (local) out[`${tag}-default`] = local.name;
+    if (cloud) out[`${tag}-cloud-default`] = cloud.name;
+  }
+  return out;
+}
 
 /**
  * GET /v1/models — returns the D-C1 shape with capabilities extension.
@@ -91,6 +145,12 @@ export function registerModelsRoute(
           capabilities: m.capabilities,
           // D-11: annotation defaults to true (Phase 14 default cloud_allowed).
           policy: { cloud_allowed: m.policy?.cloud_allowed ?? true },
+          // Phase 20 / CDX-01 — additive per-entry recommendation tags. Always
+          // present (never omitted) so consumers can rely on the field shape;
+          // empty array signals "this entry maps to no fixed-taxonomy use case"
+          // (e.g. a future capability the taxonomy doesn't cover). Operator
+          // `recommended_for` wins over capability derivation via the helper.
+          recommended_for: deriveRecommendedFor(m),
         };
         // Phase 20 / CAT-02 — additive optional `health` field. Omitted entirely
         // when the plugin is not wired (test fixtures without Valkey).
@@ -114,9 +174,15 @@ export function registerModelsRoute(
     if (backendHealth) {
       await backendHealth.ensureFresh();
     }
+    const reg = registry.get();
     return {
       object: 'list' as const,
-      data: filterAndProject(registry.get(), registry.getCreatedAtSec()),
+      data: filterAndProject(reg, registry.getCreatedAtSec()),
+      // Phase 20 / CDX-01 — top-level recommendations map (operator-declared
+      // OR auto-derived). Sits ALONGSIDE `data`, NOT inside it. Consumers can
+      // read `body.recommendations['chat-json-strict-default']` to get the
+      // canonical alias for that use case without iterating `data[]`.
+      recommendations: computeRecommendations(reg),
     };
   });
 
@@ -159,6 +225,11 @@ export function registerModelsRoute(
       capabilities: entry.capabilities,
       // D-11: same annotation as the list route. Defaults to true.
       policy: { cloud_allowed: entry.policy?.cloud_allowed ?? true },
+      // Phase 20 / CDX-01 — mirror the list-route per-entry projection. The
+      // top-level `recommendations` map is NOT included here — this route
+      // returns a single entry, not the full catalog; consumers wanting the
+      // map call GET /v1/models instead.
+      recommended_for: deriveRecommendedFor(entry),
     };
     const withHealth = backendHealth
       ? { ...base, health: backendHealth.get(entry.backend) }
