@@ -2703,11 +2703,73 @@ fi
 echo ""
 echo "[smoke-test-router] === Phase 20 section complete ==="
 
+# ============================================================================
+# Phase 21 — Post-ship Hygiene (HYG-01..04)
+# ============================================================================
+# HYG-01 cold-load probe + HYG-02 curl-in-image gate. The cold-load probe is
+# opt-in via SMOKE_INCLUDE_COLDLOAD=1 because it deliberately evicts qwen2.5:7b
+# from VRAM (project_vram_budget memory) and re-loads it (~50–55s on WSL2 +
+# shared GPU). Routine smoke runs SKIP it; the operator runs it explicitly
+# when verifying the HYG-01 timeout floor end-to-end.
+# ============================================================================
+
+echo ""
+echo "[smoke-test-router] === Phase 21 — Post-ship Hygiene (HYG-01..02 live gates) ==="
+
+# HYG-02 — curl baked into the router runtime image (required by
+# `bash bin/smoke-test-router.sh --profile prod` which shells into the
+# container with `docker exec ... curl ...`).
+if docker exec local-llms-router curl --version >/dev/null 2>&1; then
+  CURL_VER=$(docker exec local-llms-router curl --version 2>/dev/null | head -1)
+  pass "HYG-02: curl present in router runtime image (${CURL_VER})"
+else
+  fail "HYG-02: curl missing in router runtime image — bake it into the Dockerfile runtime stage"
+fi
+
+# HYG-01 — cold-load probe (opt-in)
+if [[ "${SMOKE_INCLUDE_COLDLOAD:-0}" == "1" ]]; then
+  COLDLOAD_MODEL="${COLDLOAD_MODEL:-qwen2.5:7b-instruct-q4_K_M}"
+  COLDLOAD_ALIAS="${COLDLOAD_ALIAS:-chat-local}"
+  echo "[smoke-test-router] HYG-01: evicting ${COLDLOAD_MODEL} to force cold-load via alias ${COLDLOAD_ALIAS}..."
+  docker exec local-llms-ollama ollama stop "${COLDLOAD_MODEL}" >/dev/null 2>&1 || true
+  sleep 2
+  COLDLOAD_START=$(date +%s)
+  COLDLOAD_STATUS=$(curl -s -o /tmp/coldload-body.$$ --max-time 90 -w '%{http_code}' \
+    -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -X POST "${ROUTER_URL}/v1/chat/completions" \
+    -d "{\"model\":\"${COLDLOAD_ALIAS}\",\"messages\":[{\"role\":\"user\",\"content\":\"ok\"}],\"max_tokens\":5}" 2>/dev/null || echo "000")
+  COLDLOAD_END=$(date +%s)
+  COLDLOAD_ELAPSED=$((COLDLOAD_END - COLDLOAD_START))
+  rm -f /tmp/coldload-body.$$
+  if [[ "${COLDLOAD_STATUS}" == "200" ]]; then
+    if (( COLDLOAD_ELAPSED < 75 )); then
+      pass "HYG-01: cold-load completed in ${COLDLOAD_ELAPSED}s (≤ 75s — under the 180s undici ceiling, no 504)"
+    else
+      fail "HYG-01: cold-load completed in ${COLDLOAD_ELAPSED}s — succeeded but slower than expected (review system load)"
+    fi
+  else
+    fail "HYG-01: cold-load returned ${COLDLOAD_STATUS} after ${COLDLOAD_ELAPSED}s (45s clip-regression? check undici headersTimeout)"
+  fi
+  # Re-warm so the live router stays usable (feedback_vram_test_pollution memory).
+  echo "[smoke-test-router] HYG-01: re-warming ${COLDLOAD_MODEL} to keep the live router responsive..."
+  curl -s -o /dev/null --max-time 60 \
+    -H "Authorization: Bearer ${ROUTER_BEARER_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -X POST "${ROUTER_URL}/v1/chat/completions" \
+    -d "{\"model\":\"${COLDLOAD_ALIAS}\",\"messages\":[{\"role\":\"user\",\"content\":\"warm\"}],\"max_tokens\":1}" >/dev/null 2>&1 || true
+else
+  skip "HYG-01: cold-load probe (set SMOKE_INCLUDE_COLDLOAD=1 to enable; deliberately evicts qwen2.5:7b → ~55s reload)"
+fi
+
+echo ""
+echo "[smoke-test-router] === Phase 21 section complete ==="
+
 # Final summary
 echo ""
 echo "[smoke-test-router] ================================================================"
 if [[ "${FAILURES}" -eq 0 ]]; then
-  echo "[smoke-test-router]  Phase 2/3/4/5/7/8/12/13/15/16/17/18/19/20 router verification: COMPLETE."
+  echo "[smoke-test-router]  Phase 2/3/4/5/7/8/12/13/15/16/17/18/19/20/21 router verification: COMPLETE."
   echo "[smoke-test-router]  Model used : ${MODEL}"
   echo "[smoke-test-router]  Router URL : ${ROUTER_URL}"
   echo "[smoke-test-router]  Skipped    : ${SKIPS:-0} (vision sections require llama3.2-vision pull + outbound HTTPS)"

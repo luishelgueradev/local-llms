@@ -49,13 +49,38 @@
  *   - SSRF image-fetch guard: that path builds its OWN per-request Agent with a
  *     DNS-pinning `connect.lookup` and passes it explicitly as the request
  *     `dispatcher`, overriding the global one — so the guard is untouched.
+ *
+ * ─── Phase 21 / HYG-01: cold-load headroom ──────────────────────────────────
+ * Headers/body timeouts were originally 45_000 (45s) — set defensively when the
+ * symptom was DNS-threadpool starvation and we did not yet know the c-ares
+ * lookup was the real fix. With the c-ares Resolver now installed above, 45s
+ * is no longer the guard against hangs (DNS resolves in <1ms regardless of
+ * load); it is just an arbitrary ceiling on the upstream wait.
+ *
+ * On WSL2 + shared GPU, Ollama needs ~50–55s for a cold-load of qwen2.5:7b
+ * when it is not resident in VRAM. The 45s ceiling clipped that path and
+ * surfaced as 504 `upstream_timeout` for the first request after eviction —
+ * confirmed via the post-Phase-20 audit. Raising both to 180_000 (3 min)
+ * gives a 3× margin over real cold-load latency under momentary system load
+ * (Whisper resident + concurrent users) while staying well under the SDK-side
+ * 300_000ms ceiling.
+ *
+ * Regression gate: `tests/backends/http-dispatcher-timeouts.test.ts` asserts
+ * both constants stay ≥ 120_000 — future tuning must justify a lower bound.
  */
 import { Resolver } from 'node:dns/promises';
 import { isIP, type LookupFunction } from 'node:net';
 import { Agent, setGlobalDispatcher } from 'undici';
 
-const HEADERS_TIMEOUT_MS = 45_000;
-const BODY_TIMEOUT_MS = 45_000;
+/** Phase 21 / HYG-01 — raised from 45_000 to 180_000 to absorb Ollama cold-load
+ * (~55s on WSL2 + shared GPU). See header comment for the c-ares context.
+ *
+ * Exported so `tests/backends/http-dispatcher-timeouts.test.ts` can assert the
+ * floor without reaching into the Agent. Future drops below 120_000 must
+ * justify themselves at the test boundary — the cold-load regression is real
+ * and the c-ares lookup is no longer the bottleneck. */
+export const HEADERS_TIMEOUT_MS = 180_000;
+export const BODY_TIMEOUT_MS = 180_000;
 const KEEP_ALIVE_TIMEOUT_MS = 10_000;
 const KEEP_ALIVE_MAX_TIMEOUT_MS = 30_000;
 
