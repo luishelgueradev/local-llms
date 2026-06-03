@@ -1,7 +1,7 @@
 # Roadmap: local-llms
 
-**Coverage:** 76/76 v1 requirements shipped in v0.9.0 · 26/26 v0.10.0 requirements shipped · 48/48 v0.11.0 requirements shipped · 9/9 v0.12.0 requirements shipped
-**Status:** v0.12.0 "External Consumer DX + Catalog Hygiene" — all phases SHIPPED 2026-06-03 (1 phase, 7 plans, 9 requirements, verifier PASSED 12/12 success criteria). Ready for milestone close.
+**Coverage:** 76/76 v1 requirements shipped in v0.9.0 · 26/26 v0.10.0 requirements shipped · 48/48 v0.11.0 requirements shipped · 9/9 v0.12.0 requirements shipped (+ Phase 21 post-ship hygiene in progress)
+**Status:** v0.12.0 "External Consumer DX + Catalog Hygiene" — Phases 20 SHIPPED 2026-06-03; Phase 21 (post-ship hygiene gap-closure from /gsd:audit-milestone findings) in progress before milestone close.
 
 ## Milestones
 
@@ -12,7 +12,15 @@
 
 ## Phases
 
-### ✅ v0.12.0 External Consumer DX + Catalog Hygiene — SHIPPED 2026-06-03
+### 🚧 v0.12.0 External Consumer DX + Catalog Hygiene — Phase 20 SHIPPED 2026-06-03 · Phase 21 hygiene in progress
+
+- [ ] **Phase 21: v0.12.0 Post-ship Hygiene** — Gap-closure phase opened from the post-Phase-20 unattended audit (2026-06-03, captured in `.planning/OVERNIGHT-REPORT.md` follow-up). Resolves the 4 audit findings flagged as 🟡/🟢 severity before milestone v0.12.0 archive:
+  1. **🟡 Router adapter cold-load timeout bug** — `router/src/clients/http-dispatcher.ts` undici `HEADERS_TIMEOUT_MS=45_000` / `BODY_TIMEOUT_MS=45_000` cuts off before qwen2.5:7b's ~50-55s cold-load on WSL2. Was set defensively when DNS-threadpool starvation was the bottleneck (debug session `router-504-stale-sockets`); the c-ares lookup fix from that session is now the primary protection, so the 45s ceiling can safely raise to ≥180s. Affects artiscrapper (Plan 21-01).
+  2. **🟢 `bin/smoke-test-router.sh --profile prod` curl-not-in-image** — runtime image has no curl; Plan 21-02.
+  3. **🟢 Phase 3/Phase 7 smoke gates** still expect llamacpp model that Wave 0 disabled; Plan 21-02.
+  4. **🟢 Vitest sweep timeout flakes** under load; Plan 21-02.
+
+  Mode: gap-closure (similar to Phases 19-08/19-09 post-ship pattern). Plans 21-01 + 21-02 then re-audit → milestone close.
 
 - [x] **Phase 20: Model Catalog Hygiene + External Consumer DX + Deploy Hygiene** ✅ 2026-06-03 — Close the three categories of consumer fricion that `artiscrapper` exposed on 2026-06-03 (catalog drift to dead backends, naming chaos, no programmatic capability contract) AND formalize deploy hygiene so the next 19-09-class skew bug doesn't recur. Conservative defaults locked: no breaking changes to live consumers (n8n at objetiva.com.ar, Unsloth Studio, artiscrapper), additive `/v1/models` fields only, ≥30-day backward-compat alias grace period for any rename. 7/7 plans shipped, 9/9 reqs closed, verifier PASS 12/12 success criteria.
   - [x] **Wave 0 (Plan 20-01) ✅ 2026-06-03** — Disabled-flag dead-backend aliases (CAT-01 closed). 3 entries (`qwen2.5-7b-instruct-q4km`, `qwen2.5-7b-instruct-awq`, `bge-m3-vllm`) flagged `disabled: true` with explanatory comments; `enabledModels()` filter + `resolve()` anti-leak gate; `/v1/models` returns 10 entries (was 13); each disabled alias returns 404 `model_not_found` envelope identical to a fully-unknown alias (T-20-01). RESS-WITH-TOOLS smoke gate PASS post-deployment.
