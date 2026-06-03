@@ -37,7 +37,7 @@
 | CAT-01 | `router/models.yaml` declared `backends:` map contains zero entries that don't correspond to a running compose service OR a documented `disabled: true` (audit-by-grep against `compose.yml` services + a startup probe). The 3 known dead backends (`llamacpp`, `vllm`, `vllm-embed`) are either removed or flagged `disabled: true` with explanatory comment. | ✅ Complete (Phase 20 / Plan 20-01 — 2026-06-03) |
 | CAT-02 | `GET /v1/models` exposes a per-entry `health` or `available` boolean computed from a startup-time backend reachability probe. Consumers can filter unreachable aliases without trial-and-error. Field is additive — existing consumers that ignore it continue to work. | ✅ Complete (Phase 20 / Plan 20-02 — 2026-06-03) |
 | CAT-03 | Naming taxonomy decision is documented in `DEPLOY.md` and `README.md`. EITHER (a) all aliases follow one convention (semantic only, e.g. `chat-local`/`chat-cloud-small`/`embed-local`), OR (b) the mix is explicitly documented as "two taxonomies coexisting on purpose for these reasons". Decision deferred to `/gsd:discuss-phase 20`. | Planned (Phase 20) |
-| CAT-04 | Backward-compat alias layer: for every alias rename/removal, the old alias remains in `models.yaml` for ≥30 days pointing to the new canonical entry, emitting a deprecation log line (`router_deprecated_alias_used_total` counter) on each use. No breaking change to n8n / Unsloth / artiscrapper without this grace period. | Planned (Phase 20) |
+| CAT-04 | Backward-compat alias layer: for every alias rename/removal, the old alias remains in `models.yaml` for ≥30 days pointing to the new canonical entry, emitting a deprecation log line (`router_deprecated_alias_used_total` counter) on each use. No breaking change to n8n / Unsloth / artiscrapper without this grace period. | ✅ Complete (Phase 20 / Plan 20-04 — 2026-06-03) |
 
 ### Consumer DX (CDX) — 3 requirements
 
@@ -63,7 +63,7 @@
 | CAT-01 | Phase 20 / Plan 20-01 | ✅ Complete (2026-06-03) |
 | CAT-02 | Phase 20 / Plan 20-02 | ✅ Complete (2026-06-03) |
 | CAT-03 | Phase 20 | Planned |
-| CAT-04 | Phase 20 | Planned |
+| CAT-04 | Phase 20 / Plan 20-04 | ✅ Complete (2026-06-03) |
 | CDX-01 | Phase 20 | Planned |
 | CDX-02 | Phase 20 | Planned |
 | CDX-03 | Phase 20 | Planned |
