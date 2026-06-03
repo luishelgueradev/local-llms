@@ -241,6 +241,86 @@ Editables en `router/models.yaml`. El stack viene con:
 
 ---
 
+## Which model when? (v0.12.0)
+
+Para que un agente o automatizacion pueda pickear el alias correcto sin trial-and-error,
+el router expone metadata estructurada en `GET /v1/models`. La regla de oro: **lee
+`recommendations[<use-case>-default]`, valida `health.status === 'ok'`, hace el request**.
+Si queres saber a mano que alias va con que use case, esta es la guia.
+
+| Use case | Local recommendation | Cloud recommendation | Notas |
+|----------|----------------------|----------------------|-------|
+| Chat simple (`chat`) | `chat-local` | `big-cloud` | qwen2.5:7b workhorse local; gpt-oss:120b cuando local no alcanza |
+| Chat con tools / function calling (`chat-tools`, `function-calling`) | `chat-local` | `big-cloud` | Ambos soportan `tools` capability nativamente |
+| Chat con JSON strict mode (`chat-json-strict`) | `chat-local` | `big-cloud` | Cubre el caso artiscrapper — `json_mode` capability declarada |
+| Embeddings (`embeddings`) | `embed-local` | n/a | bge-m3 1024-dim local; cloud embeddings no soportado en v0.12 |
+| Rerank (`rerank`) | `bge-reranker-local` | n/a | bge-reranker-v2-m3 via Ollama native /api/rerank |
+| Vision (`vision`) | `vision-local` | n/a | llama3.2-vision 11B — no hay cloud vision en v0.12 |
+
+Estos defaults se sirven en la respuesta de `GET /v1/models` bajo el campo
+`recommendations` — la tabla aca es para leerla con ojos humanos; los agentes leen el
+endpoint.
+
+### Flow programatico para consumers
+
+```bash
+# Pick the right alias for "chat + json_mode strict + local + working right now"
+curl -s -H "Authorization: Bearer $ROUTER_BEARER_TOKEN" http://127.0.0.1:3210/v1/models \
+  | jq -r '
+    . as $root
+    | $root.recommendations["chat-json-strict-default"] as $local
+    | $root.recommendations["chat-json-strict-cloud-default"] as $cloud
+    | ($root.data[] | select(.id == $local)) as $entry
+    | if $entry.health.status == "ok" then $local
+      else "fallback: " + ($cloud // "no cloud fallback")
+      end
+  '
+# Returns: chat-local   (o el cloud fallback si local esta down/degraded)
+```
+
+El campo `health` por entrada refleja un probe de boot + refresh perezoso cada 60 s
+contra el `/healthz` (o equivalente) del backend declarado. Valores:
+`ok` | `degraded` | `down` | `unknown`. `ollama-cloud` siempre devuelve `unknown` porque
+no hay un `/healthz` accesible para el bearer del router — eso NO significa que el cloud
+este down (es honestidad sobre lo que el router puede observar).
+
+### Dos esquemas de naming coexistiendo (a proposito)
+
+El registry v0.12.0 sirve cada workhorse local bajo DOS nombres equivalentes:
+
+- **Semantic role alias** (`chat-local`, `embed-local`, `vision-local`, `big-cloud`,
+  `bge-reranker-local`) — la superficie consumer-facing recomendada. Estable a traves
+  de cambios de modelo subyacente: el operador puede repointear `chat-local` de
+  qwen2.5:7b a qwen3:7b sin que el cliente toque codigo.
+- **Raw model name** (`qwen2.5:7b-instruct-q4_K_M`, `gpt-oss:120b-cloud`,
+  `gpt-oss:20b-cloud`, `llama3.2-vision:11b-instruct-q4_K_M`, `bge-m3-ollama`) —
+  escape-hatch para consumers que quieren pinear el modelo exacto por su identificador
+  Ollama/cloud-vendor. Ambos resuelven al mismo backend.
+
+Ambos esquemas son first-class citizens, ninguno deprecado. La eleccion es deliberada
+(commit `a4580e0` agrego el alias `qwen2.5:7b-instruct-q4_K_M` como sibling de
+`chat-local` con el mismo `backend_url` / `backend_model`) — ver
+[20-CONTEXT.md §D-02 LOCKED](.planning/phases/20-model-catalog-hygiene-external-consumer-dx/20-CONTEXT.md)
+para el rationale completo (live consumers en n8n + Unsloth + artiscrapper sin downtime).
+La recomendacion para codigo nuevo es usar el role alias.
+
+### Deprecation grace (para futuros renames)
+
+Los aliases legacy quant-encoded (`qwen2.5-7b-instruct-q4km`, `qwen2.5-7b-instruct-awq`,
+`bge-m3-vllm`) estan flagged `disabled: true` y no aparecen en `/v1/models`. Cuando
+v0.13.0 o un futuro milestone agregue una entrada al bloque `deprecated_aliases:` del
+`models.yaml`, los consumers que sigan llamando al nombre viejo:
+
+1. Reciben la respuesta normal (resolve a la entrada canonical),
+2. Ven el header `X-Deprecated-Alias: <canonical>` en la respuesta,
+3. Tienen ≥30 dias para migrar antes de que el operador remueva la entrada.
+
+Para el lado operador (como se configura el bloque `recommendations:`, el flag
+`disabled: true`, la deprecation map, y el deploy hygiene completo), ver
+[DEPLOY.md → Model Catalog Hygiene](./DEPLOY.md#model-catalog-hygiene-phase-20--v0120).
+
+---
+
 ## Arquitectura
 
 ```

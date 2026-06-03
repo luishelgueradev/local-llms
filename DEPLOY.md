@@ -868,6 +868,199 @@ Verified by:
 
 ---
 
+## Model Catalog Hygiene (Phase 20 — v0.12.0)
+
+> **Strategic frame:** "Catalog says X, router serves X — siempre" · "Consumer
+> picks programmatically, not by reading docs" · "No breaking changes to live
+> consumers without grace period". Phase 20 closes the artiscrapper failure
+> modes (dead-backend dispatch, naming chaos, no capability contract) and adds
+> the `bin/deploy-router.sh` hygiene script + Dockerfile BUILD_SHA skew check.
+
+### Requirements coverage
+
+| REQ | Closed by | Delivers |
+|-----|-----------|----------|
+| CAT-01 | `router/models.yaml` + `registry.ts` `disabled: true` flag (Plan 20-01) | 3 dead-backend aliases (llamacpp / vllm / vllm-embed) invisible at `/v1/models` AND unresolvable at dispatch; entries retained for 1-line re-enable |
+| CAT-02 | `router/src/health/backend-probe.ts` + `backend-health-plugin.ts` (Plan 20-02) | Per-entry `health: {status, checked_at}` on `/v1/models`; 60s Valkey-cached lazy refresh; `ollama-cloud` honestly reports `unknown` |
+| CAT-03 | This DEPLOY section + README "Which model when?" (Plan 20-05) | TWO naming schemes coexist on purpose — documented below (D-02 LOCKED) |
+| CAT-04 | `router/src/config/deprecation.ts` + `dispatch/preflight.ts` + new Counter (Plan 20-04) | Deprecated aliases keep resolving for ≥30 days with `X-Deprecated-Alias` header + structured pino warn log + Prometheus counter |
+| CDX-01 | `registry.ts` `recommended_for` + `recommendations` map + `routes/v1/models.ts` (Plan 20-03) | Programmatic consumer chooser — see README "Which model when?" |
+| CDX-02 | README "Which model when?" section (Plan 20-05) | Decision tree + `curl + jq` example for consumers |
+| CDX-03 | `docs/CONSUMER-MIGRATION-v0.12.0.md` (Plan 20-07 — pending) | Migration guide (empty per D-09 — no breaking renames in v0.12.0) |
+| OPS-01 | `bin/deploy-router.sh` 3 subcommands (Plan 20-06) | One-shot `full` / `config-only` / `check` deploy paths |
+| OPS-02 | Dockerfile `BUILD_SHA` + `/healthz` extension + `/version` (Plan 20-06) | Source/binary SHA skew check via `bash bin/deploy-router.sh check` |
+
+### Naming taxonomy decision — D-02 LOCKED (CAT-03 closure)
+
+> "El registry de v0.12.0 mantiene DELIBERADAMENTE dos esquemas de naming
+> coexistentes:
+>
+> - **Semantic** (`chat-local`, `embed-local`, `big-cloud`, `vision-local`,
+>   `bge-reranker-local`) — la superficie consumer-facing recomendada.
+>   Estable a traves de cambios de modelo subyacente (el operador puede
+>   repointear `chat-local` de qwen2.5:7b a qwen3:7b sin romper consumers).
+>
+> - **Raw model name** (`qwen2.5:7b-instruct-q4_K_M`, `gpt-oss:120b-cloud`,
+>   `gpt-oss:20b-cloud`, `llama3.2-vision:11b-instruct-q4_K_M`,
+>   `bge-m3-ollama`) — escape-hatch para consumers que quieren pinear el
+>   modelo exacto por su identificador Ollama / cloud-vendor.
+>
+> - **Quant-encoded** (`qwen2.5-7b-instruct-q4km`, `qwen2.5-7b-instruct-awq`,
+>   `bge-m3-vllm`) — LEGACY, marcado `disabled: true` (CAT-01) y reservado
+>   para mapear via `deprecated_aliases:` (CAT-04) a su equivalente
+>   semantic en un futuro rename. Removal target v0.13.0 — el operador
+>   decide cuando realmente cortar.
+>
+> **Por que dos**: hacer un mass-rename ahora rompería n8n stored workflows
+> en `objetiva.com.ar` (live consumer via Cloudflare Tunnel), Unsloth
+> Studio's model picker, y artiscrapper en pleno desarrollo. La grace period
+> es la respuesta correcta — los consumers ven el `X-Deprecated-Alias`
+> header en cada call y migran a su ritmo."
+
+Referencia completa: [20-CONTEXT.md §D-02](../.planning/phases/20-model-catalog-hygiene-external-consumer-dx/20-CONTEXT.md)
+(LOCKED, confirmado por el usuario 2026-06-03). El patron del raw-name alias
+quedo establecido en commit `a4580e0` (qwen2.5:7b-instruct-q4_K_M como sibling de
+chat-local, mismo `backend_url` + `backend_model`, `vram_budget_gb: 0` para no
+double-contar el envelope).
+
+### `disabled: true` flag reference (CAT-01)
+
+```yaml
+# router/models.yaml — example
+- name: qwen2.5-7b-instruct-q4km
+  backend: llamacpp
+  # ... existing fields ...
+  disabled: true   # Phase 20 / CAT-01 / D-01 — backend not running on this host
+```
+
+Semantics:
+
+- Disabled entries do NOT appear in `GET /v1/models` ni en `GET /v1/models/:id` (404 `model_not_found`).
+- `registry.resolve(disabled_name)` throws `RegistryUnknownModelError` con el mismo envelope que un alias completamente desconocido (T-20-01 anti-leak — un consumer no puede distinguir "disabled" de "nunca existio" via error inspection).
+- VRAM envelope superRefine, URL uniqueness check, y dims-for-embeddings check skipean disabled entries (re-enable flipping `disabled: false` no re-trigger validation retroactiva sobre las demas entradas).
+- Re-enable: flipear `disabled: true` → `disabled: false` (o borrar la linea) + correr la hot-edit recipe (Valkey DEL + force-recreate, o `bash bin/deploy-router.sh config-only`).
+
+### `health` field reference (CAT-02)
+
+Shape per /v1/models entry:
+
+```json
+"health": {
+  "status": "ok" | "degraded" | "down" | "unknown",
+  "checked_at": "2026-06-03T04:00:00.000Z"
+}
+```
+
+- **Boot-time probe**: cada backend declarado (de las entradas enabled) es probed una vez en `app.ready`.
+- **Lazy refresh**: triggered en la proxima request a `/v1/models` despues de `ROUTER_BACKEND_HEALTH_TTL_SEC` (default 60) segundos desde el `checked_at` cacheado.
+- **NO auto-filter** (D-04 LOCKED): una entrada con `status: 'down'` igual aparece en la respuesta — el consumer decide. Esto honra C7 ("el router expone seams, no implementa logic").
+- **`ollama-cloud`** siempre reporta `unknown` — no hay `/healthz` publico al que el bearer del router pueda hit. Es honestidad arquitectonicamente correcta, no un bug.
+
+### `recommendations:` block reference (CDX-01)
+
+```yaml
+# router/models.yaml — top level (live config ships with 10 keys)
+recommendations:
+  chat-local-default: chat-local
+  chat-cloud-default: big-cloud
+  chat-json-strict-default: chat-local           # cubre el caso artiscrapper
+  chat-json-strict-cloud-default: big-cloud      # fallback cuando local es cold
+  chat-tools-default: chat-local
+  chat-tools-cloud-default: big-cloud
+  embed-default: embed-local
+  rerank-default: bge-reranker-local
+  vision-default: vision-local
+  function-calling-default: chat-local
+```
+
+- Operator-configurable; values cross-field-validated contra enabled (non-disabled) model names en boot (`RegistrySchema.superRefine` — typo se cacha en boot, no en first consumer hit).
+- Cuando el bloque se omite, el router auto-deriva de los `recommended_for` tags por entrada (first matching enabled entry wins por (tag, profile) pair, profile ∈ {local, cloud} donde local = `backend !== 'ollama-cloud'`).
+- D-02 LOCKED convention: los targets shipped en live config apuntan a SEMANTIC role aliases (`chat-local`, `big-cloud`, `embed-local`, `vision-local`, `bge-reranker-local`) — NOT raw model names. El schema NO enforcea esta convencion (ambos funcionan como targets) pero la config shipped la sigue para senalar a los nuevos consumers que el role alias es la ruta recomendada.
+
+### `deprecated_aliases:` block reference (CAT-04)
+
+```yaml
+# router/models.yaml — top level (live config ships with this block ABSENT — D-02 LOCKED)
+deprecated_aliases:
+  qwen2.5-7b-instruct-q4km:
+    target: chat-local
+    deprecated_since: v0.12.0
+    removal_target: v0.13.0
+```
+
+- Dispatch-time resolution: la request del alias deprecado es REDIRIGIDA a la entrada canonical ANTES de `registry.resolve()` — todo lo downstream (policy gate, breaker, adapter) ve el canonical entry, no el deprecated alias.
+- Response carries `X-Deprecated-Alias: <canonical>` header (4 rutas: chat-completions, messages, responses, rerank). `embeddings.ts` NO carga este header por P7-01 BLOCK SHA invariant.
+- Structured pino warn log por call: `{event: 'deprecated_alias_used', alias, redirected_to, deprecated_since, removal_target, ...}`.
+- Prometheus counter `router_deprecated_alias_used_total{old_name, new_name}` (POL-06 compliant — los labels NO usan suffix `_id`, verificado por `scripts/check-prometheus-cardinality.ts` en source y live).
+- `/v1/models` entries que son target de alguna deprecation carry informational `deprecated_aliases: [{old_name, deprecated_since, removal_target}]` field (omitido cuando no hay deprecations).
+- Removal: cuando el operador decide cortar, borra el row del bloque `deprecated_aliases:` Y el disabled entry de `models:` (atomicamente en el mismo `deploy-router.sh config-only`).
+
+### Como agregar un alias nuevo (operator recipe)
+
+1. Editar `router/models.yaml` — agregar el nuevo entry bajo `models:` con sus capabilities, backend, recommended_for tags, etc.
+2. Si el alias va a ser default para algun use case, agregar/actualizar la entrada correspondiente en el bloque `recommendations:` (e.g. `chat-tools-default: <nuevo-alias>`).
+3. Correr el deploy hygiene script:
+   ```bash
+   bash bin/deploy-router.sh config-only --profile prod
+   ```
+   El script hace `valkey-cli DEL` de las cache keys (`model-registry:*`, `mcp:tools:*`, `backend-health:*`), force-recreate del router, y poll de `/healthz` hasta que responda OK.
+4. Verificar:
+   ```bash
+   curl -s -H "Authorization: Bearer $ROUTER_BEARER_TOKEN" \
+     http://127.0.0.1:3210/v1/models | jq '.data[] | select(.id == "<nuevo-alias>")'
+   ```
+
+### Como deprecar un alias (futuro rename)
+
+Cuando v0.13.0+ vaya a renombrar un alias, el patron es:
+
+1. **Mantener** el entry viejo en `models.yaml` con `disabled: true` (CAT-01 invariant — preserva el row para historia y future re-enable).
+2. **Declarar** el nuevo entry con `disabled: false` y la nueva semantica.
+3. **Agregar** una entrada al bloque top-level `deprecated_aliases:` apuntando al canonical:
+   ```yaml
+   deprecated_aliases:
+     <old-name>:
+       target: <new-canonical-name>
+       deprecated_since: v0.13.0
+       removal_target: v0.14.0
+   ```
+4. Hot-edit con `bash bin/deploy-router.sh config-only`.
+5. Monitorear `router_deprecated_alias_used_total{old_name="<old>",new_name="<new>"}` en Prometheus / Grafana — cuando llega a cero por ≥30 dias, el operador puede borrar el entry viejo + la entrada del deprecated_aliases map.
+
+La cross-field validation rejecta YAMLs donde el `target:` no existe O esta `disabled: true`, asi que errores de typo se cachan en boot — no en el primer consumer hit.
+
+### Verificar VRAM antes / despues de un cambio de catalog
+
+Cuando un cambio de catalog puede mover modelos al GPU (e.g. flipear `disabled: true → false` en una entry con `vram_budget_gb > 0`), validar el envelope antes Y despues:
+
+```bash
+# Antes del deploy: ver que modelos estan loaded ahora mismo
+docker exec local-llms-ollama ollama ps
+#   NAME                ID    SIZE     PROCESSOR    UNTIL
+#   qwen2.5:7b...      ...   4.7 GB   100% GPU     4 minutes from now
+#   bge-m3:latest      ...   1.2 GB   100% GPU     ...
+
+# (deploy)
+bash bin/deploy-router.sh config-only --profile prod
+
+# Despues: confirmar que no hubo OOM ni evictions inesperadas
+docker exec local-llms-ollama ollama ps
+nvidia-smi --query-gpu=memory.used,memory.free --format=csv,noheader
+```
+
+Memory note: en WSL2 con piso Windows ~5.7 GB y 16 GB total, el budget usable es ~10.6 GB — un workhorse 7B caliente a la vez. El registry envelope superRefine suma `vram_budget_gb` por backend y rechaza el boot si excede `VRAM_ENVELOPE_GB` (default 16). Las entradas con `vram_budget_gb: 0` (role aliases como `chat-local`, raw-name aliases como `qwen2.5:7b-instruct-q4_K_M`) son pointers a un modelo ya budgeteado bajo su entry canonical y no double-contan. Ver memoria `project_vram_budget` para el rationale completo.
+
+### Cross-reference
+
+- **Consumer-side** (decision tree + curl + jq): [README → Which model when?](./README.md#which-model-when-v0120)
+- **Wave 0 implementation** (disabled flag mechanics): [.planning/phases/20-.../20-01-SUMMARY.md](.planning/phases/20-model-catalog-hygiene-external-consumer-dx/20-01-SUMMARY.md)
+- **Wave 1 implementation** (health probe internals): [20-02-SUMMARY.md](.planning/phases/20-model-catalog-hygiene-external-consumer-dx/20-02-SUMMARY.md)
+- **Wave 2 implementation** (`recommended_for` + `recommendations`): [20-03-SUMMARY.md](.planning/phases/20-model-catalog-hygiene-external-consumer-dx/20-03-SUMMARY.md)
+- **Wave 3 implementation** (deprecation layer): [20-04-SUMMARY.md](.planning/phases/20-model-catalog-hygiene-external-consumer-dx/20-04-SUMMARY.md)
+- **Wave 5 implementation** (`bin/deploy-router.sh` + BUILD_SHA): [20-06-SUMMARY.md](.planning/phases/20-model-catalog-hygiene-external-consumer-dx/20-06-SUMMARY.md)
+
+---
+
 ## Backups + retencion
 
 **Diarios al disco** (sidecar `pg-backup` corre cada noche):
