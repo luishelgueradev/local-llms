@@ -1,15 +1,34 @@
 # Roadmap: local-llms
 
-**Coverage:** 76/76 v1 requirements shipped in v0.9.0 · 26/26 v0.10.0 requirements shipped · 48/48 v0.11.0 requirements complete
-**Status:** v0.11.0 "Retrieval-Ready Infrastructure" — SHIPPED 2026-06-01. All 6 phases + 48 requirements complete.
+**Coverage:** 76/76 v1 requirements shipped in v0.9.0 · 26/26 v0.10.0 requirements shipped · 48/48 v0.11.0 requirements shipped · 9 new v0.12.0 requirements planned
+**Status:** v0.12.0 "External Consumer DX + Catalog Hygiene" — in progress (Phase 20). Prior milestone v0.11.0 SHIPPED 2026-06-03.
 
 ## Milestones
 
 - ✅ **v0.9.0 MVP** — Router multi-backend con cloud fallback + observability + ops · Phases 1-9 · shipped 2026-05-28 · 9 phases, 55 plans, 112 tasks · [archive](./milestones/v0.9.0-ROADMAP.md) · [requirements](./milestones/v0.9.0-REQUIREMENTS.md) · [audit](./milestones/v0.9.0-MILESTONE-AUDIT.md)
 - ✅ **v0.10.0 Cognitive Primitives** — Structured outputs · Reranker · Embeddings hardening · Cost obs + Responses API · Phases 10-13 · shipped 2026-05-29 · 4 phases (freeform single-shot pattern), 26 requirements · [archive](./milestones/v0.10.0-ROADMAP.md) · [requirements](./milestones/v0.10.0-REQUIREMENTS.md) · [audit](./milestones/v0.10.0-MILESTONE-AUDIT.md)
-- ✅ **v0.11.0 Retrieval-Ready Infrastructure** — MCP-as-server/client · `/v1/responses` streaming + tools · SessionStore/ContextProvider/SummaryProvider · RetrieverProvider + pre-completion hook · EmbeddingProvider interface · Policy primitives · Phases 14-19 · shipped 2026-06-01 · 6 phases, 47 plans, 48 requirements
+- ✅ **v0.11.0 Retrieval-Ready Infrastructure** — MCP-as-server/client · `/v1/responses` streaming + tools · SessionStore/ContextProvider/SummaryProvider · RetrieverProvider + pre-completion hook · EmbeddingProvider interface · Policy primitives · Phases 14-19 · shipped 2026-06-03 · 6 phases, 49 plans, 48 requirements · [archive](./milestones/v0.11.0-ROADMAP.md) · [requirements](./milestones/v0.11.0-REQUIREMENTS.md) · [audit](./milestones/v0.11.0-MILESTONE-AUDIT.md)
+- 🚧 **v0.12.0 External Consumer DX + Catalog Hygiene** — Dead-catalog cleanup · Health-aware `/v1/models` · Naming taxonomy decision · Backward-compat alias layer · "Which model when?" docs · Deploy hygiene script · Source/binary skew check · Phase 20 · in progress · scope from [SEED-001](./seeds/SEED-001-model-catalog-hygiene-consumer-dx.md)
 
 ## Phases
+
+### 🚧 v0.12.0 External Consumer DX + Catalog Hygiene — In Progress
+
+- [ ] **Phase 20: Model Catalog Hygiene + External Consumer DX + Deploy Hygiene** — Close the three categories of consumer fricion that `artiscrapper` exposed on 2026-06-03 (catalog drift to dead backends, naming chaos, no programmatic capability contract) AND formalize deploy hygiene so the next 19-09-class skew bug doesn't recur. Conservative defaults locked: no breaking changes to live consumers (n8n at objetiva.com.ar, Unsloth Studio, artiscrapper), additive `/v1/models` fields only, ≥30-day backward-compat alias grace period for any rename.
+**Mode:** mvp (single deployable slice; may split into 20/21/22 if discuss-phase warrants)
+**Depends on:** v0.11.0 SHIPPED (Phases 14-19), [SEED-001](./seeds/SEED-001-model-catalog-hygiene-consumer-dx.md)
+**Requirements:** CAT-01, CAT-02, CAT-03, CAT-04, CDX-01, CDX-02, CDX-03, OPS-01, OPS-02
+**Success Criteria** (what must be TRUE):
+  1. `bash bin/smoke-test-router.sh --profile dev` finishes WITHOUT timeout on any catalog alias — no alias resolves to a non-running backend (the artiscrapper failure mode is gone).
+  2. `GET /v1/models` returns a per-entry `health` field (or equivalent boolean) reflecting backend reachability at scrape time, plus a `recommended_for` or capability metadata field that lets a consumer programmatically pick the right alias for "chat + json_mode + local + working right now" without trial-and-error.
+  3. Either (a) every alias in `models.yaml` follows ONE naming convention, OR (b) the mix is explicitly documented in DEPLOY.md with rationale. Decision made and reflected in code + docs.
+  4. Backward-compat layer: every alias that changed name still resolves correctly for ≥30 days, increments `router_deprecated_alias_used_total{old_name,new_name}` counter on each use, and emits one warn-level log line per request. n8n / Unsloth / artiscrapper / Open WebUI continue to work without any user-side update for the grace period.
+  5. README.md + DEPLOY.md contain a "Which model when?" decision tree subsection (chat / chat+tools / chat+json-strict / embed / rerank / vision × local/cloud profiles, each → recommended alias).
+  6. A single deploy command (e.g. `just deploy-router` or `bin/deploy-router.sh`) wraps the canonical `docker compose build router && docker compose up -d --force-recreate router && smoke-test` cycle. Documents the Valkey `DEL` sub-command for models.yaml-only changes. The 19-09 failure class can no longer happen silently.
+  7. A boot-time or `/healthz`-side check surfaces source/image SHA skew before any traffic hits the container (catches the "fix on disk but not in image" class proactively).
+  8. Cardinality CI guard (POL-06) still passes — no new `_id$` labels introduced by any new metric (`router_deprecated_alias_used_total` uses `old_name`/`new_name` not `*_id`).
+  9. `bin/smoke-test-router.sh` Phase 19 RESS-WITH-TOOLS gate still passes (P7-01, MCPS-06, OBSV-02-LIVE gates unaffected — this milestone is pure consumer-DX, not a touch to v0.11.0 surfaces).
+**UI hint:** no (operator/CLI/API surface only — no frontend)
 
 ### v0.11.0 Retrieval-Ready Infrastructure (Phases 14–19)
 

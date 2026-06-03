@@ -1,16 +1,18 @@
 ---
 gsd_state_version: 1.0
-milestone: v0.11.0
-milestone_name: Retrieval-Ready Infrastructure
-status: completed
-last_updated: "2026-06-03T03:16:39.833Z"
-last_activity: 2026-06-03 — Milestone v0.11.0 completed and archived
+milestone: v0.12.0
+milestone_name: External Consumer DX + Catalog Hygiene
+status: in_progress
+last_updated: "2026-06-03T03:30:00.000Z"
+last_activity: 2026-06-03 — Milestone v0.12.0 opened (Phase 20 from SEED-001). Prior milestone v0.11.0 SHIPPED + archived overnight.
+current_phase: 20
+current_phase_name: Model Catalog Hygiene + External Consumer DX + Deploy Hygiene
 progress:
-  total_phases: 6
-  completed_phases: 6
-  total_plans: 49
-  completed_plans: 49
-  percent: 100
+  total_phases: 1
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State: local-llms

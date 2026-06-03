@@ -23,11 +23,34 @@ Prior milestones: v0.10.0 Cognitive Primitives (2026-05-29) — 26/26 reqs acros
 
 Consumed in production by the user's agents (n8n in a remote VPS over Cloudflare Tunnel `https://local-llms.luishelguera.dev`) and by the local Whisper sidecar via the same host. Workhorse local model: `qwen2.5:7b-instruct-q4_K_M` (alias `chat-local`). Cloud fallback: `gpt-oss:120b-cloud` / `gpt-oss:20b-cloud` via Ollama Cloud (alias `big-cloud`). Cost telemetry: per-1M-token pricing for cloud models declared in `models.yaml` (placeholder rates until Ollama publishes formal pricing); operator updates as the rates firm up.
 
-## Next Milestone
+## Current Milestone: v0.12.0 External Consumer DX + Catalog Hygiene
 
-**v0.12.0 candidate scope captured in `.planning/seeds/SEED-001-model-catalog-hygiene-consumer-dx.md`** — external consumer DX hardening triggered by an artiscrapper integration session on 2026-06-03 that surfaced three distinct issues: (1) catalog drift — 3 `models.yaml` entries point to backends (`llamacpp`/`vllm`/`vllm-embed`) that no longer run; (2) naming chaos — quant-encoded aliases mixed with semantic aliases; (3) no programmatic contract surface — consumers can't ask "which alias works for chat+json_mode+local right now?". Run `/gsd:new-milestone` to formally open v0.12.0; the seed auto-surfaces as Phase 1 candidate.
+**Goal:** Hacer que un proyecto externo que consume `local-llms` pueda — sin trial-and-error, sin saber qué backends están vivos, sin chocar con aliases muertos — descubrir programáticamente qué modelo pedirle al router para su use case y confiar en que esa elección funciona. Cerrar tres categorías de fricción que `artiscrapper` (2026-06-03) expuso: (1) catalog drift hacia backends que ya no corren, (2) naming chaos sin guía, (3) sin contrato programático de capacidades. Y formalizar la higiene de deploy para que el próximo bug "imagen stale vs source nuevo" (categoría 19-09) no recurra.
 
-Also pending operator action (deferred from v0.11.0): live tunnel rebuild of the production router container at `https://local-llms.luishelguera.dev` to deploy the post-Phase-17 Phase 18 + Phase 19 code (same `compose.yml build: ./router` no-image-pin pattern that Plan 19-09 already worked around once — captured in SEED-001's scope).
+**Strategic frame (binding constraint on every REQ below):**
+- *"Catalog says X, router serves X — siempre"* (no drift entre declaración y realidad)
+- *"Consumer picks programmatically, not by reading docs"* (los metadatos del router son la fuente de verdad para el chooser)
+- *"No breaking changes to live consumers without grace period"* (n8n en objetiva.com.ar, Unsloth Studio, artiscrapper son consumers reales — los renames van con backward-compat aliases y warnings de deprecación)
+- *"Deploy hygiene = no source/binary skew"* (cada edit de `models.yaml` o `router/src/` tiene un path documentado y atomic para llegar al container corriendo)
+
+**Source of truth for scope:** `.planning/seeds/SEED-001-model-catalog-hygiene-consumer-dx.md` (planted 2026-06-03 after `artiscrapper` exposed the three failure categories on the live router).
+
+**Single Phase (may split during `/gsd:discuss-phase 20` if scope warrants):**
+
+| # | Phase | What it delivers |
+|---|-------|------------------|
+| **20** | Model Catalog Hygiene + External Consumer DX + Deploy Hygiene | All 9 v0.12.0 requirements: CAT-01..04 (catalog cleanup + health), CDX-01..03 (capability metadata + docs + migration guide), OPS-01..02 (deploy script + skew check) |
+
+**Constraints (locked — inherited from v0.11.0 ship state):**
+- All v0.11.0 surfaces (`/v1/chat/completions`, `/v1/messages`, `/v1/responses`, `/v1/embeddings`, `/v1/rerank`, `/v1/models`, `/mcp`) remain backward-compatible — additive changes only
+- POL-06 cardinality invariant preserved (no `_id$` labels in any new metric)
+- P7-01 `/v1/embeddings` SHA byte-identical invariant preserved
+- MCPS-06 no-stdio-transport invariant preserved
+- `qwen2.5:7b-instruct-q4_K_M` (alias `chat-local`) remains the local workhorse — taxonomy must keep it accessible
+- VRAM budget unchanged: one 7B hot at a time + bge-m3 (max ~10.3 GB), vllm/llamacpp confirmed redundant and stay disabled
+- Cloudflare tunnel consumer at `objetiva.com.ar` is a live n8n deployment — no breaking changes without ≥30-day backward-compat grace period
+
+**Continuación normal:** phase numbering desde Phase 20 (no reset). v0.12.0 es continuación de v0.11.0 (consumer-DX polish layer), no major.
 
 ## Requirements
 
