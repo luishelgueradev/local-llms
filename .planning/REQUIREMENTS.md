@@ -54,6 +54,17 @@
 | OPS-01 | A `just` (or `make`, or `bin/`) script wraps the canonical deploy path `docker compose build router && docker compose up -d --force-recreate router && bash bin/smoke-test-router.sh --phase 19` as a single atomic command. Documents Valkey `DEL` of registry cache as a sibling sub-command when only `models.yaml` changed. Eliminates the "edit but never rebuild" failure class that Plan 19-09 fixed once. | ✅ Complete (Plan 20-06 — 2026-06-03 — bin/deploy-router.sh full/config-only/check) |
 | OPS-02 | Pre-deploy or boot-time check compares `git rev-parse HEAD:router/src/translation/openai-out.ts` (or a `BUILD_SHA` env baked at image build) against a value the running container exposes via `/healthz` or `/version`. Surfaces source/image skew before traffic hits the stale binary. Catches the next class of "fix on disk, not in container" silently. | ✅ Complete (Plan 20-06 — 2026-06-03 — Dockerfile BUILD_SHA + /version + /healthz extension + check subcommand) |
 
+### Post-ship Hygiene (HYG) — 4 requirements
+
+> Findings surfaced by the post-Phase-20 unattended audit (`6c4e246`). All four are forced fixes (no gray areas) bundled into Phase 21 to close v0.12.0 cleanly.
+
+| ID | Description | Status |
+|----|-------------|--------|
+| HYG-01 | `router/src/backends/http-dispatcher.ts` undici headers/body timeouts raised from 45s → ≥180s; cold-load of qwen2.5:7b (≥50s on WSL2 + shared GPU) completes without `upstream_timeout`. Regression test asserts the constants stay ≥120_000. | ✅ Complete (Phase 21 / Plan 21-01 — 2026-06-03 — commit `0f9880a` — live cold-load probe 84s / 200 OK) |
+| HYG-02 | `router/Dockerfile` runtime stage includes `curl`; `bin/smoke-test-router.sh --profile prod` runs via `docker exec router curl ...` without "curl: not found". | ✅ Complete (Phase 21 / Plan 21-02 — 2026-06-03 — commit `f88eec3` — smoke gate PASS: curl 7.88.1 baked in) |
+| HYG-03 | `bin/smoke-test-router.sh` Phase 3 + Phase 7 sections soft-skip when no llamacpp model is enabled in `/v1/models` (Wave 0 of Phase 20 disabled them); Phase 7 capability-gate fixture flipped to the always-enabled `chat-local` alias. | ✅ Complete (Phase 21 / Plan 21-02 — 2026-06-03 — commit `95ad0eb` — Phase 3 SKIP-OK, Phase 7 all-PASS) |
+| HYG-04 | `router/vitest.config.ts` sets `testTimeout: 10000` to eliminate flake-under-load on the full sweep. | ✅ Complete (Phase 21 / Plan 21-02 — 2026-06-03 — commit `a72d86c` — 1355/1396 green, 0 fails) |
+
 ---
 
 ## Traceability
@@ -69,8 +80,12 @@
 | CDX-03 | Phase 20 / Plan 20-07 | ✅ Complete (2026-06-03) |
 | OPS-01 | Phase 20 / Plan 20-06 | ✅ Complete (2026-06-03) |
 | OPS-02 | Phase 20 / Plan 20-06 | ✅ Complete (2026-06-03) |
+| HYG-01 | Phase 21 / Plan 21-01 | ✅ Complete (2026-06-03) |
+| HYG-02 | Phase 21 / Plan 21-02 | ✅ Complete (2026-06-03) |
+| HYG-03 | Phase 21 / Plan 21-02 | ✅ Complete (2026-06-03) |
+| HYG-04 | Phase 21 / Plan 21-02 | ✅ Complete (2026-06-03) |
 
-**Total:** 9 requirements across 1 phase (Phase 20). The phase may split into 20/21/22 during `/gsd:discuss-phase 20` if scope warrants — the requirement IDs stay stable across any phase split.
+**Total:** 13 requirements across 2 phases (Phase 20 + Phase 21). v0.12.0 closes with the audit findings folded in.
 
 ---
 
