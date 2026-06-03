@@ -137,6 +137,9 @@ describe('models.yaml registry — store (ROUTE-02 startup half)', () => {
           // them explicitly.
           ctx_size: 8192,
           context_strategy: 'sliding-window',
+          // Phase 20 / CAT-01 (v0.12.0 — D-01): same pattern — Zod default
+          // populates at parse time, literal fixtures must supply explicitly.
+          disabled: false,
         },
       ],
     };

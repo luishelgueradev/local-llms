@@ -76,6 +76,7 @@ const EMBED_ENTRY: ModelEntry = {
   dims: 8,
   ctx_size: 8192,
   context_strategy: 'sliding-window',
+  disabled: false,
 };
 
 function makeEmbedResponse(n: number, dims: number, model: string) {

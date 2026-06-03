@@ -192,6 +192,7 @@ models:
     concurrency: 2
     max_model_len: 8192
     profile: llamacpp
+    disabled: true  # Phase 20 / CAT-01 / D-01 — backend not running on this host (project_vram_budget: vllm/llamacpp redundantes). Flip to false + start backend to re-enable.
 
   - name: llama3.2-vision:11b-instruct-q4_K_M
     backend: ollama
@@ -213,6 +214,7 @@ models:
     concurrency: 2
     max_model_len: 8192
     profile: vllm
+    disabled: true  # Phase 20 / CAT-01 / D-01 — backend not running on this host (project_vram_budget: vllm/llamacpp redundantes). Flip to false + start backend to re-enable.
 
   # Phase 7 (Plan 07-03) — bge-m3 embeddings served by Ollama (1024-dim, multilingual).
   # Phase 12 (EMB-H02): dims declared so the route can refuse mismatched vectors.
@@ -239,6 +241,7 @@ models:
     concurrency: 4
     max_model_len: 8192
     profile: vllm
+    disabled: true  # Phase 20 / CAT-01 / D-01 — backend not running on this host (project_vram_budget: vllm/llamacpp redundantes). Flip to false + start backend to re-enable.
 
   # Phase 8 (Plan 08-02 — CLOUD-01, CLOUD-02). Ollama Cloud entries route to
   # https://ollama.com/v1 with bearer OLLAMA_API_KEY from .env. vram_budget_gb=0

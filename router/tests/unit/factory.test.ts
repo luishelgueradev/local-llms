@@ -29,6 +29,7 @@ function ollamaEntry(overrides: Partial<ModelEntry> = {}): ModelEntry {
     vram_budget_gb: 4,
     ctx_size: 8192,
     context_strategy: 'sliding-window',
+    disabled: false,
     ...overrides,
   };
 }
@@ -43,6 +44,7 @@ function llamacppEntry(overrides: Partial<ModelEntry> = {}): ModelEntry {
     vram_budget_gb: 6,
     ctx_size: 8192,
     context_strategy: 'sliding-window',
+    disabled: false,
     ...overrides,
   };
 }
@@ -57,6 +59,7 @@ function vllmEntry(overrides: Partial<ModelEntry> = {}): ModelEntry {
     vram_budget_gb: 7.2,
     ctx_size: 8192,
     context_strategy: 'sliding-window',
+    disabled: false,
     ...overrides,
   };
 }
@@ -71,6 +74,7 @@ function vllmEmbedEntry(overrides: Partial<ModelEntry> = {}): ModelEntry {
     vram_budget_gb: 2.5,
     ctx_size: 8192,
     context_strategy: 'sliding-window',
+    disabled: false,
     ...overrides,
   };
 }
@@ -85,6 +89,7 @@ function cloudEntry(overrides: Partial<ModelEntry> = {}): ModelEntry {
     vram_budget_gb: 0,
     ctx_size: 8192,
     context_strategy: 'sliding-window',
+    disabled: false,
     ...overrides,
   };
 }

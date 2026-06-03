@@ -59,6 +59,18 @@ export const ModelEntrySchema = z.object({
       cloud_allowed: z.boolean().default(true),
     })
     .optional(),
+  /**
+   * Phase 20 / CAT-01 (v0.12.0 — D-01 LOCKED) — operator flag for entries whose
+   * backend is intentionally offline on this host. When true, the entry is
+   * invisible to /v1/models and /v1/chat/completions resolution (treated as a
+   * 404 model_not_found at dispatch time — same envelope as a fully-unknown
+   * model so the public surface cannot leak whether an alias is "unknown" vs
+   * "intentionally offline"). Defaults to false so existing YAML files require
+   * no migration. Cross-field validators (VRAM envelope, URL uniqueness,
+   * dims-required-for-embeddings) skip disabled entries — re-enabling later is
+   * a 1-line flip + Valkey DEL + force-recreate (per project_models_yaml_hot_edit).
+   */
+  disabled: z.boolean().default(false),
   // Phase 17 (v0.11.0 — CTXP-04): per-model context window + strategy.
   // Both default to safe values so existing models.yaml entries continue to
   // load without modification. When SessionStore is wired and ContextProvider
@@ -173,6 +185,11 @@ export const RegistrySchema = z.object({
   const envelope = Number(process.env['VRAM_ENVELOPE_GB'] ?? 16);
   const sums = new Map<string, number>();
   for (const m of reg.models) {
+    // Phase 20 / CAT-01 (D-01): disabled entries are operational no-ops — they do
+    // NOT count against the VRAM envelope. Otherwise a future 1-line re-enable
+    // flip could trip validation because the disabled entries silently consumed
+    // budget the whole time.
+    if (m.disabled) continue;
     sums.set(m.backend, (sums.get(m.backend) ?? 0) + m.vram_budget_gb);
   }
   for (const [name, sum] of sums) {
@@ -199,6 +216,10 @@ export const RegistrySchema = z.object({
   // same URL would otherwise silently mis-route the liveness probe.
   const urlToBackends = new Map<string, Set<string>>();
   for (const m of reg.models) {
+    // Phase 20 / CAT-01 (D-01): disabled entries skip URL-uniqueness — they are
+    // not dispatched, so a URL collision against an enabled backend is harmless.
+    // Skipping here matches the VRAM-envelope skip above and the dims skip below.
+    if (m.disabled) continue;
     let backends = urlToBackends.get(m.backend_url);
     if (!backends) {
       backends = new Set();
@@ -224,6 +245,11 @@ export const RegistrySchema = z.object({
   // of silently propagating a wrong-dim vector into a downstream vector store. The
   // gate is an additive validation — non-embeddings models are unaffected.
   for (const m of reg.models) {
+    // Phase 20 / CAT-01 (D-01): disabled embeddings entries skip the dims-required
+    // gate — the entry is invisible to /v1/embeddings so a missing dims is
+    // operationally moot. (Today all 3 disabled entries DO declare dims; the
+    // skip is defensive against a future re-enable where dims gets cleared first.)
+    if (m.disabled) continue;
     if (m.capabilities.includes('embeddings') && m.dims === undefined) {
       ctx.addIssue({
         code: 'custom',
@@ -299,8 +325,14 @@ export function makeRegistryStore(initial: Registry): RegistryStore {
     },
     resolve(name: string): ModelEntry {
       const found = snapshot.models.find((m) => m.name === name);
-      if (!found) {
-        throw new RegistryUnknownModelError(name, snapshot.models.map((m) => m.name));
+      // Phase 20 / CAT-01 (D-01 LOCKED): treat disabled entries identically to
+      // unknown entries. Anti-leak — the error envelope must NOT expose whether
+      // an alias is "unknown" vs "intentionally offline" (consumer enumeration
+      // via error messages is the threat model — T-20-01). The `available` list
+      // built below uses enabledModels() so disabled names cannot leak via
+      // the error's suggestion array either.
+      if (!found || found.disabled) {
+        throw new RegistryUnknownModelError(name, enabledModels(snapshot).map((m) => m.name));
       }
       return found;
     },
@@ -312,6 +344,20 @@ export function makeRegistryStore(initial: Registry): RegistryStore {
       createdAtSec = Math.floor(Date.now() / 1000);
     },
   };
+}
+
+/**
+ * Phase 20 / CAT-01 (v0.12.0 — D-01 LOCKED): canonical filter that returns
+ * only enabled model entries. Used by:
+ *   - `/v1/models` and `/v1/models/:id` route handlers (filter the public surface)
+ *   - `resolve()` (anti-leak suggestion list)
+ *
+ * The single helper guarantees the disabled invariant is applied identically
+ * everywhere — adding a new public-surface consumer of the registry MUST go
+ * through this helper rather than reading `reg.models` directly.
+ */
+export function enabledModels(reg: Registry): ModelEntry[] {
+  return reg.models.filter((m) => !m.disabled);
 }
 
 export { RegistryUnknownModelError } from '../errors/envelope.js';

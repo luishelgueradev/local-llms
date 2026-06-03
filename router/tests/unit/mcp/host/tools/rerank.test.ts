@@ -77,6 +77,7 @@ const RERANK_ENTRY: ModelEntry = {
   vram_budget_gb: 1,
   ctx_size: 8192,
   context_strategy: 'sliding-window',
+  disabled: false,
 };
 
 function makeRerankResponse(n: number, model: string) {

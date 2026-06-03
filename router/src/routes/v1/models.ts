@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import type { Registry, RegistryStore } from '../../config/registry.js';
+import { enabledModels } from '../../config/registry.js';
 
 /**
  * GET /v1/models — returns the D-C1 shape with capabilities extension.
@@ -25,6 +26,11 @@ import type { Registry, RegistryStore } from '../../config/registry.js';
  * to leak (T-3-A2 anti-leak preserved). HTTP and MCP share the same lens.
  */
 export function registerModelsRoute(app: FastifyInstance, registry: RegistryStore): void {
+  // Phase 20 (v0.12.0 — CAT-01 / D-01): disabled entries are invisible to the
+  // public surface. enabledModels() applies the filter once; the allowlist filter
+  // stacks on top. /v1/models/:id returns 404 model_not_found for a disabled id
+  // (uniform surface — consumer does not learn whether an alias is unknown vs
+  // intentionally offline).
   /**
    * Filter the registry snapshot by `policies.default.model_allowlist` (D-10)
    * and project each survivor to the public OpenAI-compatible shape (T-3-A2
@@ -37,7 +43,7 @@ export function registerModelsRoute(app: FastifyInstance, registry: RegistryStor
    */
   const filterAndProject = (reg: Registry, created: number) => {
     const allow = reg.policies?.default?.model_allowlist ?? [];
-    return reg.models
+    return enabledModels(reg)
       .filter((m) => allow.length === 0 || allow.includes(m.name))
       .map((m) => ({
         id: m.name,
@@ -71,7 +77,10 @@ export function registerModelsRoute(app: FastifyInstance, registry: RegistryStor
     const reg = registry.get();
     const allow = reg.policies?.default?.model_allowlist ?? [];
     const entry = reg.models.find((m) => m.name === req.params.id);
-    if (!entry || (allow.length > 0 && !allow.includes(entry.name))) {
+    // Phase 20 (v0.12.0 — CAT-01 / D-01): disabled entries return the same 404
+    // envelope as fully-unknown ones — consumer cannot enumerate disabled aliases
+    // by probing this endpoint (uniform surface; T-20-01 anti-leak).
+    if (!entry || entry.disabled || (allow.length > 0 && !allow.includes(entry.name))) {
       reply.code(404);
       return {
         error: {

@@ -83,6 +83,7 @@ const CHAT_LOCAL: ModelEntry = {
   vram_budget_gb: 5,
   ctx_size: 8192,
   context_strategy: 'sliding-window',
+  disabled: false,
   // policy omitted on purpose — Test 5 asserts default cloud_allowed: true
 };
 
@@ -96,6 +97,7 @@ const EMBED_LOCAL: ModelEntry = {
   dims: 768,
   ctx_size: 8192,
   context_strategy: 'sliding-window',
+  disabled: false,
 };
 
 const CLOUD_DENIED: ModelEntry = {
@@ -108,6 +110,7 @@ const CLOUD_DENIED: ModelEntry = {
   policy: { cloud_allowed: false },
   ctx_size: 8192,
   context_strategy: 'sliding-window',
+  disabled: false,
 };
 
 function makeFakes(opts: {
