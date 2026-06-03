@@ -151,6 +151,18 @@ services:
       - OLLAMA_MAX_LOADED_MODELS=2
       # Keep loaded models resident indefinitely (260525-0hr): agents/n8n hit
       # a warm model with no cold-load latency. -1 = never auto-unload.
+      #
+      # ⚠ VRAM TEST POLLUTION (Phase 20, 2026-06-03): combined with
+      # OLLAMA_MAX_LOADED_MODELS=2 above, ANY model loaded during testing
+      # (e.g. probing `llama3.2:3b-instruct-q4_K_M` directly via /v1/chat
+      # to verify the router resolves it) becomes hot FOREVER. The quick-task
+      # 260525-0hr planned the 2nd slot for bge-m3 (1.2 GB); a 3-4 GB model
+      # in that slot pushes total Ollama VRAM past the budget and only
+      # ~2 GB stays free for Whisper / cold-load buffer.
+      #
+      # Rule: after any standalone model probe, run
+      #   docker exec local-llms-ollama ollama stop <model>
+      # to free the slot. See ~/.claude/.../memory/feedback_vram_test_pollution.md
       - OLLAMA_KEEP_ALIVE=-1
       # Cap parallel requests per loaded model. KV cache scales with this;
       # PITFALLS Pitfall 3 + Performance Traps row "OLLAMA_NUM_PARALLEL".
