@@ -43,7 +43,7 @@
 
 | ID | Description | Status |
 |----|-------------|--------|
-| CDX-01 | `GET /v1/models` per-entry includes a `recommended_for: ["chat","json_mode","tools","tool_use","embeddings","rerank","vision"]` or equivalent capability/role metadata so external consumers can programmatically ask "which alias is the canonical local chat that supports json_mode strict?" without reading docs. Field is additive (existing consumers unaffected). | Planned (Phase 20) |
+| CDX-01 | `GET /v1/models` per-entry includes a `recommended_for: ["chat","json_mode","tools","tool_use","embeddings","rerank","vision"]` or equivalent capability/role metadata so external consumers can programmatically ask "which alias is the canonical local chat that supports json_mode strict?" without reading docs. Field is additive (existing consumers unaffected). | ✅ Complete (Phase 20 / Plan 20-03 — 2026-06-03) |
 | CDX-02 | `README.md` and `DEPLOY.md` contain a "Which model when?" decision tree subsection: chat vs chat+tools vs chat+json strict vs embed vs rerank vs vision, each pointing to the recommended alias for both `local` and `cloud` profiles. Covers the artiscrapper case (chat + json_mode strict + local). | Planned (Phase 20) |
 | CDX-03 | Migration guide for downstream consumers (`docs/CONSUMER-MIGRATION-v0.12.0.md` or similar) when any v0.11.0 alias changes: lists every alias rename, the old→new mapping, and the recommended n8n / Unsloth / Open WebUI / generic OpenAI-client update steps. Empty file is acceptable if no renames happened. | Planned (Phase 20) |
 
@@ -64,7 +64,7 @@
 | CAT-02 | Phase 20 / Plan 20-02 | ✅ Complete (2026-06-03) |
 | CAT-03 | Phase 20 | Planned |
 | CAT-04 | Phase 20 / Plan 20-04 | ✅ Complete (2026-06-03) |
-| CDX-01 | Phase 20 | Planned |
+| CDX-01 | Phase 20 / Plan 20-03 | ✅ Complete (2026-06-03) |
 | CDX-02 | Phase 20 | Planned |
 | CDX-03 | Phase 20 | Planned |
 | OPS-01 | Phase 20 | Planned |
