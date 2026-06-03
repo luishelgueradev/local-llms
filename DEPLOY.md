@@ -917,7 +917,7 @@ Verified by:
 > es la respuesta correcta — los consumers ven el `X-Deprecated-Alias`
 > header en cada call y migran a su ritmo."
 
-Referencia completa: [20-CONTEXT.md §D-02](../.planning/phases/20-model-catalog-hygiene-external-consumer-dx/20-CONTEXT.md)
+Referencia completa: [20-CONTEXT.md §D-02](../.planning/milestones/v0.12.0-phases/20-model-catalog-hygiene-external-consumer-dx/20-CONTEXT.md)
 (LOCKED, confirmado por el usuario 2026-06-03). El patron del raw-name alias
 quedo establecido en commit `a4580e0` (qwen2.5:7b-instruct-q4_K_M como sibling de
 chat-local, mismo `backend_url` + `backend_model`, `vram_budget_gb: 0` para no
@@ -1053,11 +1053,113 @@ Memory note: en WSL2 con piso Windows ~5.7 GB y 16 GB total, el budget usable es
 ### Cross-reference
 
 - **Consumer-side** (decision tree + curl + jq): [README → Which model when?](./README.md#which-model-when-v0120)
-- **Wave 0 implementation** (disabled flag mechanics): [.planning/phases/20-.../20-01-SUMMARY.md](.planning/phases/20-model-catalog-hygiene-external-consumer-dx/20-01-SUMMARY.md)
-- **Wave 1 implementation** (health probe internals): [20-02-SUMMARY.md](.planning/phases/20-model-catalog-hygiene-external-consumer-dx/20-02-SUMMARY.md)
-- **Wave 2 implementation** (`recommended_for` + `recommendations`): [20-03-SUMMARY.md](.planning/phases/20-model-catalog-hygiene-external-consumer-dx/20-03-SUMMARY.md)
-- **Wave 3 implementation** (deprecation layer): [20-04-SUMMARY.md](.planning/phases/20-model-catalog-hygiene-external-consumer-dx/20-04-SUMMARY.md)
-- **Wave 5 implementation** (`bin/deploy-router.sh` + BUILD_SHA): [20-06-SUMMARY.md](.planning/phases/20-model-catalog-hygiene-external-consumer-dx/20-06-SUMMARY.md)
+- **Wave 0 implementation** (disabled flag mechanics): [20-01-SUMMARY.md](.planning/milestones/v0.12.0-phases/20-model-catalog-hygiene-external-consumer-dx/20-01-SUMMARY.md)
+- **Wave 1 implementation** (health probe internals): [20-02-SUMMARY.md](.planning/milestones/v0.12.0-phases/20-model-catalog-hygiene-external-consumer-dx/20-02-SUMMARY.md)
+- **Wave 2 implementation** (`recommended_for` + `recommendations`): [20-03-SUMMARY.md](.planning/milestones/v0.12.0-phases/20-model-catalog-hygiene-external-consumer-dx/20-03-SUMMARY.md)
+- **Wave 3 implementation** (deprecation layer): [20-04-SUMMARY.md](.planning/milestones/v0.12.0-phases/20-model-catalog-hygiene-external-consumer-dx/20-04-SUMMARY.md)
+- **Wave 5 implementation** (`bin/deploy-router.sh` + BUILD_SHA): [20-06-SUMMARY.md](.planning/milestones/v0.12.0-phases/20-model-catalog-hygiene-external-consumer-dx/20-06-SUMMARY.md)
+
+---
+
+## Post-ship Hygiene (Phase 21 — v0.12.0)
+
+Cierre de gap-closure post-Phase-20 que cubre 4 hallazgos de auditoría + un fix companion crítico para consumidores streaming. **Nada de esta sección requiere cambios de configuración para operadores existentes** — son fixes silenciosos que arreglan modos de falla pre-existentes y refuerzan invariantes. Documentado acá para que sepas qué cambió si veías alguno de los síntomas abajo.
+
+> Reporte completo: [21-VERIFICATION.md](.planning/milestones/v0.12.0-phases/21-v0.12.0-post-ship-hygiene/21-VERIFICATION.md) — 4/4 gates GREEN + 4/4 invariantes (P7-01, POL-06, MCPS-06, RESS-WITH-TOOLS) byte-for-byte intactos.
+
+### HYG-01 — undici `headersTimeout` + `bodyTimeout` 45s → 180s (Plan 21-01, commit `0f9880a`)
+
+**Síntoma previo:** primera request a un alias chat (`chat-local`, etc.) podía devolver `HTTP 504 upstream_timeout` después de ~45s **cuando el modelo no estaba residente en VRAM**. Subsiguientes andaban en <1s. Reproducible vía `docker exec local-llms-ollama ollama stop qwen2.5:7b-instruct-q4_K_M`.
+
+**Causa raíz:** `router/src/backends/http-dispatcher.ts` tenía `HEADERS_TIMEOUT_MS = BODY_TIMEOUT_MS = 45_000`, valor defensivo de un debug session anterior (`router-504-stale-sockets`) cuando se sospechaba que el bottleneck era DNS-threadpool starvation. El c-ares Resolver que también está en ese archivo es el **fix real** para esa clase de hang (DNS resuelve <1ms independiente de carga). Con c-ares en su lugar, el ceiling de 45s era arbitrario — y clipping del cold-load real de qwen2.5:7b (~50-55s en WSL2 + GPU compartida).
+
+**Fix:** ambas constantes a `180_000` (3 min, 3× margen sobre cold-load real). Stays well under SDK ceiling 300_000. Regression test `tests/backends/http-dispatcher-timeouts.test.ts` asserta floor `≥120_000` + ceiling `<300_000`.
+
+**Verificación en vivo:**
+```bash
+# Forzar eviction → probar cold-load
+docker exec local-llms-ollama ollama stop qwen2.5:7b-instruct-q4_K_M
+sleep 2
+time curl --max-time 90 -H "Authorization: Bearer $ROUTER_BEARER_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -X POST http://127.0.0.1:3210/v1/chat/completions \
+  -d '{"model":"chat-local","messages":[{"role":"user","content":"ok"}],"max_tokens":5}'
+# Expectativa: HTTP 200 en ~50-85s (no 504 a los 45s)
+```
+
+**Smoke gate opt-in** para regression detection (NO se corre por default — el probe deja qwen2.5:7b cold por ~55s; honor `feedback_vram_test_pollution`):
+```bash
+SMOKE_INCLUDE_COLDLOAD=1 bash bin/smoke-test-router.sh --router-url http://127.0.0.1:3210
+```
+
+**Implicación para consumidores:** si tu cliente tenía retry-with-backoff sobre 504s **podés sacarlo** — el escenario que lo justificaba ya no se da. (Mantenerlo es inofensivo; simplemente no se va a disparar.)
+
+### HYG-02 — `curl` en el runtime image del router (Plan 21-02 Task 1, commit `f88eec3`)
+
+`router/Dockerfile` runtime stage ahora hace `apt-get install -y --no-install-recommends curl`. Habilita `bash bin/smoke-test-router.sh --profile prod` que shellea al container via `docker compose exec router curl ...` (el profile prod dropea el host port per Plan 06-02 — Pitfall 11 fix). Sin `curl` baked-in el profile prod fallaba con "curl: not found".
+
+Footprint: ~+3 MB. No-impact para operadores que ya usaban `--profile dev` o explicit `--router-url http://127.0.0.1:3210`.
+
+**Verificación:**
+```bash
+docker exec local-llms-router curl --version
+# Expectativa: curl 7.88.1 (...) libcurl/7.88.1 OpenSSL/3.0.20 ...
+```
+
+### HYG-03 — smoke Phase 3 + Phase 7 soft-skip cuando llamacpp está disabled (Plan 21-02 Task 2, commit `95ad0eb`)
+
+`bin/smoke-test-router.sh` Phase 3 multi-backend section ahora hace early-out skip cuando `qwen2.5-7b-instruct-q4km` no está en `/v1/models` (Wave 0 de Phase 20 lo deshabilitó per CAT-01 / D-01). Phase 7 capability-gate fixture cambió de disabled `qwen2.5-7b-instruct-awq` → siempre-enabled `chat-local` (cap [chat, tools, json_mode] — sin embeddings — so the gate still fires, ahora por la razón correcta).
+
+**Resultado en smoke:**
+- Phase 3: `SKIP — no enabled llamacpp model — qwen2.5-7b-instruct-q4km is disabled per Phase 20 / CAT-01 / D-01; flip disabled→false + start --profile llamacpp to re-include` (con rationale trazable)
+- Phase 7: todas las assertions PASS, incluyendo `capability gate — chat-only model (chat-local) returns 400 on /v1/embeddings`
+
+**Si re-habilitás llamacpp** (`disabled: false` en `models.yaml` + start con `--profile llamacpp`), Phase 3 vuelve a ejecutarse sin cambios.
+
+### HYG-04 — vitest `testTimeout` 5s → 10s (Plan 21-02 Task 3, commit `a72d86c`)
+
+`router/vitest.config.ts` `testTimeout` + `hookTimeout` raised a 10_000. Absorbe el flake bajo carga (WSL2 fs.watchFile pausa callbacks bajo CPU contention) que afectaba `config/__tests__/loader.reload.test.ts > recovery: after failed VRAM reload, valid reload succeeds and admits new requests`.
+
+Sweep duration unchanged (~19s wall-clock, ~56s test-time, 1355 tests) — vitest bloquea hasta que la assertion resuelve, no hasta el timeout.
+
+Solo afecta desarrollo (no runtime). Operadores que solo deployan no ven cambio.
+
+### Companion fix — SSE retry-preamble (commit `e113192`, HYG-05 candidate, fuera del scope original del audit)
+
+**Síntoma previo:** SDKs OpenAI-compatible estrictos que NO son `EventSource` de navegador (`openai-python`, Hermes Agent stack de NousResearch, n8n LangChain nodes en streaming mode, scripts custom haciendo `json.loads(data)` por chunk SSE) crasheaban con:
+
+```
+JSONDecodeError: Expecting value: line 1 column 1 (char 0)
+```
+
+…en la **primera línea** de cualquier respuesta streaming (`/v1/chat/completions`, `/v1/messages`, `/v1/responses` con `stream:true`). Non-streaming andaba perfecto. Open WebUI (browser EventSource) tampoco sufría el bug.
+
+**Causa raíz:** `fastify-sse-v2` plugin emite por default un evento `retry: 3000\n\n` al inicio de cada stream — un hint de reconexión que solo consume el `EventSource` del navegador. Ese evento tiene el campo `data:` vacío, y los SDKs estrictos hacían `json.loads("")` sobre él.
+
+**Fix:** registrar el plugin con `{ retryDelay: false }` en `router/src/app.ts`. El stream ahora arranca directamente en el primer `data:` real (o un `: keep-alive` heartbeat).
+
+**Verificación:**
+```bash
+curl -sN -H "Authorization: Bearer $ROUTER_BEARER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"model":"chat-local","stream":true,"messages":[{"role":"user","content":"ok"}],"max_tokens":5}' \
+  http://127.0.0.1:3210/v1/chat/completions | head -3
+# Expectativa: lineas empezando con "data: {..." NUNCA con "retry: 3000"
+```
+
+EventSource del navegador sigue funcionando — usa su cadencia de reconexión default.
+
+**Quién se beneficia explícitamente:**
+- Hermes Agent (NousResearch) configurado contra el router como provider `custom` OpenAI-compatible
+- artiscrapper si invoca `chat.completions.create(..., stream=True)`
+- Workflows de n8n que usan **streaming** en el OpenAI Chat Model node (los no-streaming ya andaban)
+- Cualquier script Python/Go/Rust con SDK OpenAI-compatible que no sea EventSource
+
+### Referencias
+
+- **Audit findings**: [v0.12.0-MILESTONE-AUDIT.md](.planning/milestones/v0.12.0-MILESTONE-AUDIT.md) — 13/13 reqs satisfied, integration `pass`, 4/4 invariants intact
+- **Plan 21-01** (HYG-01): [21-01-SUMMARY.md](.planning/milestones/v0.12.0-phases/21-v0.12.0-post-ship-hygiene/21-01-SUMMARY.md)
+- **Plan 21-02** (HYG-02 + HYG-03 + HYG-04): [21-02-SUMMARY.md](.planning/milestones/v0.12.0-phases/21-v0.12.0-post-ship-hygiene/21-02-SUMMARY.md)
+- **Migration guide §7** (consumer-facing surface): [docs/CONSUMER-MIGRATION-v0.12.0.md §7](./docs/CONSUMER-MIGRATION-v0.12.0.md)
 
 ---
 

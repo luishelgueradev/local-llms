@@ -16,9 +16,27 @@
 #   4. Corre bin/preflight-gpu.sh (verifica passthrough GPU end-to-end)
 #   5. Pregunta los secretos faltantes y arma .env (con backup del existente)
 #   6. docker compose --profile <ollama|llamacpp|vllm> up -d --wait
+#      (build del router incluye BUILD_SHA + BUILD_TIME — Phase 20 OPS-02)
 #   7. Pull del modelo workhorse (qwen2.5:7b-instruct-q4_K_M) + embeddings (bge-m3)
 #   8. Health check via /healthz del router (curl)
-#   9. Imprime URLs de acceso (Tailscale + Cloudflare Tunnel si aplica)
+#   9. Drift check: /version vs git HEAD (Phase 20 OPS-02 — Plan 20-06)
+#   10. Imprime URLs de acceso (Tailscale + Cloudflare Tunnel si aplica)
+#
+# Cobertura por milestone (lo que este instalador deploya):
+#   v0.9.0  MVP — router + ollama + cloud + observability + ops
+#   v0.10.0 Cognitive Primitives — JSON mode + rerank + embeddings hardening + /v1/responses
+#   v0.11.0 Retrieval-Ready Infrastructure — MCP host + MCP client + sessions + retriever hook
+#   v0.12.0 External Consumer DX + Catalog Hygiene
+#           + Phase 20 (bin/deploy-router.sh + BUILD_SHA + /version)
+#           + Phase 21 post-ship hygiene (HYG-01 undici 180s cold-load + HYG-02 curl-in-image
+#             + HYG-03 smoke guards + HYG-04 vitest timeout)
+#           + companion SSE fix (commit e113192 — fastify-sse-v2 retryDelay: false)
+#
+# Re-deploys despues de la primera instalacion:
+#   Usar bin/deploy-router.sh (Phase 20 OPS-01) en lugar de re-ejecutar este instalador:
+#     bash bin/deploy-router.sh full         # rebuild + force-recreate + healthz + smoke
+#     bash bin/deploy-router.sh config-only  # solo models.yaml: Valkey DEL + force-recreate
+#     bash bin/deploy-router.sh check        # drift check git HEAD vs running build_sha
 #
 # Requisitos del host:
 #   - Linux x86_64 con GPU NVIDIA (>=16 GB VRAM recomendado) o Windows + WSL2
@@ -371,6 +389,18 @@ fi
 # `compose up -d --wait` espera healthchecks; pero compose con profiles + GPU
 # preflight container puede demorar. Subir en pasos:
 $DOCKER compose --profile "$DEFAULT_PROFILE" pull --quiet || warn "compose pull fallo (no fatal — build local seguira)"
+
+# Phase 20 / OPS-02 (Plan 20-06): bake BUILD_SHA + BUILD_TIME en la imagen del router
+# para que /healthz y /version reporten la version exacta corriendo. Esto habilita
+# el drift check del paso 9b + el `bin/deploy-router.sh check` para re-deploys futuros.
+BUILD_SHA=$(cd "$INSTALL_DIR" && git rev-parse HEAD 2>/dev/null || echo "unknown")
+BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+info "Build del router con BUILD_SHA=${BUILD_SHA:0:7} BUILD_TIME=$BUILD_TIME (Phase 20 OPS-02)"
+$DOCKER compose build router \
+  --build-arg "BUILD_SHA=${BUILD_SHA}" \
+  --build-arg "BUILD_TIME=${BUILD_TIME}" \
+  || warn "docker compose build router fallo — compose up intentara reusar imagen anterior"
+
 $DOCKER compose --profile "$DEFAULT_PROFILE" up -d --wait --wait-timeout 180 \
   || { warn "compose up no llego a healthy en 180s — revisando estado..."; $DOCKER compose ps; }
 
@@ -404,6 +434,22 @@ if [ $RETRIES -ge $MAX_RETRIES ]; then
   warn "Health check NO paso en 30s. Logs del router:"
   $DOCKER compose logs router --tail 30 || true
   warn "Reintenta despues con: curl -fsS $HEALTH_URL && docker compose ps"
+fi
+
+# ─── 9b. Drift check — /version vs BUILD_SHA (Phase 20 OPS-02) ───────────────
+# Confirma que la imagen corriendo es la que acabamos de buildear. Catchea el
+# escenario 19-09 (fix on disk pero imagen stale en el container). Warn-only.
+VERSION_URL="${HEALTH_URL%/healthz}/version"
+if RUNNING_SHA=$(curl -fsS "$VERSION_URL" 2>/dev/null | python3 -c 'import sys,json; print(json.load(sys.stdin).get("build_sha",""))' 2>/dev/null); then
+  if [ -z "$RUNNING_SHA" ] || [ "$RUNNING_SHA" = "unknown" ]; then
+    warn "OPS-02: /version reporta build_sha=$RUNNING_SHA (sin bake). Re-deploys deberian usar: bash bin/deploy-router.sh full"
+  elif [ "$RUNNING_SHA" = "$BUILD_SHA" ]; then
+    ok "OPS-02: /version reporta build_sha=${RUNNING_SHA:0:7} — coincide con git HEAD ✓"
+  else
+    warn "OPS-02: drift — git HEAD=${BUILD_SHA:0:7} vs /version build_sha=${RUNNING_SHA:0:7}. Re-correr: bash bin/deploy-router.sh full"
+  fi
+else
+  warn "OPS-02: /version no respondio (endpoint Phase 20 OPS-02). Posiblemente imagen vieja sin /version baked-in."
 fi
 
 # ─── 10. Resumen final ───────────────────────────────────────────────────────
@@ -450,6 +496,12 @@ cat <<EOF
   Reiniciar:   cd $INSTALL_DIR && docker compose --profile $DEFAULT_PROFILE restart
   Bajar:       cd $INSTALL_DIR && docker compose --profile $DEFAULT_PROFILE down
   Smoke:       cd $INSTALL_DIR && bash bin/smoke-test-router.sh --router-url http://127.0.0.1:3210
+  Version:     curl -s $VERSION_URL | jq .   (Phase 20 OPS-02 — build_sha + build_time)
+
+  ──── Re-deploys (Phase 20 OPS-01 — usar bin/deploy-router.sh) ───
+  Re-build:    cd $INSTALL_DIR && bash bin/deploy-router.sh full
+  models.yaml: cd $INSTALL_DIR && bash bin/deploy-router.sh config-only  # Valkey DEL + force-recreate
+  Drift check: cd $INSTALL_DIR && bash bin/deploy-router.sh check        # git HEAD vs running build_sha
 
   ──── Proximos pasos opcionales ──────────────────────────
   1. Cloudflare Tunnel para exposicion publica: ver DEPLOY.md §"Cloudflare Tunnel"
