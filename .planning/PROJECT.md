@@ -10,47 +10,29 @@ Un endpoint único, estable y multi-protocolo para que los agentes del usuario c
 
 ## Current State
 
-**Shipped: v0.11.0 Retrieval-Ready Infrastructure (2026-06-03)** — 48/48 new requirements delivered across 6 phases (14–19), 49 plans, 96 tasks. Audit PASSED: 48/48 requirements, 7/7 integration wiring pairs, 5/5 E2E flows, 3/3 grep gates. Full archive in [`milestones/v0.11.0-ROADMAP.md`](./milestones/v0.11.0-ROADMAP.md) + audit + requirements traceability.
+**Shipped: v0.12.0 External Consumer DX + Catalog Hygiene (2026-06-03)** — 13/13 requirements delivered across 2 phases (20-21), 9 plans. Audit PASSED: 13/13 requirements satisfied, integration checker `pass` on 13 cross-phase wiring contracts verified on live router, 8/8 E2E flows green, 4/4 v0.11.0-era invariants byte-for-byte intact. Full archive in [`milestones/v0.12.0-ROADMAP.md`](./milestones/v0.12.0-ROADMAP.md) + audit + requirements traceability.
 
-- **Policy primitives** — Model allowlists + cloud restrictions + tenant/project/agent IDs threaded through all 5 dispatch routes + 4 MCP tools via shared `applyPreflight()` helper (Phase 14, POL-01..06)
-- **MCP Host** — `/mcp` over Streamable HTTP with 5 tools (`chat_completion`, `create_response`, `create_embedding`, `rerank`, `list_models`), bearer-gated, session lifecycle with SIGTERM-race cleanup (Phase 15, MCPS-01..06)
-- **`/v1/responses` streaming + tool calls** — full Responses API SSE sequence with `OutputItemStateMachine` FSM, `function_call_arguments.delta` events, and `response.completed` always last (Phase 16, RESS-01..05 — RESS-05 closed by 19-08/19-09 post-ship fixes)
-- **Sessions + Context + Summary** — Postgres-backed `SessionStore` with `pg_advisory_xact_lock` + 1s fail-open, `DefaultContextProvider` sliding-window + truncate, `NoopSummaryProvider` seam (Phase 17, SESS+CTXP+SUMP 13 reqs)
-- **MCP Client + RetrieverProvider + Pre-Completion Hook** — lazy outbound MCP client registry with `{alias}__{tool}` prefix, `runMcpToolLoop` (10-iter cap, parallel-within-iter), `RetrieverProvider` interface seam, pre-completion hook chain with cancellable Promise.race timeout + SHA256 audit trail in `request_log.hook_log` JSONB column (Phase 18, MCPC-01..06 + RETR-01..06)
-- **EmbeddingProvider formalization + observability hardening** — `EmbeddingProvider` interface + Valkey per-input cache + dims enforcement, `/v1/embeddings` route byte-identical (P7-01 SHA), live `/metrics` cardinality CI guard (POL-06), Phase 19 smoke section (Phase 19, EMBP-01..02 + OBSV-01..04)
+- **Catalog hygiene** — `disabled: true` flag for dead-backend aliases + `enabledModels()` filter (14→11 entries on `/v1/models`); `resolve()` anti-leak (T-20-01) returns identical 404 envelopes for disabled vs unknown so consumers cannot enumerate disabled aliases via error inspection (Phase 20, CAT-01)
+- **Programmatic consumer DX on `/v1/models`** — additive `health: {status, checked_at}` field (boot probe + Valkey 60s lazy refresh) + `recommended_for: string[]` per-entry (7-value taxonomy) + top-level operator-configurable `recommendations` map (auto-derived when absent, cross-field validated against enabled set). External consumers pick aliases by capability without reading docs (Phase 20, CAT-02 + CDX-01)
+- **Backward-compat alias infrastructure (disarmed in v0.12.0)** — `deprecated_aliases:` config block + `X-Deprecated-Alias` response header + `router_deprecated_alias_used_total{old_name, new_name}` Prometheus counter + `applyPreflight()` dispatch-time redirect across all 4 dispatch routes (chat-completions + messages + responses + rerank). Per D-02 LOCKED, ships with deprecated_aliases empty — both naming schemes (semantic + raw) coexist on purpose; infrastructure ready for v0.13.0+ renames with ≥30-day grace (Phase 20, CAT-04)
+- **Deploy hygiene formalized** — `bin/deploy-router.sh` (3 subcommands: `full` / `config-only` / `check`) + Dockerfile BUILD_SHA + BUILD_TIME bake-args + new public `GET /version` route + `GET /healthz` extended additively with `build_sha`. Eliminates the 19-09-class skew-bug failure mode (Phase 20, OPS-01 + OPS-02)
+- **Comprehensive consumer-facing docs** — README "Which model when?" decision tree (6 use cases × local/cloud) + DEPLOY "Model Catalog Hygiene" operator reference + new `docs/CONSUMER-MIGRATION-v0.12.0.md` (Spanish, zero-breaking-change posture, forward-looking v0.13.0+ guidance) (Phase 20, CAT-03 + CDX-02 + CDX-03)
+- **Post-ship hygiene closure** — undici `HEADERS_TIMEOUT_MS` + `BODY_TIMEOUT_MS` raised 45_000 → 180_000 in `router/src/backends/http-dispatcher.ts` (HYG-01 — cold-load of qwen2.5:7b takes ~50–55s on WSL2; live probe post-fix: HTTP 200 in 84s); `curl` baked into router runtime image so `--profile prod` smoke works (HYG-02); smoke Phase 3/7 soft-skips + fixture-flip (HYG-03); vitest testTimeout 5s→10s to absorb WSL2 fs.watchFile flake (HYG-04); companion SSE fix (commit `e113192`, HYG-05 candidate) — `FastifySSEPlugin` registered with `{ retryDelay: false }` to suppress the default `retry: 3000\n\n` preamble that crashed every strict-JSON streaming SDK consumer (openai-python, Hermes Agent stack, n8n LangChain in streaming mode) (Phase 21)
 
-Prior milestones: v0.10.0 Cognitive Primitives (2026-05-29) — 26/26 reqs across 4 phases (10–13), archived in [`milestones/v0.10.0-ROADMAP.md`](./milestones/v0.10.0-ROADMAP.md). v0.9.0 MVP (2026-05-28) — 76/76 v1 reqs across 9 phases (1–9), archived in [`milestones/v0.9.0-ROADMAP.md`](./milestones/v0.9.0-ROADMAP.md).
+Prior milestones: v0.11.0 Retrieval-Ready Infrastructure (2026-06-03) — 48/48 reqs across 6 phases (14–19), archived in [`milestones/v0.11.0-ROADMAP.md`](./milestones/v0.11.0-ROADMAP.md). v0.10.0 Cognitive Primitives (2026-05-29) — 26/26 reqs across 4 phases (10–13). v0.9.0 MVP (2026-05-28) — 76/76 v1 reqs across 9 phases (1–9).
 
-Consumed in production by the user's agents (n8n in a remote VPS over Cloudflare Tunnel `https://local-llms.luishelguera.dev`) and by the local Whisper sidecar via the same host. Workhorse local model: `qwen2.5:7b-instruct-q4_K_M` (alias `chat-local`). Cloud fallback: `gpt-oss:120b-cloud` / `gpt-oss:20b-cloud` via Ollama Cloud (alias `big-cloud`). Cost telemetry: per-1M-token pricing for cloud models declared in `models.yaml` (placeholder rates until Ollama publishes formal pricing); operator updates as the rates firm up.
+Consumed in production by the user's agents (n8n in a remote VPS over Cloudflare Tunnel `https://local-llms.luishelguera.dev`, plus Unsloth Studio on the host and artiscrapper in development) and by the local Whisper sidecar via the same host. Workhorse local model: `qwen2.5:7b-instruct-q4_K_M` (canonical alias `chat-local`; raw name also resolves per D-02 LOCKED). Cloud fallback: `gpt-oss:120b-cloud` / `gpt-oss:20b-cloud` via Ollama Cloud (alias `big-cloud`). Cost telemetry: per-1M-token pricing for cloud models declared in `models.yaml`.
 
-## Current Milestone: v0.12.0 External Consumer DX + Catalog Hygiene
+## Next Milestone Goals
 
-**Goal:** Hacer que un proyecto externo que consume `local-llms` pueda — sin trial-and-error, sin saber qué backends están vivos, sin chocar con aliases muertos — descubrir programáticamente qué modelo pedirle al router para su use case y confiar en que esa elección funciona. Cerrar tres categorías de fricción que `artiscrapper` (2026-06-03) expuso: (1) catalog drift hacia backends que ya no corren, (2) naming chaos sin guía, (3) sin contrato programático de capacidades. Y formalizar la higiene de deploy para que el próximo bug "imagen stale vs source nuevo" (categoría 19-09) no recurra.
+**Between milestones — v0.12.0 archived 2026-06-03.** Run `/gsd:new-milestone` to scope the next milestone. Candidate themes surfaced from v0.12.0 closeout (no decision made — just captured):
 
-**Strategic frame (binding constraint on every REQ below):**
-- *"Catalog says X, router serves X — siempre"* (no drift entre declaración y realidad)
-- *"Consumer picks programmatically, not by reading docs"* (los metadatos del router son la fuente de verdad para el chooser)
-- *"No breaking changes to live consumers without grace period"* (n8n en objetiva.com.ar, Unsloth Studio, artiscrapper son consumers reales — los renames van con backward-compat aliases y warnings de deprecación)
-- *"Deploy hygiene = no source/binary skew"* (cada edit de `models.yaml` o `router/src/` tiene un path documentado y atomic para llegar al container corriendo)
+- **Smoke driver hardening** — `bin/smoke-test-router.sh` flake under wall-clock contention (~14 transient FAILs on fresh-rebuild Phase 4/5/8/15/16/17/21 sections). Same fs.watchFile root cause that HYG-04 addressed for vitest, in a different runner. Candidate fixes: per-probe `--max-time` raise, explicit warmup gate at script entry, structural separation of "wiring assertions" from "cold-load assertions".
+- **Fine-tuning track** — Explicitly out-of-scope from v0.9.0 through v0.12.0 ("Fine-tuning fuera de v1" — Key Decision pending). The router is now stable enough that a fine-tuning milestone could begin as a separate project consuming the router as inference + producing GGUF/HF artifacts the router serves.
+- **HYG-05 retro-classification** — Commit `e113192` (SSE retry-preamble fix) lands on the v0.12.0 chain without a REQ-ID. Could be retro-tagged in `milestones/v0.12.0-REQUIREMENTS.md` if a future audit cycle wants strict commit↔REQ traceability.
+- **Nyquist VALIDATION discipline** — Neither Phase 20 nor Phase 21 produced `*-VALIDATION.md` artifacts (v0.11.0 and prior also shipped without these). If formal Nyquist gates become the standard, `/gsd:validate-phase 20` + `/gsd:validate-phase 21` could be run retroactively.
 
-**Source of truth for scope:** `.planning/seeds/SEED-001-model-catalog-hygiene-consumer-dx.md` (planted 2026-06-03 after `artiscrapper` exposed the three failure categories on the live router).
-
-**Single Phase (may split during `/gsd:discuss-phase 20` if scope warrants):**
-
-| # | Phase | What it delivers |
-|---|-------|------------------|
-| **20** | Model Catalog Hygiene + External Consumer DX + Deploy Hygiene | All 9 v0.12.0 requirements: CAT-01..04 (catalog cleanup + health), CDX-01..03 (capability metadata + docs + migration guide), OPS-01..02 (deploy script + skew check) |
-
-**Constraints (locked — inherited from v0.11.0 ship state):**
-- All v0.11.0 surfaces (`/v1/chat/completions`, `/v1/messages`, `/v1/responses`, `/v1/embeddings`, `/v1/rerank`, `/v1/models`, `/mcp`) remain backward-compatible — additive changes only
-- POL-06 cardinality invariant preserved (no `_id$` labels in any new metric)
-- P7-01 `/v1/embeddings` SHA byte-identical invariant preserved
-- MCPS-06 no-stdio-transport invariant preserved
-- `qwen2.5:7b-instruct-q4_K_M` (alias `chat-local`) remains the local workhorse — taxonomy must keep it accessible
-- VRAM budget unchanged: one 7B hot at a time + bge-m3 (max ~10.3 GB), vllm/llamacpp confirmed redundant and stay disabled
-- Cloudflare tunnel consumer at `objetiva.com.ar` is a live n8n deployment — no breaking changes without ≥30-day backward-compat grace period
-
-**Continuación normal:** phase numbering desde Phase 20 (no reset). v0.12.0 es continuación de v0.11.0 (consumer-DX polish layer), no major.
+These are captured candidates — `/gsd:new-milestone` will surface them alongside any new themes the user wants to scope next.
 
 ## Requirements
 
@@ -108,26 +90,34 @@ Consumed in production by the user's agents (n8n in a remote VPS over Cloudflare
 - ✓ Embeddings hardening (Phase 12, EMB-H01..06): Valkey cache key=`hash(backend|backend_model|encoding_format|dimensions|input)` TTL configurable via `ROUTER_EMBED_CACHE_TTL_SEC` + registry-required `dims` enforcement + 3 new metrics + fail-open on Valkey
 - ✓ Cost observability + `/v1/responses` (Phase 13, COST-01..04 + RESP-01..04): `cost_cents NUMERIC(10,4)` column (migration 0003) + `X-Cost-Cents` header on success + `cost_per_agent_daily` view (migration 0004) + new `POST /v1/responses` minimal non-stream endpoint sharing all plumbing with chat-completions
 
-### Validated (v0.11.0 — partial, 2026-05-30)
+### Validated (v0.11.0 — 2026-06-03)
 
-<!-- Phases delivered. Continued accumulation as v0.11.0 advances. -->
-
-- ✓ **Policy primitives (Phase 14, POL-01..06):** top-level `policies.default.model_allowlist` (POL-01) + per-entry `policy.cloud_allowed: false` (POL-02) + `X-Workload-Class` opaque metadata (POL-03) + `X-Tenant-ID`/`X-Project-ID`/`X-Workload-Class` scoped IDs flowing into `request_log` (POL-04, migration 0005) + canonical gate position (POL-05, policy 403 never advances breaker) + Prometheus cardinality CI guard rejecting `*_id` labels (POL-06, P8-03 mitigation). All deliverables behind allow-all defaults — zero policy config preserves prior behavior (POL Success Criterion 5).
-
-### Active (v0.11.0 — Retrieval-Ready Infrastructure)
-
-<!-- Locked 2026-05-29. Detailed REQ-IDs in REQUIREMENTS.md after research-first. -->
+<!-- Shipped and confirmed valuable. Detailed traceability in milestones/v0.11.0-REQUIREMENTS.md. -->
 
 **Theme:** Retrieval Interfaces, not Retrieval Logic. Memory Abstraction Layer, not Memory implementation. Exposición de seams MCP + 5 provider interfaces + streaming first-class + policy primitives slim, sin lógica de retrieval/memoria/knowledge dentro del router.
 
-- **MCP-as-server (P1):** router como MCP host first-class + MCP client generic. Exposición de `chat`/`embeddings`/`rerank`/`responses` como MCP tools.
-- **`/v1/responses` streaming + tools (P2):** cierre de deuda v0.10.0 Phase 13.
-- **`RetrieverProvider` + pre-completion hook (P3):** MCP tool-driven retrieval primary, pre-completion hook como extension point opcional; payload rico (filtros, top-k, metadata, hybrid flags) sin orquestar retrieval.
-- **`SessionStore` + `ContextProvider` + `SummaryProvider` (P4):** abstracción de memory/session sin behavior; `SessionStore` Postgres-backed opcional, `ContextProvider` window-management sin semántica, `SummaryProvider` seam noop-default.
-- **`EmbeddingProvider` interface name + MCP exposure:** formalización del capability existente (v0.10.0 Phase 12) como provider interface con nombre estable.
-- ~~**Policy primitives (slim)**~~ — ✓ Validated in Phase 14 (see v0.11.0 partial section above).
+- ✓ **Policy primitives (Phase 14, POL-01..06):** top-level `policies.default.model_allowlist` (POL-01) + per-entry `policy.cloud_allowed: false` (POL-02) + `X-Workload-Class` opaque metadata (POL-03) + scoped IDs flowing into `request_log` (POL-04, migration 0005) + canonical gate position (POL-05) + Prometheus cardinality CI guard rejecting `*_id` labels (POL-06)
+- ✓ **MCP Host (Phase 15, MCPS-01..06):** `/mcp` over Streamable HTTP with 5 tools (`chat_completion`, `create_response`, `create_embedding`, `rerank`, `list_models`), bearer-gated, session lifecycle with SIGTERM-race cleanup
+- ✓ **`/v1/responses` streaming + tool calls (Phase 16, RESS-01..05):** full Responses API SSE sequence with `OutputItemStateMachine` FSM, `function_call_arguments.delta` events, `response.completed` always last (RESS-05 closed by post-ship Plans 19-08 + 19-09)
+- ✓ **Sessions + Context + Summary (Phase 17, SESS+CTXP+SUMP — 13 reqs):** Postgres-backed `SessionStore` with `pg_advisory_xact_lock(hashtext)` + 1s fail-open, `DefaultContextProvider` sliding-window + truncate (100-turn hard cap), `NoopSummaryProvider` seam
+- ✓ **MCP Client + RetrieverProvider + Pre-Completion Hook (Phase 18, MCPC-01..06 + RETR-01..06):** lazy outbound MCP client registry with `{alias}__{tool}` prefix, `runMcpToolLoop` (10-iter cap, parallel-within-iter), `RetrieverProvider` interface seam, pre-completion hook chain with cancellable Promise.race timeout + SHA256 audit trail in `request_log.hook_log` JSONB column
+- ✓ **EmbeddingProvider formalization + observability hardening (Phase 19, EMBP-01..02 + OBSV-01..04):** `EmbeddingProvider` interface + Valkey per-input cache + dims enforcement, `/v1/embeddings` route byte-identical (P7-01 SHA), live `/metrics` cardinality CI guard (POL-06 enforced live)
 
-REQ-IDs concretos se definen en REQUIREMENTS.md post-research.
+### Validated (v0.12.0 — 2026-06-03)
+
+<!-- Shipped and confirmed valuable. Detailed traceability in milestones/v0.12.0-REQUIREMENTS.md. -->
+
+**Theme:** External Consumer DX + Catalog Hygiene. Closes the three categories of consumer friction that `artiscrapper` exposed (catalog drift to dead backends, naming chaos, no programmatic capability contract) AND formalizes deploy hygiene so 19-09-class skew bugs don't recur. Conservative defaults: no breaking changes; additive `/v1/models` fields only; ≥30-day backward-compat alias grace for any future rename.
+
+- ✓ **Catalog hygiene (Phase 20, CAT-01):** 3 dead-backend aliases flagged `disabled: true` (`enabledModels()` filter 14→11 on `/v1/models`); `resolve()` anti-leak T-20-01 (disabled aliases return 404 identical to unknown)
+- ✓ **Per-entry `health` field on `/v1/models` (Phase 20, CAT-02):** boot-time backend probe + Valkey 60s lazy refresh; 4-status taxonomy (`ok | degraded | down | unknown`); D-04 LOCKED — down entries still appear (consumer decides per retrieval-agnostic principle)
+- ✓ **`recommended_for[]` per-entry + `recommendations` map on `/v1/models` (Phase 20, CDX-01):** 7-value taxonomy (chat, chat-tools, chat-json-strict, embeddings, rerank, vision, function-calling); operator-configurable top-level map auto-derived when absent; cross-field validated against enabled set
+- ✓ **Backward-compat alias infrastructure (Phase 20, CAT-04):** `deprecated_aliases:` config block + `X-Deprecated-Alias` header + `router_deprecated_alias_used_total{old_name, new_name}` Prometheus counter + `applyPreflight` dispatch-time redirect (4 routes); ships disarmed per D-02 LOCKED
+- ✓ **Naming taxonomy decision documented (Phase 20, CAT-03 + CDX-02):** D-02 LOCKED — "two taxonomies coexisting on purpose" (semantic `chat-local` + raw `qwen2.5:7b-instruct-q4_K_M`); README "Which model when?" decision tree + DEPLOY operator reference
+- ✓ **Migration guide (Phase 20, CDX-03):** `docs/CONSUMER-MIGRATION-v0.12.0.md` documents zero-breaking-change posture + 3 new optional features + forward-looking v0.13.0+ guidance + post-ship hygiene §7 (SSE fix + HYG-01)
+- ✓ **Deploy hygiene script + skew check (Phase 20, OPS-01 + OPS-02):** `bin/deploy-router.sh` (full/config-only/check) + Dockerfile BUILD_SHA bake + public `/version` endpoint + `/healthz` extended additively
+- ✓ **Post-ship hygiene closure (Phase 21, HYG-01..04):** undici timeouts 45s→180s (cold-load 504 gone) + curl in runtime image + smoke Phase 3/7 soft-skips + vitest testTimeout 10s
+- ✓ **Companion SSE fix (Phase 21, HYG-05 candidate, commit `e113192`):** `FastifySSEPlugin` `{ retryDelay: false }` suppresses the default `retry: 3000\n\n` preamble that crashed every strict-JSON streaming SDK consumer (openai-python, Hermes Agent stack, n8n LangChain in streaming mode)
 
 ### Out of Scope
 
@@ -153,8 +143,9 @@ REQ-IDs concretos se definen en REQUIREMENTS.md post-research.
 
 ## Phase Progress
 
-- **Milestone v0.11.0 Retrieval-Ready Infrastructure — Phase 14 (Policy primitives + scoped IDs) complete 2026-05-30.** 5 phases remaining (15 MCP-host, 16 MCP-client, 17 /v1/responses streaming+tools, 18 Retriever+hooks, 19 Memory abstraction).
-- **Milestone v0.10.0 Cognitive Primitives — all 4 phases shipped 2026-05-29.** See [`MILESTONES.md`](./MILESTONES.md) for the consolidated summary and [`milestones/v0.10.0-ROADMAP.md`](./milestones/v0.10.0-ROADMAP.md) for per-phase details.
+- **Milestone v0.12.0 External Consumer DX + Catalog Hygiene — Phase 20 + Phase 21 both shipped 2026-06-03.** All 13/13 requirements closed (CAT × 4 + CDX × 3 + OPS × 2 + HYG × 4). Audit PASSED. Archived in [`milestones/v0.12.0-ROADMAP.md`](./milestones/v0.12.0-ROADMAP.md).
+- **Milestone v0.11.0 Retrieval-Ready Infrastructure — all 6 phases shipped 2026-06-03.** Archived in [`milestones/v0.11.0-ROADMAP.md`](./milestones/v0.11.0-ROADMAP.md).
+- **Milestone v0.10.0 Cognitive Primitives — all 4 phases shipped 2026-05-29.** Archived in [`milestones/v0.10.0-ROADMAP.md`](./milestones/v0.10.0-ROADMAP.md).
 - **Milestone v0.9.0 MVP — all 9 phases shipped 2026-05-28.** Archived in [`milestones/v0.9.0-ROADMAP.md`](./milestones/v0.9.0-ROADMAP.md).
 
 ## Constraints
@@ -201,4 +192,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-05-30 — Phase 14 (Policy primitives + scoped IDs) complete; v0.11.0 milestone 1/6 phases done.*
+*Last updated: 2026-06-03 — after v0.12.0 milestone close. Between milestones; run `/gsd:new-milestone` to scope the next one.*

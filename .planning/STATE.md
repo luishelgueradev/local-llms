@@ -2,16 +2,15 @@
 gsd_state_version: 1.0
 milestone: v0.12.0
 milestone_name: External Consumer DX + Catalog Hygiene
-status: milestone_complete
-last_updated: 2026-06-03T18:00:00.000Z
-last_activity: "2026-06-03 — Phase 21 SHIPPED + VERIFIED (post-ship hygiene closure for v0.12.0). 4 audit-driven findings (HYG-01..04) closed across 2 plans + 4 atomic commits + a companion SSE hot-fix. HYG-01: undici headers/body timeouts raised 45_000 → 180_000 in router/src/backends/http-dispatcher.ts so Ollama cold-load of qwen2.5:7b (~55s on WSL2) no longer 504s — verified live via deliberate eviction probe: HTTP 200 in 84s (commit 0f9880a, regression test ≥120_000 floor). HYG-02: curl baked into router runtime image so `bin/smoke-test-router.sh --profile prod` runs its `docker exec router curl ...` probes (commit f88eec3, ~+3 MB). HYG-03: smoke Phase 3 + Phase 7 sections soft-skip when no llamacpp model is enabled; capability-gate fixture flipped to always-enabled `chat-local` (commit 95ad0eb, Phase 3 SKIP-OK + Phase 7 all-PASS). HYG-04: vitest testTimeout 5_000 → 10_000 to absorb WSL2 fs.watchFile flake under load (commit a72d86c, full sweep 1355/1396 green 0 fails). Companion SSE fix (commit e113192): suppressed fastify-sse-v2 default `retry: 3000\n\n` preamble that was breaking openai-python SDK + Hermes Agent + every strict-JSON streaming consumer with `JSONDecodeError: Expecting value char 0`. All 4 v0.11.0-era invariants intact (P7-01 byte-identical embeddings.ts, POL-06 zero `_id$` labels, MCPS-06 no StdioServerTransport, Phase 19 RESS-WITH-TOOLS PASS). All 4 Phase 21 verification gates PASS. 21-VERIFICATION.md committed. v0.12.0 now: 2 phases / 9 plans / 13 reqs (CAT-01..04 + CDX-01..03 + OPS-01..02 + HYG-01..04) — ALL closed. Ready for `/gsd:complete-milestone v0.12.0`."
+status: Awaiting next milestone
+last_updated: "2026-06-03T20:42:29.072Z"
+last_activity: 2026-06-03 — Milestone v0.12.0 completed and archived
 progress:
-  total_phases: 2
-  completed_phases: 2
-  total_plans: 9
-  completed_plans: 9
+  total_phases: 6
+  completed_phases: 6
+  total_plans: 49
+  completed_plans: 49
   percent: 100
-stopped_at: "Milestone v0.12.0 complete — Phase 20 ✅ + Phase 21 ✅ both shipped 2026-06-03, all 13 REQs closed, all invariants intact. Ready for /gsd:complete-milestone v0.12.0 archive."
 ---
 
 # Project State: local-llms
@@ -19,6 +18,7 @@ stopped_at: "Milestone v0.12.0 complete — Phase 20 ✅ + Phase 21 ✅ both shi
 **Last Updated:** 2026-06-03 — **Phase 21 SHIPPED + VERIFIED (post-ship hygiene closure for v0.12.0).** 4 audit-driven findings (HYG-01..04) closed across 2 plans + 4 atomic commits + a companion SSE hot-fix that unblocked every strict-JSON streaming consumer.
 
 **Phase 21 changes:**
+
 - **HYG-01 (commit `0f9880a`):** `router/src/backends/http-dispatcher.ts` HEADERS_TIMEOUT_MS + BODY_TIMEOUT_MS raised 45_000 → 180_000. Post-Phase-20 audit caught a 504 `upstream_timeout` regression: Ollama cold-load of qwen2.5:7b takes ~50–55s on WSL2 + shared GPU and was getting clipped at 45s. The c-ares Resolver also installed in that file is the actual fix for the DNS-threadpool starvation the 45s was originally guarding against — DNS now resolves <1ms regardless of load. Constants exported; regression test asserts ≥120_000 floor + <300_000 ceiling. Live verification via deliberate eviction probe: HTTP 200 in **84s** (well under 180s, well over the old 45s clip).
 - **HYG-02 (commit `f88eec3`):** `router/Dockerfile` runtime stage gains `apt-get install -y --no-install-recommends curl` (~+3 MB). Fixes the long-standing `bin/smoke-test-router.sh --profile prod` failure with "curl: not found" when the prod profile drops the host port and probes via `docker exec router curl ...`. Verified: `docker exec local-llms-router curl --version` → `curl 7.88.1`.
 - **HYG-03 (commit `95ad0eb`):** `bin/smoke-test-router.sh` Phase 3 multi-backend section now soft-skips with a traceable rationale when `qwen2.5-7b-instruct-q4km` is not in `/v1/models` (Wave 0 of Phase 20 disabled it per CAT-01 / D-01). Phase 7 capability-gate fixture flipped from disabled `qwen2.5-7b-instruct-awq` to always-enabled `chat-local` (capabilities [chat, tools, json_mode] — no embeddings — so the registry-enforced gate still fires for the right reason, not as model_not_found by accident). Phase 3 → SKIP, Phase 7 → all PASS.
@@ -45,10 +45,10 @@ stopped_at: "Milestone v0.12.0 complete — Phase 20 ✅ + Phase 21 ✅ both shi
 
 ## Current Position
 
-Phase: 21
-Plan: 21-01 + 21-02 SHIPPED + VERIFIED
-Status: Milestone complete (Phase 20 + Phase 21 both ✅)
-Last activity: 2026-06-03
+Phase: Milestone v0.12.0 complete
+Plan: —
+Status: Awaiting next milestone
+Last activity: 2026-06-03 — Milestone v0.12.0 completed and archived
 
 ### Progress
 
@@ -155,16 +155,18 @@ Milestone v0.9.0:  ██████████ 100% — SHIPPED 2026-05-28 (a
 
 ## Deferred Items
 
-Items acknowledged and deferred at v0.11.0 milestone close on 2026-06-03T03:20:00Z:
+Items acknowledged and deferred at v0.12.0 milestone close on 2026-06-03T19:45:00Z (re-confirmed carry-overs from v0.11.0 close):
 
 | Category | Item | Status | Notes |
 |----------|------|--------|-------|
-| uat_gaps | 14-HUMAN-UAT.md | resolved (audit false positive) | Phase 14 UAT already `status: resolved`; 0 open scenarios. Auditor flags any HUMAN-UAT.md regardless of resolution status. No action needed. |
-| quick_tasks | 260510-v8z-phase-01-script-cleanup-non-blocking-war | actually-complete (audit format quirk) | SUMMARY.md `status: complete`, commit `20d57d2` (2026-05-10). Audit reports `status: missing` because PLAN.md frontmatter lacks the status field the auditor expects. Work was shipped during Phase 01 era; not blocking. |
-| quick_tasks | 260525-0hr-perfil-solo-ollama-optimizado-nombres-de | actually-complete (PLAN frontmatter outdated) | SUMMARY.md `status: complete`, commit `c7b0e82` (2026-05-25). PLAN.md frontmatter still shows `status: in-progress` — outdated. This task IS the origin of the project_vram_budget decision ("vllm/llamacpp redundantes"). Carried forward as part of SEED-001's diagnosis (the dead-backend entries remain in models.yaml). |
-| seeds | SEED-001-model-catalog-hygiene-consumer-dx | dormant (intentional carry-forward to v0.12.0) | Planted 2026-06-03 during /gsd-progress session. Will surface at /gsd-new-milestone v0.12.0 as Phase 1 candidate. By design, not blocking v0.11.0 close. |
+| uat_gaps | 14-HUMAN-UAT.md | resolved (audit false positive) | Phase 14 UAT already `status: resolved`; 0 open scenarios. Auditor flags any HUMAN-UAT.md regardless of resolution status. No action needed. Carried from v0.11.0. |
+| quick_tasks | 260510-v8z-phase-01-script-cleanup-non-blocking-war | actually-complete (audit format quirk) | SUMMARY.md `status: complete`, commit `20d57d2` (2026-05-10). Audit reports `status: missing` because PLAN.md frontmatter lacks the status field the auditor expects. Carried from v0.11.0. |
+| quick_tasks | 260525-0hr-perfil-solo-ollama-optimizado-nombres-de | actually-complete (PLAN frontmatter outdated) | SUMMARY.md `status: complete`, commit `c7b0e82` (2026-05-25). PLAN.md frontmatter still shows `status: in-progress` — outdated. This task IS the origin of the project_vram_budget decision ("vllm/llamacpp redundantes"). Carried from v0.11.0; substrate for SEED-001 + v0.12.0. |
+| seeds | SEED-001-model-catalog-hygiene-consumer-dx | ✅ implemented (closed during v0.12.0) | Planted 2026-06-03; surfaced as Phase 20 + Phase 21 of v0.12.0. Per commit `6c4e246`, status flipped dormant → implemented after Phase 20 ship. |
+| smoke_driver | Phase 4/5/8/15/16/17/21 transient flakes under wall-clock contention | non-v0.12.0-regression — pre-existing class | Documented in `.planning/v0.12.0-MILESTONE-AUDIT.md` §6. Each contract holds when probed individually post-Ollama-warmup. Candidate for a future hygiene cycle (raise per-probe `--max-time` or add explicit warmup gate to smoke). |
+| nyquist | Phase 20 + Phase 21 VALIDATION.md missing | discovery-only — not blocking | Neither phase produced a `*-VALIDATION.md` artifact; v0.11.0 and prior also shipped without these. VERIFICATION + audit provided equivalent rigor. `/gsd:validate-phase 20` + `/gsd:validate-phase 21` could be run retroactively if formal VALIDATION discipline is adopted. |
 
-Known deferred items at close: 4 (3 false-positives/format quirks + 1 intentional carry-forward).
+Known deferred items at v0.12.0 close: 6 (3 carry-over format quirks from v0.11.0 + 1 closed seed + 2 new tech-debt classes captured in milestone audit).
 
 ## Operator Next Steps
 

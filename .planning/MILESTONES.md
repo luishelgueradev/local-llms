@@ -1,5 +1,50 @@
 # Milestones
 
+## v0.12.0 External Consumer DX + Catalog Hygiene (Shipped: 2026-06-03)
+
+**Phases completed:** 2 phases · 9 plans · 13 requirements (CAT × 4 + CDX × 3 + OPS × 2 + HYG × 4)
+**Timeline:** 2026-06-03 (single-day milestone — opened 03:24 UTC, audit passed 20:12 UTC)
+**Repo stats:** 42 commits (29 docs + 8 feat + 5 fix) · 76 files changed · +11,180 / -128 LOC (heavily docs-weighted — 9 SUMMARYs + 2 VERIFICATIONs + 1 audit + migration guide + README/DEPLOY sections)
+
+### What shipped
+
+- **Catalog hygiene that closed the artiscrapper failure class (CAT-01)** — 3 dead-backend aliases (`qwen2.5-7b-instruct-q4km` → llamacpp, `qwen2.5-7b-instruct-awq` → vllm, `bge-m3-vllm` → vllm-embed) flagged `disabled: true` in `models.yaml`; `enabledModels()` filter on `/v1/models` drops the catalog from 14 declared → 11 enabled; `resolve()` anti-leak (T-20-01) returns identical 404 envelopes for disabled and fully-unknown aliases so consumers cannot enumerate disabled aliases via error inspection.
+- **Programmatic consumer DX surface on `/v1/models` (CAT-02 + CDX-01)** — additive `health: { status, checked_at }` field on every entry, computed from a boot-time backend probe + Valkey-cached 60s lazy refresh; additive `recommended_for: string[]` per-entry (fixed 7-value taxonomy: `chat`, `chat-tools`, `chat-json-strict`, `embeddings`, `rerank`, `vision`, `function-calling`); top-level operator-configurable `recommendations` map (auto-derived when absent) so external consumers (artiscrapper, n8n, Unsloth Studio) can pick aliases programmatically by capability without reading docs or hardcoding strings.
+- **Backward-compat alias infrastructure ready but disarmed (CAT-04)** — `deprecated_aliases:` config block + `X-Deprecated-Alias` response header on dispatch + `router_deprecated_alias_used_total{old_name, new_name}` Prometheus counter + `applyPreflight()` dispatch-time redirect across all 4 dispatch routes (chat-completions, messages, responses, rerank). Per **D-02 LOCKED** decision, v0.12.0 ships with the `deprecated_aliases:` block intentionally empty — both naming schemes (semantic `chat-local` + raw `qwen2.5:7b-instruct-q4_K_M`) coexist by design; the infrastructure is ready for the first v0.13.0+ rename to opt in with a ≥30-day grace period.
+- **Deploy hygiene formalized (OPS-01 + OPS-02)** — `bin/deploy-router.sh` wraps the canonical deploy path as 3 subcommands: `full` (build with BUILD_SHA + BUILD_TIME --build-args + force-recreate + wait-healthz + smoke), `config-only` (Valkey `DEL` of `model-registry:*` + `mcp:tools:*` + `backend-health:*` + force-recreate when only `models.yaml` changed), `check` (compare git HEAD vs running `/healthz.build_sha`). `router/Dockerfile` runtime stage bakes `BUILD_SHA` + `BUILD_TIME` via `ARG`/`ENV`; new public `GET /version` route exposes `{ build_sha, build_time, node_version, git_dirty }` (added to `PUBLIC_PATHS`); `GET /healthz` extended additively with `build_sha`. Eliminates the 19-09-class skew-bug failure mode (fix on disk but stale in container).
+- **Comprehensive consumer-facing documentation (CAT-03 + CDX-02 + CDX-03)** — README `## Which model when? (v0.12.0)` decision tree (6 use cases × local/cloud) + copy-pasteable `curl + jq` flow resolving the artiscrapper case in 5 lines; DEPLOY `## Model Catalog Hygiene (Phase 20 — v0.12.0)` operator reference (9-row coverage table + Naming taxonomy decision quote block in Spanish citing live consumer constraints + 4 config block references + 2 operator recipes + VRAM check); new `docs/CONSUMER-MIGRATION-v0.12.0.md` (Spanish per project docs convention) documenting the zero-breaking-change posture + 3 new optional features + forward-looking v0.13.0+ guidance + live catalog snapshot.
+- **Post-ship hygiene closure (HYG-01..04 + companion SSE fix)** — Phase 21 gap-closure on 4 audit findings: `HEADERS_TIMEOUT_MS` + `BODY_TIMEOUT_MS` in `router/src/backends/http-dispatcher.ts` raised 45_000 → 180_000 (HYG-01 — Ollama cold-load of qwen2.5:7b takes ~50–55s on WSL2; live probe post-fix: HTTP 200 in 84s); `curl` baked into router runtime image so `--profile prod` smoke works (HYG-02); smoke Phase 3 multi-backend soft-skip + Phase 7 capability-gate fixture flipped to enabled `chat-local` (HYG-03); vitest `testTimeout: 10_000` to absorb WSL2 fs.watchFile flake under load (HYG-04). Companion fix (commit `e113192`, outside the audit-driven REQ scope but documented as HYG-05 candidate): `FastifySSEPlugin` registered with `{ retryDelay: false }` — suppresses the default `retry: 3000\n\n` preamble that crashed every strict-JSON streaming SDK consumer (openai-python, Hermes Agent stack, n8n LangChain in streaming mode) with `JSONDecodeError: Expecting value: line 1 column 1 (char 0)`.
+
+### Strategic posture preserved
+
+- **D-02 LOCKED (no renames in v0.12.0)** — both naming schemes coexist on purpose. No consumer-facing breaking changes; `n8n` workflows on `objetiva.com.ar` via Cloudflare Tunnel + Unsloth Studio model picker + artiscrapper in development all continue to work unchanged.
+- **Retrieval-agnostic principle preserved** — router exposes capability metadata; never decides for the consumer. The new `recommendations` map is operator-declared, not router-derived.
+- **All 4 v0.11.0-era invariants byte-for-byte intact** — P7-01 (`embeddings.ts` SHA `598b364…69404`), POL-06 (no `_id$` labels in `/metrics`), MCPS-06 (no `StdioServerTransport` in runtime `dist/`), Phase 19 RESS-WITH-TOOLS cloud function-call SSE gate.
+
+### Verification
+
+- `20-VERIFICATION.md` — Phase 20 PASSED (9/9 REQs, 12/12 success criteria, verified 2026-06-03T15:35Z)
+- `21-VERIFICATION.md` — Phase 21 PASS (4/4 gates: HYG-01 cold-load 84s/200, HYG-02 curl baked in, HYG-03 Phase 3 SKIP + Phase 7 all-PASS, HYG-04 vitest 1355/0) + 4/4 invariants intact (verified 2026-06-03T18:00Z)
+- `v0.12.0-MILESTONE-AUDIT.md` — Milestone audit PASSED (3-source cross-reference clean; `gsd-integration-checker` returned `pass` on 13 cross-phase wiring contracts verified on live router; 8/8 E2E flows verified against build SHA `a72d86c`)
+
+### Known deferred items at close
+
+- **Smoke driver wall-clock contention** — `bash bin/deploy-router.sh check` on fresh-rebuild runs surfaces ~14 transient FAILs (Phase 4/5/8/15/16/17/21 sections) because smoke probes hit the router before Ollama finishes warming. **Not a v0.12.0 regression** — each contract holds when probed individually post-warmup. Candidate for a future hygiene cycle (raise per-probe `--max-time` or add explicit warmup gate).
+- **3 carry-over format quirks** — Phase 14 UAT (`status: resolved` since 2026-05-30, audit false-positive), quick tasks `260510-v8z` and `260525-0hr` (PLAN frontmatter outdated vs SUMMARY `complete`). Same items deferred at v0.11.0 close; recurring carry-over recommended for retrofitted PLAN-frontmatter fix in a future cycle.
+- **No `*-VALIDATION.md` (Nyquist) artifacts for Phase 20 + Phase 21** — discovery-only finding; v0.11.0 and prior also shipped without these. Equivalent rigor provided via VERIFICATION + milestone audit.
+
+### Archived artifacts
+
+- [`milestones/v0.12.0-ROADMAP.md`](./milestones/v0.12.0-ROADMAP.md)
+- [`milestones/v0.12.0-REQUIREMENTS.md`](./milestones/v0.12.0-REQUIREMENTS.md)
+- [`milestones/v0.12.0-MILESTONE-AUDIT.md`](./milestones/v0.12.0-MILESTONE-AUDIT.md)
+
+### Git tag
+
+`v0.12.0`
+
+---
+
 ## v0.11.0 Retrieval-Ready Infrastructure (Shipped: 2026-06-03)
 
 **Phases completed:** 6 phases, 49 plans, 96 tasks
