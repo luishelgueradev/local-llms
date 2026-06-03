@@ -2,15 +2,16 @@
 gsd_state_version: 1.0
 milestone: v0.12.0
 milestone_name: External Consumer DX + Catalog Hygiene
-status: ready_for_verification
-last_updated: "2026-06-03T13:30:00.000Z"
+status: milestone_complete
+last_updated: 2026-06-03T15:31:07.868Z
 last_activity: "2026-06-03 — Plan 20-07 SHIPPED (Wave 6 — CDX-03 closed via single atomic docs commit; FINAL plan of Phase 20). New `docs/CONSUMER-MIGRATION-v0.12.0.md` (264 lines, Spanish per project convention) documents the zero-breaking-change posture of v0.12.0 + 3 new optional features (recommendations map, health field, dual-name resolution) + forward-looking v0.13.0+ guidance + live catalog snapshot. Old→new mapping table intentionally empty per D-02 LOCKED (no renames in v0.12.0). All plan verification gates PASS (file exists, ≥60 lines, Migration ×1, X-Deprecated-Alias ×4, recommendations ×13, v0.13.0 ×6, cross-link anchors resolve in both directions). Zero source touched (`git diff -- router/src/ compose.yml router/Dockerfile bin/` empty). Phase 20: 7/7 plans complete (100%). All 9 v0.12.0 REQs CLOSED (CAT-01..04 + CDX-01..03 + OPS-01..02). Ready for verification."
 progress:
-  total_phases: 6
-  completed_phases: 6
-  total_plans: 49
-  completed_plans: 49
+  total_phases: 1
+  completed_phases: 1
+  total_plans: 7
+  completed_plans: 7
   percent: 100
+stopped_at: "Milestone v0.12.0 complete — Phase 20 ✅ shipped 2026-06-03, verifier PASS 12/12 success criteria. Ready for /gsd:complete-milestone v0.12.0 archive."
 ---
 
 # Project State: local-llms
@@ -27,14 +28,14 @@ progress:
 
 **Strategic frame (binding):** "Retrieval Interfaces, not Retrieval Logic" · "Memory Abstraction Layer, not Memory implementation" · local-llms = infraestructura; RAG/KB = consumidor downstream.
 
-**Current Focus:** Phase 20 — model-catalog-hygiene-external-consumer-dx (v0.12.0)
+**Current Focus:** Milestone complete
 
 ## Current Position
 
-Phase: 20 — Model Catalog Hygiene + External Consumer DX + Deploy Hygiene
-Plan: 20-07 SHIPPED (Wave 6 — `docs/CONSUMER-MIGRATION-v0.12.0.md` / CDX-03 closed). **All 7 Phase 20 plans complete (100%); all 9 v0.12.0 REQs closed.** Next: verifier run, then `/gsd:complete-milestone v0.12.0`.
-Status: ready_for_verification
-Last activity: 2026-06-03 — Plan 20-07 SHIPPED (1 atomic docs commit). CDX-03 closed: `docs/CONSUMER-MIGRATION-v0.12.0.md` (264 lines, Spanish) documents the zero-breaking-change posture + 3 new optional features (recommendations map, health field, dual-name resolution) + forward-looking v0.13.0+ guidance + live catalog snapshot + cross-links to README + DEPLOY + 20-CONTEXT.md + REQUIREMENTS.md + SEED-001. Old→new alias mapping table intentionally empty per D-02 LOCKED. Zero source touched (`git diff -- router/src/ compose.yml router/Dockerfile bin/` empty). 7/7 plans complete (100%). Phase 20 ✅ flip held until verifier runs.
+Phase: 20
+Plan: Not started
+Status: Milestone complete
+Last activity: 2026-06-03
 
 ### Progress
 
