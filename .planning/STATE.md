@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v0.12.0
 milestone_name: External Consumer DX + Catalog Hygiene
 status: in_progress
-last_updated: "2026-06-03T03:30:00.000Z"
-last_activity: 2026-06-03 — Milestone v0.12.0 opened (Phase 20 from SEED-001). Prior milestone v0.11.0 SHIPPED + archived overnight.
+last_updated: "2026-06-03T04:30:00.000Z"
+last_activity: 2026-06-03 — Phase 20 planning shipped (7 PLAN files across 7 waves). gsd-planner emitted 20-01..20-07 PLANs from 20-CONTEXT.md overnight-autonomous decisions (D-01..D-09 honored; Open Q1..Q5 resolved with conservative defaults). Wave 0 (20-01 — CAT-01 disabled flag) is safe-to-ship-immediately; Waves 1-6 await user review before /gsd:execute-phase 20.
 current_phase: 20
 current_phase_name: Model Catalog Hygiene + External Consumer DX + Deploy Hygiene
 progress:
   total_phases: 1
   completed_phases: 0
-  total_plans: 0
+  total_plans: 7
   completed_plans: 0
   percent: 0
 ---
