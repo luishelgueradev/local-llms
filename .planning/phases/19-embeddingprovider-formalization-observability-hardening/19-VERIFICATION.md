@@ -1,30 +1,42 @@
 ---
 phase: 19-embeddingprovider-formalization-observability-hardening
 verified: 2026-06-01T00:00:00Z
-status: human_needed
+status: passed
 score: 5/5 must-haves verified
 overrides_applied: 0
-human_verification:
+human_verification_resolved: 2026-06-03T02:05:00Z
+human_verification_resolution: |
+  All 4 human_verification items resolved by 19-HUMAN-UAT.md acceptance (status: complete,
+  passed: 4, issues: 0) — user confirmed live execution on 2026-06-03:
+    - vitest full suite: 1271 passed / 1 pre-existing flaky failure / 39 skipped / 2 todo
+    - smoke gate: Phase 19 OBSV-02-LIVE PASS; RESS-WITH-TOOLS PASS after Plan 19-09 rebuild
+      (live evidence: /tmp/ress-with-tools-PASS-attempt-1.txt)
+    - tsc --noEmit: exit 0
+    - OBSV-04 migration 0007 PG-gated: 8 passed (7 original + 1 new Phase 19 describe block)
+  See .planning/phases/19-embeddingprovider-formalization-observability-hardening/19-HUMAN-UAT.md
+  (status: complete) for the full UAT trail. Plan 19-08 + 19-09 closed the only remaining gap
+  (RESS-WITH-TOOLS DELTA_OK now =1 after delta.tool_calls translation fix + Docker rebuild).
+human_verification_archived:
   - test: "Run full vitest suite: cd router && npm test"
     expected: "1271+ passed, 0 failed (modulo 1 pre-existing flaky hotreload.vram.test.ts that passes in isolation)"
-    why_human: "Cannot run vitest without the Docker/WSL2 environment and full node_modules; SUMMARY claims 1 failure is pre-existing flaky test, not a phase regression"
+    result: "PASS (1271 passed / 1 pre-existing flaky failure that passes in isolation)"
   - test: "Run smoke script end-to-end against live stack: bash bin/smoke-test-router.sh"
     expected: "Phase 19 section prints PASS for OBSV-02-LIVE; RESS-WITH-TOOLS prints PASS (when OLLAMA_API_KEY set) or SKIP (when absent)"
-    why_human: "Smoke gate requires a running router + live Prometheus endpoint; cannot execute programmatically without the stack running"
+    result: "PASS after Plan 19-08 source fix + Plan 19-09 Docker rebuild — DELTA_OK=1 COMPLETED_OK=1 on attempt 1"
   - test: "Run tsc --noEmit: cd router && npx tsc --noEmit"
     expected: "Exit 0 — no TypeScript errors"
-    why_human: "Requires node_modules installed in the environment; cannot shell-execute reliably from verification context"
+    result: "PASS — exit 0"
   - test: "Run OBSV-04 test with PG: PG_TESTS=1 POSTGRES_URL=... npx vitest run tests/integration/migrations/0007-hook-log.test.ts"
     expected: "8 passed (7 original + 1 new OBSV-04 Phase 19 describe block)"
-    why_human: "Requires live Postgres with the migrated schema"
+    result: "PASS — 8 passed"
 ---
 
 # Phase 19: EmbeddingProvider Formalization + Observability Hardening — Verification Report
 
 **Phase Goal:** All new v0.11.0 surfaces are covered by smoke tests and Prometheus metrics; the cardinality CI guard is enforced; documentation reflects the full v0.11.0 configuration surface; the milestone is ready for production verification.
 **Verified:** 2026-06-01
-**Status:** human_needed
-**Re-verification:** No — initial verification
+**Status:** passed (initially `human_needed`; all 4 items closed by 19-HUMAN-UAT.md on 2026-06-03 and reconfirmed by Plan 19-09 deployment fix)
+**Re-verification:** Yes — initial verification 2026-06-01 (status human_needed); resolved 2026-06-03 after Plan 19-08 (source fix) + Plan 19-09 (Docker rebuild) closed the only open UAT gap
 
 ## Goal Achievement
 
