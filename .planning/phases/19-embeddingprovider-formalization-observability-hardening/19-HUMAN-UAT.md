@@ -3,7 +3,7 @@ status: complete
 phase: 19-embeddingprovider-formalization-observability-hardening
 source: [19-VERIFICATION.md]
 started: 2026-06-01T22:55:00Z
-updated: 2026-06-03T01:25:24Z
+updated: 2026-06-03T02:05:00Z
 ---
 
 ## Current Test
@@ -24,24 +24,13 @@ notes: Ran `cd router && npx tsc --noEmit` at commit a9800fb. Exit code 0.
 
 ### 3. Smoke test end-to-end (live stack)
 expected: Phase 19 section prints PASS for OBSV-02-LIVE; RESS-WITH-TOOLS prints PASS (when OLLAMA_API_KEY set) or SKIP (when absent)
-result: issue
-reported: "RESS-WITH-TOOLS failed: DELTA_OK=0 COMPLETED_OK=1 — function_call_arguments.delta event was NOT emitted on the cloud SSE stream for gpt-oss:20b-cloud, even though the completed event with incomplete:tool_calls did fire. OBSV-02-LIVE passed cleanly."
-severity: major
-notes: |
-  Phase 19 gates split:
-    - OBSV-02-LIVE: PASS — /metrics has no /_id$/ labels (live parser)
-    - RESS-WITH-TOOLS: FAIL — only completed event reached SSE consumer, no function_call_arguments.delta
-
-  Body head captured by smoke script:
-    retry: 3000
-    event: response.created
-    data: {"type":"response.created","sequence_number":0,...,"model":"gpt-oss:20b-cloud",...}
-    ...
-    (delta event missing; completed event with incomplete:tool_calls present)
-
-  Run command: `bash bin/smoke-test-router.sh --router-url http://127.0.0.1:3210 --profile dev`
-  Stack: full compose stack up, OLLAMA_API_KEY set, gpt-oss:20b-cloud present in models.yaml (line 266).
-  Other smoke-script failures observed (Phase 3.A ollama empty body / Phase 3.B llamacpp profile / Phase 4 /v1/messages empty) occur during the script's mid-run `--profile ollama`/`--profile llamacpp` compose-swap section and are pre-existing — not introduced by Phase 19. Scope of this gap is RESS-WITH-TOOLS only.
+result: pass
+resolution: |
+  Gap closed by Plan 19-09 (post-ship deployment fix). Root cause: stale Docker image — local-llms-router was built on 2026-06-01T15:42:09Z, ~21 hours BEFORE the Plan 19-08 source fix commit aa4a9c6 (2026-06-02T12:21:18Z). compose.yml declares `build: ./router` with no `image:` pin, so `docker compose up -d` reused the cached pre-fix image. Plan 19-09 rebuilt the image (`docker compose build router`) and recreated the container (`docker compose up -d --force-recreate router`). Post-rebuild verifications:
+    - `docker compose exec router sh -c 'grep -c "toolCallState" /app/dist/index.js'` → 5 (was 0)
+    - `docker image inspect local-llms-router --format '{{.Created}}'` → 2026-06-03T02:00:37Z (≥ 2026-06-02T12:21:18Z)
+    - RESS-WITH-TOOLS smoke gate against /v1/responses on the live router emits both `event: response.function_call_arguments.delta` and `event: response.completed` with `"status":"incomplete"` + `"reason":"tool_calls"` — DELTA_OK=1 COMPLETED_OK=1 on attempt 1 (no re-roll needed).
+  No source code changes were required. See .planning/debug/phase-19-ress-with-tools-delta.md for the full diagnosis trail.
 
 ### 4. OBSV-04 PG-gated migration re-verify
 expected: 8 passed (7 original Phase 18 + 1 new Phase 19 OBSV-04 describe block)
@@ -56,20 +45,12 @@ notes: |
 ## Summary
 
 total: 4
-passed: 3
-issues: 1
+passed: 4
+issues: 0
 pending: 0
 skipped: 0
 blocked: 0
 
 ## Gaps
 
-- truth: "Phase 19 RESS-WITH-TOOLS smoke gate emits function_call_arguments.delta on cloud SSE for gpt-oss:20b-cloud (with OLLAMA_API_KEY set + model in models.yaml)"
-  status: failed
-  reason: "User-observed: RESS-WITH-TOOLS failed during full smoke run — DELTA_OK=0, COMPLETED_OK=1; no function_call_arguments.delta event reached the SSE consumer, but the completed{incomplete:tool_calls} event did. Stack healthy, key + model present."
-  severity: major
-  test: 3
-  root_cause: ""     # Filled by diagnosis
-  artifacts: []      # Filled by diagnosis
-  missing: []        # Filled by diagnosis
-  debug_session: ""  # Filled by diagnosis
+None — gap closed by Plan 19-09 (post-ship deployment fix; no source code changes). See Test 3 `resolution` field above and `.planning/debug/phase-19-ress-with-tools-delta.md` for diagnosis trail.
